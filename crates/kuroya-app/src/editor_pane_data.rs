@@ -621,6 +621,7 @@ impl KuroyaApp {
             indent_guides: self.settings.indent_guides,
             highlight_active_indentation: editor_highlight_active_indentation_for_mode(
                 self.settings.highlight_active_indentation,
+                self.settings.indent_guides,
                 large_file_mode,
             ),
             ruler_column: clamp_editor_ruler_column(self.settings.ruler_column),
@@ -897,9 +898,10 @@ fn editor_git_blame_decoration_enabled(setting_enabled: bool, large_file_mode: b
 
 fn editor_highlight_active_indentation_for_mode(
     setting: EditorHighlightActiveIndentation,
+    indent_guides: bool,
     large_file_mode: bool,
 ) -> EditorHighlightActiveIndentation {
-    if large_file_mode {
+    if !indent_guides || large_file_mode {
         EditorHighlightActiveIndentation::Off
     } else {
         setting

@@ -1,5 +1,10 @@
-use crate::{editor_pane_rows::EditorRowContext, editor_text_geometry::visual_x_for_char_idx};
-use eframe::egui::{self, Color32, Pos2, Rect, pos2, vec2};
+use crate::{
+    editor_pane_rows::EditorRowContext,
+    editor_text_geometry::{
+        visual_column_for_char_offset, visual_width_for_char, visual_x_for_char_idx,
+    },
+};
+use eframe::egui::{self, Align2, Color32, FontFamily, FontId, Pos2, Rect, Visuals, pos2, vec2};
 use kuroya_core::{EditorCursorSmoothCaretAnimation, EditorCursorStyle};
 use std::ops::Range;
 
@@ -61,14 +66,34 @@ pub(crate) fn paint_cursors(
                 );
             }
             EditorCursorStyle::Block => {
-                painter.rect_filled(
-                    egui::Rect::from_min_size(
-                        pos2(cursor_x, rect.top() + 2.0),
-                        vec2(row.char_width.max(row.cursor_width), full_height),
+                let block_rect = egui::Rect::from_min_size(
+                    pos2(cursor_x, rect.top() + 2.0),
+                    vec2(
+                        cursor_block_width(
+                            line_text,
+                            snapshot_range.start,
+                            cursor.char_idx,
+                            row.char_width,
+                            row.cursor_width,
+                            row.tab_width,
+                        ),
+                        full_height,
                     ),
-                    1.0,
-                    Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), 96),
                 );
+                let fill = opaque_color(color);
+                painter.rect_filled(block_rect, 1.0, fill);
+
+                if let Some(cell) =
+                    cursor_block_cell_text(line_text, snapshot_range.start, cursor.char_idx)
+                {
+                    painter.text(
+                        pos2(cursor_x, rect.top() + 3.0),
+                        Align2::LEFT_TOP,
+                        cell,
+                        FontId::new(row.font_size, FontFamily::Monospace),
+                        cursor_block_text_color(ui.visuals(), fill),
+                    );
+                }
             }
             EditorCursorStyle::BlockOutline => {
                 painter.rect_stroke(
@@ -98,6 +123,62 @@ pub(crate) fn paint_cursors(
             }
         }
     }
+}
+
+fn opaque_color(color: Color32) -> Color32 {
+    Color32::from_rgb(color.r(), color.g(), color.b())
+}
+
+fn cursor_block_text_color(visuals: &Visuals, block_fill: Color32) -> Color32 {
+    let fill_luma = relative_luma(block_fill);
+    let extreme = opaque_color(visuals.extreme_bg_color);
+    let panel = opaque_color(visuals.panel_fill);
+
+    if (relative_luma(extreme) - fill_luma).abs() >= (relative_luma(panel) - fill_luma).abs() {
+        extreme
+    } else {
+        panel
+    }
+}
+
+fn relative_luma(color: Color32) -> f32 {
+    0.2126 * f32::from(color.r()) + 0.7152 * f32::from(color.g()) + 0.0722 * f32::from(color.b())
+}
+
+fn cursor_block_width(
+    line_text: &str,
+    snapshot_start: usize,
+    cursor_char_idx: usize,
+    char_width: f32,
+    cursor_width: f32,
+    tab_width: usize,
+) -> f32 {
+    let char_offset = cursor_char_idx.saturating_sub(snapshot_start);
+    let visual_col = visual_column_for_char_offset(line_text, char_offset, tab_width);
+    let visual_cols = line_text
+        .chars()
+        .nth(char_offset)
+        .map(|ch| visual_width_for_char(ch, visual_col, tab_width))
+        .filter(|width| *width > 0)
+        .unwrap_or(1);
+
+    (char_width * visual_cols as f32).max(cursor_width)
+}
+
+fn cursor_block_cell_text(
+    line_text: &str,
+    snapshot_start: usize,
+    cursor_char_idx: usize,
+) -> Option<String> {
+    let char_offset = cursor_char_idx.checked_sub(snapshot_start)?;
+    let ch = line_text.chars().nth(char_offset)?;
+    let visual_col = visual_column_for_char_offset(line_text, char_offset, 1);
+
+    if ch == '\t' || ch.is_control() || visual_width_for_char(ch, visual_col, 1) == 0 {
+        return None;
+    }
+
+    Some(ch.to_string())
 }
 
 fn animated_cursor_rect(
@@ -242,10 +323,11 @@ fn stable_positive_extent(value: f32, fallback: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
+        cursor_block_cell_text, cursor_block_text_color, cursor_block_width,
         cursor_overlay_geometry_is_valid, cursor_smooth_caret_animation_seconds,
-        insertion_cursor_rect,
+        insertion_cursor_rect, opaque_color,
     };
-    use eframe::egui::{Rect, pos2};
+    use eframe::egui::{Color32, Rect, Visuals, pos2};
     use kuroya_core::EditorCursorSmoothCaretAnimation;
 
     #[test]
@@ -264,6 +346,43 @@ mod tests {
         assert_eq!(clipped.left(), 34.0);
         assert_eq!(clipped.width(), 1.0);
         assert_eq!(clipped.height(), 14.0);
+    }
+
+    #[test]
+    fn block_cursor_width_tracks_tabs_and_line_end() {
+        assert_eq!(cursor_block_width("\tab", 0, 0, 8.0, 2.0, 4), 32.0);
+        assert_eq!(cursor_block_width("abc", 0, 1, 8.0, 2.0, 4), 8.0);
+        assert_eq!(cursor_block_width("abc", 0, 3, 8.0, 2.0, 4), 8.0);
+        assert_eq!(cursor_block_width("abc", 0, 1, 8.0, 10.0, 4), 10.0);
+    }
+
+    #[test]
+    fn block_cursor_cell_text_skips_blank_cells() {
+        assert_eq!(
+            cursor_block_cell_text("class Foo", 0, 0),
+            Some("c".to_owned())
+        );
+        assert_eq!(cursor_block_cell_text("class Foo", 0, 9), None);
+        assert_eq!(cursor_block_cell_text("\tFoo", 0, 0), None);
+        assert_eq!(cursor_block_cell_text("e\u{0301}x", 0, 1), None);
+    }
+
+    #[test]
+    fn block_cursor_uses_opaque_fill_and_contrasting_text() {
+        assert_eq!(
+            opaque_color(Color32::from_rgba_premultiplied(10, 20, 30, 96)),
+            Color32::from_rgb(10, 20, 30)
+        );
+
+        let visuals = Visuals {
+            extreme_bg_color: Color32::WHITE,
+            panel_fill: Color32::BLACK,
+            ..Visuals::dark()
+        };
+        assert_eq!(
+            cursor_block_text_color(&visuals, Color32::BLACK),
+            Color32::WHITE
+        );
     }
 
     #[test]

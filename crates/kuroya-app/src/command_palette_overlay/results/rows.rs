@@ -1,4 +1,4 @@
-use super::CommandPaletteResult;
+use super::{CommandPaletteCatalogEntry, CommandPaletteResult};
 use crate::ui_state::selected_row_scroll_offset;
 #[cfg(test)]
 use crate::ui_text::truncate_middle;
@@ -15,12 +15,13 @@ const COMMAND_PALETTE_CHORD_SLOT_WIDTH: f32 = 150.0;
 const COMMAND_PALETTE_LABEL_CHORD_GAP: f32 = 12.0;
 const COMMAND_PALETTE_ROW_LABEL_MAX_CHARS: usize = 160;
 const COMMAND_PALETTE_ROW_CHORD_MAX_CHARS: usize = 80;
+const COMMAND_PALETTE_ROW_SECTION_MAX_CHARS: usize = 80;
 const COMMAND_PALETTE_ROW_DISPLAY_SCAN_CHARS: usize = 4096;
 
 pub(super) fn render_command_palette_result_list(
     ui: &mut Ui,
     commands: &[CommandPaletteResult],
-    commands_catalog: &[(String, Command, String)],
+    commands_catalog: &[CommandPaletteCatalogEntry],
     selected_index: usize,
     ui_font_size: f32,
     summary_label: &str,
@@ -41,47 +42,143 @@ pub(super) fn render_command_palette_result_list(
 
     ui.label(RichText::new(summary_label).small());
     let viewport_height = ui.available_height();
+    let display_rows = command_palette_display_rows(commands, commands_catalog);
     let mut scroll_area = ScrollArea::vertical();
     if scroll_to_selection {
+        let selected_display_index =
+            command_palette_selected_display_row_index(&display_rows, selected_index);
         scroll_area = scroll_area.vertical_scroll_offset(selected_row_scroll_offset(
-            selected_index,
-            commands.len(),
+            selected_display_index,
+            display_rows.len(),
             COMMAND_PALETTE_ROW_HEIGHT,
             viewport_height,
         ));
     }
     let label_font = FontId::new(ui_font_size, FontFamily::Proportional);
+    let section_font = FontId::new((ui_font_size * 0.78).max(10.0), FontFamily::Proportional);
     let chord_font = FontId::new(ui_font_size, FontFamily::Monospace);
 
     scroll_area.show_rows(
         ui,
         COMMAND_PALETTE_ROW_HEIGHT,
-        commands.len(),
+        display_rows.len(),
         |ui, rows| {
-            for idx in rows {
-                let Some(result) = commands.get(idx) else {
-                    continue;
-                };
-                let Some(row) =
-                    CommandPalettePreparedRow::new(result, commands_catalog, idx, commands.len())
-                else {
-                    continue;
-                };
-                let selected = idx == selected_index;
-                let response = render_command_palette_result_row(
-                    ui,
-                    &row.display,
-                    selected,
-                    &label_font,
-                    &chord_font,
-                );
-                if response.clicked() {
-                    command_to_run = Some(row.command.clone());
+            for display_idx in rows {
+                match display_rows.get(display_idx) {
+                    Some(CommandPaletteDisplayRow::SectionHeader { section }) => {
+                        render_command_palette_section_header(ui, section, &section_font);
+                    }
+                    Some(CommandPaletteDisplayRow::Command { result_index }) => {
+                        let Some(result) = commands.get(*result_index) else {
+                            continue;
+                        };
+                        let Some(row) = CommandPalettePreparedRow::new(
+                            result,
+                            commands_catalog,
+                            *result_index,
+                            commands.len(),
+                        ) else {
+                            continue;
+                        };
+                        let selected = *result_index == selected_index;
+                        let response = render_command_palette_result_row(
+                            ui,
+                            &row.display,
+                            selected,
+                            &label_font,
+                            &chord_font,
+                        );
+                        if response.clicked() {
+                            command_to_run = Some(row.command.clone());
+                        }
+                    }
+                    None => {}
                 }
             }
         },
     );
     command_to_run
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommandPaletteDisplayRow<'a> {
+    SectionHeader { section: &'a str },
+    Command { result_index: usize },
+}
+
+fn command_palette_display_rows<'a>(
+    commands: &[CommandPaletteResult],
+    commands_catalog: &'a [CommandPaletteCatalogEntry],
+) -> Vec<CommandPaletteDisplayRow<'a>> {
+    let mut rows = Vec::with_capacity(commands.len().saturating_mul(2));
+    let mut previous_section = None;
+    for (result_index, result) in commands.iter().enumerate() {
+        let Some((_, _, _, section)) = result.catalog_entry(commands_catalog) else {
+            continue;
+        };
+        if !section.is_empty() && previous_section != Some(section) {
+            rows.push(CommandPaletteDisplayRow::SectionHeader { section });
+        }
+        rows.push(CommandPaletteDisplayRow::Command { result_index });
+        previous_section = Some(section);
+    }
+    rows
+}
+
+fn command_palette_selected_display_row_index(
+    display_rows: &[CommandPaletteDisplayRow<'_>],
+    selected_index: usize,
+) -> usize {
+    display_rows
+        .iter()
+        .position(|row| {
+            matches!(
+                row,
+                CommandPaletteDisplayRow::Command { result_index }
+                    if *result_index == selected_index
+            )
+        })
+        .unwrap_or_else(|| display_rows.len().saturating_sub(1))
+}
+
+fn render_command_palette_section_header(
+    ui: &mut Ui,
+    section: &str,
+    section_font: &FontId,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(ui.available_width(), COMMAND_PALETTE_ROW_HEIGHT),
+        Sense::hover(),
+    );
+    let painter = ui.painter();
+    let visuals = ui.visuals();
+    let section = command_palette_row_display_text(
+        section,
+        COMMAND_PALETTE_ROW_SECTION_MAX_CHARS,
+        "Commands",
+    );
+    let enabled = ui.is_enabled();
+
+    response.widget_info(|| command_palette_section_widget_info(section.as_ref(), enabled));
+    painter.text(
+        pos2(
+            rect.left() + COMMAND_PALETTE_ROW_PADDING_X,
+            rect.top() + 11.0,
+        ),
+        egui::Align2::LEFT_TOP,
+        section.as_ref(),
+        section_font.clone(),
+        visuals.weak_text_color(),
+    );
+
+    response
+}
+
+fn command_palette_section_widget_info(section: &str, enabled: bool) -> WidgetInfo {
+    let mut info = WidgetInfo::new(WidgetType::Label);
+    info.enabled = enabled;
+    info.label = Some(format!("Section {section}"));
+    info
 }
 
 fn render_command_palette_result_row(
@@ -142,11 +239,11 @@ struct CommandPalettePreparedRow<'a> {
 impl<'a> CommandPalettePreparedRow<'a> {
     fn new(
         result: &CommandPaletteResult,
-        commands_catalog: &'a [(String, Command, String)],
+        commands_catalog: &'a [CommandPaletteCatalogEntry],
         row_index: usize,
         row_count: usize,
     ) -> Option<Self> {
-        let (label, command, chord) = result.catalog_entry(commands_catalog)?;
+        let (label, command, chord, _section) = result.catalog_entry(commands_catalog)?;
         Some(Self {
             command,
             display: CommandPaletteRowDisplay::new(label, chord, row_index, row_count),
@@ -523,15 +620,31 @@ mod tests {
     use super::super::CommandPaletteResult;
     use super::{
         COMMAND_PALETTE_ROW_CHORD_MAX_CHARS, COMMAND_PALETTE_ROW_DISPLAY_SCAN_CHARS,
-        COMMAND_PALETTE_ROW_LABEL_MAX_CHARS, CommandPalettePreparedRow, CommandPaletteRowDisplay,
+        COMMAND_PALETTE_ROW_LABEL_MAX_CHARS, CommandPaletteCatalogEntry, CommandPaletteDisplayRow,
+        CommandPalettePreparedRow, CommandPaletteRowDisplay, command_palette_display_rows,
         command_palette_empty_state_label, command_palette_result_summary,
         command_palette_row_accessibility_label, command_palette_row_display_text,
         command_palette_row_tooltip, command_palette_row_widget_info,
+        command_palette_section_widget_info, command_palette_selected_display_row_index,
         command_palette_write_row_run_label, command_palette_write_row_tooltip_text,
     };
     use eframe::egui::WidgetType;
     use kuroya_core::Command;
     use std::borrow::Cow;
+
+    fn command_palette_catalog_row(
+        label: &str,
+        command: Command,
+        chord: &str,
+        section: &str,
+    ) -> CommandPaletteCatalogEntry {
+        (
+            label.to_owned(),
+            command,
+            chord.to_owned(),
+            section.to_owned(),
+        )
+    }
 
     #[test]
     fn command_palette_empty_state_names_failed_query() {
@@ -770,11 +883,88 @@ mod tests {
     }
 
     #[test]
+    fn command_palette_section_widget_info_names_section() {
+        let info = command_palette_section_widget_info("Workspace", false);
+
+        assert_eq!(info.typ, WidgetType::Label);
+        assert!(!info.enabled);
+        assert_eq!(info.label.as_deref(), Some("Section Workspace"));
+    }
+
+    #[test]
+    fn command_palette_display_rows_insert_headers_on_section_switches() {
+        let commands_catalog = vec![
+            command_palette_catalog_row("Quick Open", Command::ToggleQuickOpen, "", "Commands"),
+            command_palette_catalog_row("Toggle Terminal", Command::ToggleTerminal, "", "Commands"),
+            command_palette_catalog_row(
+                "Open Recent Workspace",
+                Command::OpenWorkspace("workspace".into()),
+                "",
+                "Recent Workspaces",
+            ),
+            command_palette_catalog_row(
+                "Toggle Palette",
+                Command::ToggleCommandPalette,
+                "",
+                "Commands",
+            ),
+        ];
+        let commands = vec![
+            CommandPaletteResult {
+                catalog_index: 0,
+                score: 0,
+                match_score: 0,
+            },
+            CommandPaletteResult {
+                catalog_index: 1,
+                score: 0,
+                match_score: 0,
+            },
+            CommandPaletteResult {
+                catalog_index: 2,
+                score: 0,
+                match_score: 0,
+            },
+            CommandPaletteResult {
+                catalog_index: 3,
+                score: 0,
+                match_score: 0,
+            },
+        ];
+
+        let display_rows = command_palette_display_rows(&commands, &commands_catalog);
+
+        assert_eq!(
+            display_rows,
+            vec![
+                CommandPaletteDisplayRow::SectionHeader {
+                    section: "Commands"
+                },
+                CommandPaletteDisplayRow::Command { result_index: 0 },
+                CommandPaletteDisplayRow::Command { result_index: 1 },
+                CommandPaletteDisplayRow::SectionHeader {
+                    section: "Recent Workspaces"
+                },
+                CommandPaletteDisplayRow::Command { result_index: 2 },
+                CommandPaletteDisplayRow::SectionHeader {
+                    section: "Commands"
+                },
+                CommandPaletteDisplayRow::Command { result_index: 3 },
+            ]
+        );
+        assert_eq!(
+            command_palette_selected_display_row_index(&display_rows, 2),
+            4
+        );
+    }
+
+    #[test]
     fn command_palette_prepared_row_preserves_catalog_command_for_dispatch() {
-        let commands_catalog = vec![(
-            "  Quick\nOpen  ".to_owned(),
+        let commands_catalog = vec![command_palette_catalog_row(
+            "  Quick\nOpen  ",
             Command::ToggleCommandPalette,
-            " Ctrl\nP ".to_owned(),
+            " Ctrl\nP ",
+            "Commands",
         )];
         let result = CommandPaletteResult {
             catalog_index: 0,
@@ -798,10 +988,11 @@ mod tests {
 
     #[test]
     fn command_palette_prepared_row_skips_stale_catalog_index() {
-        let commands_catalog = vec![(
-            "Quick Open".to_owned(),
+        let commands_catalog = vec![command_palette_catalog_row(
+            "Quick Open",
             Command::ToggleCommandPalette,
-            "Ctrl+P".to_owned(),
+            "Ctrl+P",
+            "Commands",
         )];
         let result = CommandPaletteResult {
             catalog_index: 3,

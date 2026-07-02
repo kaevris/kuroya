@@ -20,7 +20,7 @@ fn save_session_replaces_existing_snapshot_without_temp_files() {
     );
     assert_no_session_temps(&workspace);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -36,7 +36,7 @@ fn save_session_skips_duplicate_snapshot_bytes() {
     assert!(session_snapshot_files_for_test(&workspace).is_empty());
     assert_no_session_temps(&workspace);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -57,7 +57,7 @@ fn save_session_replaces_current_when_snapshot_dir_is_obstructed() {
     assert!(snapshots.is_file());
     assert_no_session_temps(&workspace);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn save_session_quarantines_oversized_existing_session_before_replacing() {
     );
     assert_no_session_temps(&workspace);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[tokio::test]
@@ -112,7 +112,7 @@ async fn save_session_async_replaces_existing_snapshot_without_temp_files() {
     );
     assert_no_session_temps(&workspace);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[tokio::test]
@@ -135,7 +135,7 @@ async fn save_session_async_replaces_current_when_snapshot_dir_is_obstructed() {
     assert!(snapshots.is_file());
     assert_no_session_temps(&workspace);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[tokio::test]
@@ -165,7 +165,7 @@ async fn save_session_async_quarantines_oversized_existing_session_before_replac
     );
     assert_no_session_temps(&workspace);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -199,5 +199,5 @@ fn session_snapshots_are_bounded_to_recent_backups() {
     assert!(backup_texts.contains(&"recovery 3".to_owned()));
     assert!(backup_texts.contains(&"recovery 10".to_owned()));
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }

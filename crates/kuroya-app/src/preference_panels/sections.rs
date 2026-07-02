@@ -7,22 +7,30 @@ mod appearance;
 mod editor;
 mod files;
 mod general;
+mod lsp;
+mod scrollbars;
 mod terminal;
 mod vim;
 
 pub(super) const SETTINGS_SECTION_GENERAL: usize = 0;
 pub(super) const SETTINGS_SECTION_EDITOR: usize = 1;
-pub(super) const SETTINGS_SECTION_VIM: usize = 2;
-pub(super) const SETTINGS_SECTION_TERMINAL: usize = 3;
-pub(super) const SETTINGS_SECTION_FILES: usize = 4;
-pub(super) const SETTINGS_SECTION_APPEARANCE: usize = 5;
-pub(super) const SETTINGS_SECTIONS: [&str; 6] = [
+pub(super) const SETTINGS_SECTION_LSP: usize = 2;
+pub(super) const SETTINGS_SECTION_VIM: usize = 3;
+pub(super) const SETTINGS_SECTION_TERMINAL: usize = 4;
+pub(super) const SETTINGS_SECTION_FILES: usize = 5;
+pub(super) const SETTINGS_SECTION_APPEARANCE: usize = 6;
+pub(super) const SETTINGS_SECTION_SOURCE_CONTROL: usize = 7;
+pub(super) const SETTINGS_SECTION_DEVELOPER: usize = 8;
+pub(super) const SETTINGS_SECTIONS: [&str; 9] = [
     "General",
     "Editor",
+    "LSP",
     "Vim",
     "Terminal",
     "Files",
     "Appearance",
+    "Source Control",
+    "Developer",
 ];
 pub(super) const SETTINGS_DISPLAY_TEXT_MAX_CHARS: usize = 240;
 pub(super) const SETTINGS_TEXT_INPUT_MAX_CHARS: usize = 8_192;
@@ -32,10 +40,13 @@ pub(super) const SETTINGS_TARGET_EDITOR_TEXT_LAYOUT: &str = "settings.editor.tex
 pub(super) const SETTINGS_TARGET_EDITOR_DISPLAY: &str = "settings.editor.display";
 pub(super) const SETTINGS_TARGET_EDITOR_TYPING: &str = "settings.editor.typing";
 pub(super) const SETTINGS_TARGET_EDITOR_LANGUAGE: &str = "settings.editor.language";
+pub(super) const SETTINGS_TARGET_SCROLLBARS: &str = "settings.scrollbars";
+pub(super) const SETTINGS_TARGET_LSP: &str = "settings.lsp";
 pub(super) const SETTINGS_TARGET_EDITOR_CURSOR: &str = "settings.editor.cursor";
 pub(super) const SETTINGS_TARGET_EDITOR_CODE_VIEW: &str = "settings.editor.code_view";
 pub(super) const SETTINGS_TARGET_EDITOR_DIFF: &str = "settings.editor.diff";
-pub(super) const SETTINGS_TARGET_EDITOR_SOURCE_CONTROL: &str = "settings.editor.source_control";
+pub(super) const SETTINGS_TARGET_SOURCE_CONTROL: &str = "settings.source_control";
+pub(super) const SETTINGS_TARGET_EDITOR_SOURCE_CONTROL: &str = SETTINGS_TARGET_SOURCE_CONTROL;
 pub(super) const SETTINGS_TARGET_VIM_KEYBINDINGS: &str = "settings.vim.keybindings";
 pub(super) const SETTINGS_TARGET_TERMINAL_PROFILE: &str = "settings.terminal.profile";
 pub(super) const SETTINGS_TARGET_TERMINAL_BUFFER: &str = "settings.terminal.buffer";
@@ -45,6 +56,7 @@ pub(super) const SETTINGS_TARGET_TERMINAL_INTERACTION: &str = "settings.terminal
 pub(super) const SETTINGS_TARGET_FILES_SAVE_ACTIONS: &str = "settings.files.save_actions";
 pub(super) const SETTINGS_TARGET_FILES_SAVE_CLEANUP: &str = "settings.files.save_cleanup";
 pub(super) const SETTINGS_TARGET_APPEARANCE: &str = "settings.appearance";
+pub(super) const SETTINGS_TARGET_DEVELOPER: &str = "settings.developer";
 
 pub(super) struct SettingsHighlightState<'a> {
     active_target: Option<&'a str>,
@@ -457,6 +469,49 @@ pub(super) fn render_editor_settings(
     highlight: &mut SettingsHighlightState<'_>,
 ) {
     editor::render_editor_settings(ui, draft, highlight);
+    scrollbars::render_scrollbar_settings_with_highlight(ui, draft, highlight);
+}
+
+pub(super) fn render_lsp_settings(
+    ui: &mut egui::Ui,
+    draft: &mut EditorSettings,
+    highlight: &mut SettingsHighlightState<'_>,
+) {
+    lsp::render_lsp_settings_with_highlight(ui, draft, highlight);
+}
+
+pub(super) fn render_source_control_settings(
+    ui: &mut egui::Ui,
+    draft: &mut EditorSettings,
+    highlight: &mut SettingsHighlightState<'_>,
+) {
+    editor::render_source_control_settings(ui, draft, highlight);
+}
+
+pub(super) fn render_developer_settings(
+    ui: &mut egui::Ui,
+    draft: &mut EditorSettings,
+    highlight: &mut SettingsHighlightState<'_>,
+) {
+    settings_target_block(ui, highlight, SETTINGS_TARGET_DEVELOPER, |ui| {
+        egui::Grid::new("settings_developer_devtools_grid")
+            .num_columns(2)
+            .spacing([18.0, 10.0])
+            .show(ui, |ui| {
+                ui.label("Devtools logging");
+                ui.checkbox(
+                    &mut draft.devtools_verbose_logging,
+                    "Verbose devtools logging",
+                );
+                ui.end_row();
+
+                ui.label("Devtools profiling");
+                ui.add_enabled_ui(cfg!(debug_assertions), |ui| {
+                    ui.checkbox(&mut draft.devtools_profiling_enabled, "Enable profiling");
+                });
+                ui.end_row();
+            });
+    });
 }
 
 pub(super) fn render_vim_settings(
@@ -524,8 +579,9 @@ pub(super) fn render_appearance_settings(
 #[cfg(test)]
 mod tests {
     use super::{
-        SETTINGS_DISPLAY_TEXT_MAX_CHARS, SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_EDITOR,
-        SETTINGS_SECTION_GENERAL, SETTINGS_TEXT_INPUT_MAX_CHARS, bounded_settings_display_text,
+        SETTINGS_DISPLAY_TEXT_MAX_CHARS, SETTINGS_SECTION_DEVELOPER, SETTINGS_SECTION_EDITOR,
+        SETTINGS_SECTION_GENERAL, SETTINGS_SECTION_LSP, SETTINGS_SECTION_VIM, SETTINGS_SECTIONS,
+        SETTINGS_TEXT_INPUT_MAX_CHARS, bounded_settings_display_text,
         bounded_settings_multiline_input, bounded_singleline_text_edit,
         finite_f32_drag_display_value, guarded_f32_drag_value, render_settings_sidebar,
         settings_sidebar_row_width,
@@ -537,15 +593,23 @@ mod tests {
         let ctx = egui::Context::default();
         let mut selected = SETTINGS_SECTION_GENERAL;
 
-        run_settings_sidebar_frame(
+        assert!(run_settings_sidebar_frame(
             &ctx,
             &mut selected,
             Some(SETTINGS_SECTION_GENERAL),
             Some(Key::ArrowDown),
-        );
+        ));
 
         assert_eq!(selected, SETTINGS_SECTION_EDITOR);
-        assert!(run_settings_sidebar_frame(&ctx, &mut selected, None, None));
+        run_settings_sidebar_frame(&ctx, &mut selected, None, Some(Key::ArrowDown));
+        assert_eq!(selected, SETTINGS_SECTION_LSP);
+        run_settings_sidebar_frame(
+            &ctx,
+            &mut selected,
+            Some(SETTINGS_SECTION_LSP),
+            Some(Key::ArrowDown),
+        );
+        assert_eq!(selected, SETTINGS_SECTION_VIM);
     }
 
     #[test]
@@ -565,7 +629,28 @@ mod tests {
 
         run_settings_sidebar_frame(&ctx, &mut selected, None, None);
 
-        assert_eq!(selected, SETTINGS_SECTION_APPEARANCE);
+        assert_eq!(selected, SETTINGS_SECTION_DEVELOPER);
+    }
+
+    #[test]
+    fn settings_sidebar_sections_keep_expected_order() {
+        assert_eq!(
+            SETTINGS_SECTIONS,
+            [
+                "General",
+                "Editor",
+                "LSP",
+                "Vim",
+                "Terminal",
+                "Files",
+                "Appearance",
+                "Source Control",
+                "Developer",
+            ]
+        );
+        assert_eq!(SETTINGS_SECTIONS[SETTINGS_SECTION_LSP], "LSP");
+        assert_eq!(SETTINGS_SECTIONS[SETTINGS_SECTION_VIM], "Vim");
+        assert_eq!(SETTINGS_SECTION_DEVELOPER, SETTINGS_SECTIONS.len() - 1);
     }
 
     #[test]

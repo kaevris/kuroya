@@ -217,7 +217,7 @@ fn app_state_round_trips_recent_projects_atomically() {
     );
     assert_no_app_state_temps(&workspace);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn app_state_loads_old_files_without_vim_keybindings() {
     assert_eq!(loaded.vim_keybindings, None);
     assert_eq!(loaded.vim, None);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -257,7 +257,7 @@ fn app_state_load_defaults_when_state_file_is_missing() {
     assert!(!path.exists());
     assert!(quarantined_app_state_files(&workspace).is_empty());
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -276,7 +276,7 @@ fn app_state_load_quarantines_corrupt_state_file_and_defaults() {
     assert_eq!(quarantined.len(), 1);
     assert_eq!(fs::read_to_string(&quarantined[0]).unwrap(), "{not json");
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -302,7 +302,7 @@ fn app_state_load_quarantines_oversized_state_file_and_defaults() {
         APP_STATE_MAX_BYTES + 1
     );
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 fn quarantined_app_state_files(dir: &Path) -> Vec<PathBuf> {

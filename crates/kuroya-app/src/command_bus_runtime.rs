@@ -302,6 +302,25 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_dispatch_cache_pushes_command_palette_ctrl_shift_p() {
+        let mut cache = ShortcutDispatchCache::default();
+        cache.refresh(&[KeyBinding {
+            chord: "Ctrl+Shift+P".to_owned(),
+            command: Command::ToggleCommandPalette,
+        }]);
+
+        assert_eq!(
+            dispatched_commands_for_shortcut(
+                &cache,
+                false,
+                Key::P,
+                Modifiers::CTRL | Modifiers::SHIFT,
+            ),
+            vec![Command::ToggleCommandPalette]
+        );
+    }
+
+    #[test]
     fn terminal_focused_shortcut_dispatch_keeps_order_after_filtered_binding() {
         let mut cache = ShortcutDispatchCache::default();
         cache.refresh(&[

@@ -25,6 +25,8 @@ use kuroya_core::{
     TerminalSplitCwd, TerminalTabsFocusMode, TerminalTabsHideCondition, TerminalTabsLocation,
     TerminalTabsShowActions, TerminalTabsShowActiveTerminal, ThemeSettings,
 };
+use serde_json::{Map, Value};
+use std::collections::BTreeSet;
 
 #[test]
 fn draft_apply_sanitizes_vim_binding_rows() {
@@ -97,11 +99,74 @@ fn draft_apply_sanitizes_vim_binding_rows() {
 }
 
 #[test]
-fn draft_apply_copies_word_separators() {
+fn draft_apply_covers_every_settings_panel_field() {
+    let default_values = serialized_settings_fields(&EditorSettings::default());
+    let draft = draft_apply_copy_fixture();
+    let draft_values = serialized_settings_fields(&draft);
     let mut settings = EditorSettings::default();
-    let draft = EditorSettings {
+
+    apply_settings_panel_draft(
+        &mut settings,
+        &draft,
+        " fonts/editor.ttf ",
+        " fonts/ui.ttf ",
+    );
+
+    let applied_values = serialized_settings_fields(&settings);
+    let intentionally_not_panel_applied = draft_apply_intentionally_excluded_fields();
+    let intentionally_normalized = draft_apply_intentionally_normalized_fields();
+    let mut unchanged_fixture_fields = Vec::new();
+    let mut missing_exact_copies = Vec::new();
+    let mut missing_normalized_copies = Vec::new();
+
+    for (field, draft_value) in &draft_values {
+        let field = field.as_str();
+        if intentionally_not_panel_applied.contains(field) {
+            continue;
+        }
+
+        let default_value = default_values
+            .get(field)
+            .expect("serialized settings fields should match");
+        let applied_value = applied_values
+            .get(field)
+            .expect("serialized settings fields should match");
+
+        if default_value == draft_value {
+            unchanged_fixture_fields.push(field.to_owned());
+        }
+
+        if intentionally_normalized.contains(field) {
+            if applied_value == default_value {
+                missing_normalized_copies.push(field.to_owned());
+            }
+        } else if applied_value != draft_value {
+            missing_exact_copies.push(format!(
+                "{field}: expected {draft_value:?}, got {applied_value:?}"
+            ));
+        }
+    }
+
+    assert!(
+        unchanged_fixture_fields.is_empty(),
+        "draft apply coverage fixture leaves fields at their default values: {unchanged_fixture_fields:?}"
+    );
+    assert!(
+        missing_exact_copies.is_empty(),
+        "settings fields missing exact draft apply: {missing_exact_copies:?}"
+    );
+    assert!(
+        missing_normalized_copies.is_empty(),
+        "normalized settings fields appear not to be draft-applied: {missing_normalized_copies:?}"
+    );
+}
+
+fn draft_apply_copy_fixture() -> EditorSettings {
+    EditorSettings {
         font_size: 15.0,
         ui_font_size: 14.0,
+        editor_font_path: Some("fonts/editor.ttf".to_owned()),
+        ui_font_path: Some("fonts/ui.ttf".to_owned()),
         font_family: " Cascadia Code ".to_owned(),
         font_weight: "600".to_owned(),
         font_ligatures: "true".to_owned(),
@@ -151,6 +216,15 @@ fn draft_apply_copies_word_separators() {
         linked_editing: true,
         rename_on_type: true,
         tab_focus_mode: true,
+        vim_keybindings: true,
+        vim: EditorVimSettings {
+            disabled_bindings: vec!["<C-n>".to_owned()],
+            key_overrides: vec![EditorVimKeyOverride {
+                before: "K".to_owned(),
+                after: String::new(),
+                command: Some(Command::RequestHover),
+            }],
+        },
         quick_suggestions: true,
         quick_suggestions_delay_ms: 25,
         suggest_on_trigger_characters: false,
@@ -239,10 +313,10 @@ fn draft_apply_copies_word_separators() {
         code_lens_font_size: 11,
         goto_location_multiple_definitions: EditorGotoLocationMultiple::GotoAndPeek,
         goto_location_multiple_type_definitions: EditorGotoLocationMultiple::Goto,
-        goto_location_multiple_declarations: EditorGotoLocationMultiple::Peek,
+        goto_location_multiple_declarations: EditorGotoLocationMultiple::GotoAndPeek,
         goto_location_multiple_implementations: EditorGotoLocationMultiple::GotoAndPeek,
         goto_location_multiple_references: EditorGotoLocationMultiple::Goto,
-        goto_location_multiple_tests: EditorGotoLocationMultiple::Peek,
+        goto_location_multiple_tests: EditorGotoLocationMultiple::Goto,
         goto_location_alternative_definition_command: " editor.action.peekDefinition ".to_owned(),
         goto_location_alternative_type_definition_command: " editor.action.peekTypeDefinition "
             .to_owned(),
@@ -270,7 +344,7 @@ fn draft_apply_copies_word_separators() {
         format_on_paste: true,
         paste_as_enabled: false,
         paste_as_show_paste_selector: EditorPasteAsShowPasteSelector::Never,
-        autosave: true,
+        autosave: false,
         autosave_mode: EditorAutoSaveMode::OnFocusChange,
         autosave_delay_ms: 1_500,
         smooth_scrolling: false,
@@ -283,11 +357,11 @@ fn draft_apply_copies_word_separators() {
         fast_scroll_sensitivity: 9.0,
         mouse_wheel_zoom: true,
         scrollbar_vertical: EditorScrollbarVisibility::Visible,
-        scrollbar_horizontal: EditorScrollbarVisibility::Hidden,
+        scrollbar_horizontal: EditorScrollbarVisibility::Visible,
         scrollbar_vertical_scrollbar_size: 18,
         scrollbar_horizontal_scrollbar_size: 16,
-        scrollbar_scroll_by_page: true,
         scrollbar_ignore_horizontal_scrollbar_in_content_height: true,
+        explorer_scrollbar: EditorScrollbarVisibility::Visible,
         padding_top: 12,
         padding_bottom: 24,
         links: false,
@@ -303,7 +377,7 @@ fn draft_apply_copies_word_separators() {
         sticky_scroll_default_model: EditorStickyScrollDefaultModel::IndentationModel,
         sticky_scroll_scroll_with_editor: false,
         line_height: 1.7,
-        minimap: false,
+        minimap: true,
         minimap_side: EditorMinimapSide::Left,
         minimap_autohide: EditorMinimapAutohide::Scroll,
         minimap_size: EditorMinimapSize::Fit,
@@ -337,6 +411,13 @@ fn draft_apply_copies_word_separators() {
         status_bar_visible: false,
         devtools_verbose_logging: true,
         devtools_profiling_enabled: true,
+        lsp_servers: vec![LspServerConfig {
+            language: "rust".to_owned(),
+            command: "rust-analyzer".to_owned(),
+            args: vec!["--log-file".to_owned(), "rust-analyzer.log".to_owned()],
+            extensions: vec!["rs".to_owned()],
+            root_markers: vec!["Cargo.toml".to_owned()],
+        }],
         window_zoom_level: 1.25,
         line_numbers: EditorLineNumbers::Relative,
         line_decorations_width: EditorLineDecorationsWidth::Pixels(16.0),
@@ -398,7 +479,7 @@ fn draft_apply_copies_word_separators() {
         diff_original_editable: true,
         diff_code_lens: true,
         diff_accessibility_verbose: true,
-        diff_hide_unchanged_regions: false,
+        diff_hide_unchanged_regions: true,
         diff_context_lines: 1,
         diff_hide_unchanged_regions_minimum_line_count: 9,
         diff_hide_unchanged_regions_reveal_line_count: 15,
@@ -564,7 +645,7 @@ fn draft_apply_copies_word_separators() {
         bracket_pair_colorization: false,
         bracket_pair_colorization_independent_color_pool_per_bracket_type: true,
         bracket_pair_guides: EditorBracketPairGuideMode::On,
-        bracket_pair_guides_horizontal: EditorBracketPairGuideMode::Off,
+        bracket_pair_guides_horizontal: EditorBracketPairGuideMode::On,
         highlight_active_bracket_pair: false,
         match_brackets: EditorMatchBrackets::Near,
         folding: false,
@@ -597,10 +678,10 @@ fn draft_apply_copies_word_separators() {
         terminal_cursor_style: TerminalCursorStyle::Underline,
         terminal_cursor_width: 3.0,
         terminal_cursor_blinking: true,
-        terminal_cursor_style_inactive: TerminalInactiveCursorStyle::Outline,
+        terminal_cursor_style_inactive: TerminalInactiveCursorStyle::Line,
         terminal_draw_bold_text_in_bright_colors: false,
         terminal_minimum_contrast_ratio: 3.5,
-        terminal_enable_bell: false,
+        terminal_enable_bell: true,
         terminal_bell_duration_ms: 300,
         terminal_show_exit_alert: false,
         terminal_hide_on_startup: TerminalHideOnStartup::Always,
@@ -615,12 +696,12 @@ fn draft_apply_copies_word_separators() {
         terminal_tabs_hide_condition: TerminalTabsHideCondition::Never,
         terminal_tabs_show_active_terminal: TerminalTabsShowActiveTerminal::Always,
         terminal_tabs_show_actions: TerminalTabsShowActions::Never,
-        terminal_tabs_focus_mode: TerminalTabsFocusMode::SingleClick,
+        terminal_tabs_focus_mode: TerminalTabsFocusMode::DoubleClick,
         terminal_tabs_location: TerminalTabsLocation::Left,
         terminal_right_click_behavior: TerminalRightClickBehavior::Paste,
         terminal_middle_click_behavior: TerminalMiddleClickBehavior::Paste,
         terminal_alt_click_moves_cursor: false,
-        terminal_copy_on_selection: true,
+        terminal_copy_on_selection: false,
         terminal_ignore_bracketed_paste_mode: true,
         terminal_enable_multi_line_paste_warning: TerminalMultiLinePasteWarning::Always,
         terminal_word_separators: ":".to_owned(),
@@ -630,8 +711,22 @@ fn draft_apply_copies_word_separators() {
         trim_trailing_whitespace: true,
         insert_final_newline: true,
         trim_final_newlines: true,
+        theme: ThemeSettings {
+            name: "Panel Theme".to_owned(),
+            background: [1, 2, 3],
+            panel: [4, 5, 6],
+            ..ThemeSettings::default()
+        },
+        custom_theme_paths: vec!["themes/live.toml".to_owned()],
+        active_custom_theme_path: Some("themes/live.toml".to_owned()),
         ..EditorSettings::default()
-    };
+    }
+}
+
+#[test]
+fn draft_apply_copies_word_separators() {
+    let mut settings = EditorSettings::default();
+    let draft = draft_apply_copy_fixture();
 
     apply_settings_panel_draft(
         &mut settings,
@@ -826,7 +921,7 @@ fn draft_apply_copies_word_separators() {
     );
     assert_eq!(
         settings.goto_location_multiple_declarations,
-        EditorGotoLocationMultiple::Peek
+        EditorGotoLocationMultiple::GotoAndPeek
     );
     assert_eq!(
         settings.goto_location_multiple_implementations,
@@ -838,7 +933,7 @@ fn draft_apply_copies_word_separators() {
     );
     assert_eq!(
         settings.goto_location_multiple_tests,
-        EditorGotoLocationMultiple::Peek
+        EditorGotoLocationMultiple::Goto
     );
     assert_eq!(
         settings.goto_location_alternative_definition_command,
@@ -880,7 +975,7 @@ fn draft_apply_copies_word_separators() {
     assert!(!settings.parameter_hints_cycle);
     assert!(settings.format_on_save);
     assert!(settings.format_on_paste);
-    assert!(settings.autosave);
+    assert!(!settings.autosave);
     assert_eq!(settings.autosave_mode, EditorAutoSaveMode::OnFocusChange);
     assert_eq!(settings.autosave_delay_ms, 1_500);
     assert!(!settings.smooth_scrolling);
@@ -898,12 +993,15 @@ fn draft_apply_copies_word_separators() {
     );
     assert_eq!(
         settings.scrollbar_horizontal,
-        EditorScrollbarVisibility::Hidden
+        EditorScrollbarVisibility::Visible
     );
     assert_eq!(settings.scrollbar_vertical_scrollbar_size, 18);
     assert_eq!(settings.scrollbar_horizontal_scrollbar_size, 16);
-    assert!(settings.scrollbar_scroll_by_page);
     assert!(settings.scrollbar_ignore_horizontal_scrollbar_in_content_height);
+    assert_eq!(
+        settings.explorer_scrollbar,
+        EditorScrollbarVisibility::Visible
+    );
     assert_eq!(settings.padding_top, 12);
     assert_eq!(settings.padding_bottom, 24);
     assert!(!settings.links);
@@ -928,7 +1026,7 @@ fn draft_apply_copies_word_separators() {
     );
     assert!(!settings.sticky_scroll_scroll_with_editor);
     assert_eq!(settings.line_height, 1.7);
-    assert!(!settings.minimap);
+    assert!(settings.minimap);
     assert_eq!(settings.minimap_side, EditorMinimapSide::Left);
     assert_eq!(settings.minimap_autohide, EditorMinimapAutohide::Scroll);
     assert_eq!(settings.minimap_size, EditorMinimapSize::Fit);
@@ -1093,7 +1191,7 @@ fn draft_apply_copies_word_separators() {
     assert!(settings.diff_original_editable);
     assert!(settings.diff_code_lens);
     assert!(settings.diff_accessibility_verbose);
-    assert!(!settings.diff_hide_unchanged_regions);
+    assert!(settings.diff_hide_unchanged_regions);
     assert_eq!(settings.diff_context_lines, 1);
     assert_eq!(settings.diff_hide_unchanged_regions_minimum_line_count, 9);
     assert_eq!(settings.diff_hide_unchanged_regions_reveal_line_count, 15);
@@ -1342,7 +1440,7 @@ fn draft_apply_copies_word_separators() {
     assert_eq!(settings.bracket_pair_guides, EditorBracketPairGuideMode::On);
     assert_eq!(
         settings.bracket_pair_guides_horizontal,
-        EditorBracketPairGuideMode::Off
+        EditorBracketPairGuideMode::On
     );
     assert!(!settings.highlight_active_bracket_pair);
     assert_eq!(settings.match_brackets, EditorMatchBrackets::Near);
@@ -1396,11 +1494,11 @@ fn draft_apply_copies_word_separators() {
     assert!(settings.terminal_cursor_blinking);
     assert_eq!(
         settings.terminal_cursor_style_inactive,
-        TerminalInactiveCursorStyle::Outline
+        TerminalInactiveCursorStyle::Line
     );
     assert!(!settings.terminal_draw_bold_text_in_bright_colors);
     assert_eq!(settings.terminal_minimum_contrast_ratio, 3.5);
-    assert!(!settings.terminal_enable_bell);
+    assert!(settings.terminal_enable_bell);
     assert_eq!(settings.terminal_bell_duration_ms, 300);
     assert!(!settings.terminal_show_exit_alert);
     assert_eq!(
@@ -1438,7 +1536,7 @@ fn draft_apply_copies_word_separators() {
     );
     assert_eq!(
         settings.terminal_tabs_focus_mode,
-        TerminalTabsFocusMode::SingleClick
+        TerminalTabsFocusMode::DoubleClick
     );
     assert_eq!(settings.terminal_tabs_location, TerminalTabsLocation::Left);
     assert_eq!(
@@ -1450,7 +1548,7 @@ fn draft_apply_copies_word_separators() {
         TerminalMiddleClickBehavior::Paste
     );
     assert!(!settings.terminal_alt_click_moves_cursor);
-    assert!(settings.terminal_copy_on_selection);
+    assert!(!settings.terminal_copy_on_selection);
     assert!(settings.terminal_ignore_bracketed_paste_mode);
     assert_eq!(
         settings.terminal_enable_multi_line_paste_warning,
@@ -1697,4 +1795,34 @@ fn apply_settings_panel_draft_sanitizes_hidden_controls_in_text_settings() {
     assert_eq!(settings.word_segmenter_locales[0], " enUS ");
     assert!(settings.word_segmenter_locales[1].chars().count() <= 8_192);
     assert_eq!(settings.git_branch_prefix, " feature/ ");
+}
+
+fn serialized_settings_fields(settings: &EditorSettings) -> Map<String, Value> {
+    match serde_json::to_value(settings).expect("settings should serialize") {
+        Value::Object(fields) => fields,
+        other => panic!("settings should serialize as an object, got {other:?}"),
+    }
+}
+
+fn draft_apply_intentionally_excluded_fields() -> BTreeSet<&'static str> {
+    // These settings are owned outside the settings panel draft apply flow.
+    BTreeSet::from(["keymap", "schema_version", "updates_github_repository"])
+}
+
+fn draft_apply_intentionally_normalized_fields() -> BTreeSet<&'static str> {
+    // These fields are panel-applied through sanitizers, clamps, or list normalization.
+    BTreeSet::from([
+        "font_ligatures",
+        "font_variations",
+        "git_branch_protection",
+        "git_branch_random_name_dictionary",
+        "git_checkout_type",
+        "git_commands_to_log",
+        "git_path",
+        "git_scan_repositories",
+        "git_worktree_include_files",
+        "inline_suggest_experimental_suppress_inline_suggestions",
+        "terminal_shell_args",
+        "word_segmenter_locales",
+    ])
 }

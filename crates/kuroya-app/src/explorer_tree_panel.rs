@@ -7,6 +7,7 @@ use crate::{
     },
     path_display::display_error_label_cow,
     ui_icons::{IconKind, icon_label},
+    ui_scrollbars::{apply_themed_scrollbar_visuals, scrollbar_visibility, themed_scrollbar_style},
     ui_state::{
         handle_list_navigation_keys, plain_key_pressed, selected_row_scroll_offset,
         selection_page_step,
@@ -137,8 +138,17 @@ impl KuroyaApp {
             }
         }
 
+        let content_style = ui.style().clone();
+        ui.visuals_mut().clip_rect_margin = 0.0;
+        ui.spacing_mut().scroll = themed_scrollbar_style(
+            self.settings.scrollbar_vertical_scrollbar_size,
+            self.settings.scrollbar_vertical_scrollbar_size,
+            false,
+        );
+        apply_themed_scrollbar_visuals(ui);
+
         let mut scroll_area = ScrollArea::vertical()
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+            .scroll_bar_visibility(scrollbar_visibility(self.settings.explorer_scrollbar));
         if scroll_to_selection {
             scroll_area = scroll_area.vertical_scroll_offset(selected_row_scroll_offset(
                 selected_index,
@@ -153,6 +163,7 @@ impl KuroyaApp {
             self.settings.git_decorations_enabled,
         );
         scroll_area.show_rows(ui, EXPLORER_ROW_HEIGHT, entries.len(), |ui, rows| {
+            ui.set_style(content_style.clone());
             let (first_row, visible_entries) = visible_explorer_row_entries(&entries, rows);
             for (offset, entry) in visible_entries.iter().enumerate() {
                 let row = first_row + offset;

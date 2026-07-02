@@ -1,4 +1,4 @@
-use super::CommandPaletteResult;
+use super::{CommandPaletteCatalogEntry, CommandPaletteResult};
 use crate::{command_palette_items::CommandPaletteQueryMemoryEntry, history::NavigationLocation};
 use kuroya_core::{Command, PluginCommandRegistry, WorkspaceTask, keymap::KeyBinding};
 use std::{
@@ -22,7 +22,7 @@ pub(crate) struct CommandPaletteResultsCache {
     pub(super) workspace_tasks_runnable: bool,
     pub(super) plugin_commands: PluginCommandRegistry,
     pub(super) keybindings: Vec<KeyBinding>,
-    pub(super) commands_catalog: Vec<(String, Command, String)>,
+    pub(super) commands_catalog: Vec<CommandPaletteCatalogEntry>,
     pub(super) command_recent: VecDeque<Command>,
     pub(super) command_query_memory: VecDeque<CommandPaletteQueryMemoryEntry>,
     pub(super) summary_label: String,

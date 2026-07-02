@@ -329,6 +329,120 @@ fn lsp_servers_override_builtins_and_append_custom_servers() {
 }
 
 #[test]
+fn lsp_server_configs_normalize_in_memory_custom_servers() {
+    let mut settings = EditorSettings::default();
+    settings.lsp_servers = vec![
+        crate::lsp::LspServerConfig {
+            language: " Rust ".to_owned(),
+            command: " rust-analyzer-custom ".to_owned(),
+            args: vec![" --stdio ".to_owned()],
+            extensions: vec![".rs".to_owned(), "rs".to_owned(), ".".to_owned()],
+            root_markers: vec![" Cargo.toml ".to_owned()],
+        },
+        crate::lsp::LspServerConfig {
+            language: "kuroya-empty".to_owned(),
+            command: String::new(),
+            args: Vec::new(),
+            extensions: Vec::new(),
+            root_markers: Vec::new(),
+        },
+        crate::lsp::LspServerConfig {
+            language: " kuroya-test ".to_owned(),
+            command: " kuroya-lsp ".to_owned(),
+            args: vec![" --stdio ".to_owned()],
+            extensions: vec![".kuroya".to_owned(), "kuroya".to_owned(), ".".to_owned()],
+            root_markers: vec![" .kuroya-root ".to_owned()],
+        },
+        crate::lsp::LspServerConfig {
+            language: "RUST".to_owned(),
+            command: "rust-analyzer-final".to_owned(),
+            args: Vec::new(),
+            extensions: Vec::new(),
+            root_markers: Vec::new(),
+        },
+    ];
+
+    let servers = settings.lsp_server_configs();
+    let rust = servers
+        .iter()
+        .find(|server| server.language == "rust")
+        .expect("rust config should be present");
+    let custom = servers
+        .iter()
+        .find(|server| server.language == "kuroya-test")
+        .expect("custom config should be present");
+
+    assert_eq!(rust.command, "rust-analyzer-final");
+    assert_eq!(custom.command, "kuroya-lsp");
+    assert_eq!(custom.args, ["--stdio"]);
+    assert_eq!(custom.extensions, ["kuroya"]);
+    assert_eq!(custom.root_markers, [".kuroya-root"]);
+    assert!(!servers.iter().any(|server| server.language == " Rust "));
+    assert!(
+        !servers
+            .iter()
+            .any(|server| server.language == "kuroya-empty")
+    );
+}
+
+#[test]
+fn lsp_server_configs_sanitize_custom_servers() {
+    let mut settings = EditorSettings::default();
+    settings.lsp_servers = vec![
+        crate::lsp::LspServerConfig {
+            language: " Rust ".to_owned(),
+            command: " rust-analyzer-custom ".to_owned(),
+            args: vec![" --stdio ".to_owned()],
+            extensions: vec![".rs".to_owned(), "rs".to_owned(), ".".to_owned()],
+            root_markers: vec![" Cargo.toml ".to_owned()],
+        },
+        crate::lsp::LspServerConfig {
+            language: "kuroya-empty".to_owned(),
+            command: String::new(),
+            args: Vec::new(),
+            extensions: Vec::new(),
+            root_markers: Vec::new(),
+        },
+        crate::lsp::LspServerConfig {
+            language: " kuroya-test ".to_owned(),
+            command: " kuroya-lsp ".to_owned(),
+            args: vec![" --stdio ".to_owned()],
+            extensions: vec![".kuroya".to_owned(), "kuroya".to_owned(), ".".to_owned()],
+            root_markers: vec![" .kuroya-root ".to_owned()],
+        },
+        crate::lsp::LspServerConfig {
+            language: "RUST".to_owned(),
+            command: "rust-analyzer-final".to_owned(),
+            args: Vec::new(),
+            extensions: Vec::new(),
+            root_markers: Vec::new(),
+        },
+    ];
+
+    assert!(settings.sanitize());
+    assert_eq!(
+        settings.lsp_servers,
+        vec![
+            crate::lsp::LspServerConfig {
+                language: "rust".to_owned(),
+                command: "rust-analyzer-final".to_owned(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+            },
+            crate::lsp::LspServerConfig {
+                language: "kuroya-test".to_owned(),
+                command: "kuroya-lsp".to_owned(),
+                args: vec!["--stdio".to_owned()],
+                extensions: vec!["kuroya".to_owned()],
+                root_markers: vec![".kuroya-root".to_owned()],
+            },
+        ]
+    );
+    assert!(!settings.sanitize());
+}
+
+#[test]
 fn active_indentation_highlight_accepts_kuroya_union_values() {
     let focused: EditorSettings = toml::from_str("highlight_active_indentation = true\n")
         .expect("boolean active indent setting should load");

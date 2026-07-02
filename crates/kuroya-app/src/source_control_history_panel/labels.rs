@@ -34,6 +34,7 @@ pub(crate) fn source_control_commit_label(
 pub(super) struct SourceControlHistoryRowDisplay<'a> {
     pub(super) short_oid: Cow<'a, str>,
     pub(super) summary: Cow<'a, str>,
+    detail: String,
     label: String,
     pub(super) label_age_start: Option<usize>,
     author_visible: bool,
@@ -46,6 +47,10 @@ impl<'a> SourceControlHistoryRowDisplay<'a> {
         let summary = source_control_commit_summary_display_text(&commit.summary);
         let age = source_control_commit_age_label_at(commit, now_seconds);
         let author = show_author.then(|| source_control_commit_author_display_text(&commit.author));
+        let detail = source_control_commit_detail_from_display(
+            author.as_ref().map(|author| author.as_ref()),
+            &age,
+        );
         let label_age_start = (!show_author)
             .then(|| source_control_commit_label_age_start(short_oid.as_ref(), summary.as_ref()));
         let label = source_control_commit_label_from_display(
@@ -57,6 +62,7 @@ impl<'a> SourceControlHistoryRowDisplay<'a> {
         Self {
             short_oid,
             summary,
+            detail,
             label,
             label_age_start,
             author_visible: show_author,
@@ -64,8 +70,21 @@ impl<'a> SourceControlHistoryRowDisplay<'a> {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn label(&self) -> &str {
         &self.label
+    }
+
+    pub(super) fn short_oid(&self) -> &str {
+        self.short_oid.as_ref()
+    }
+
+    pub(super) fn summary(&self) -> &str {
+        self.summary.as_ref()
+    }
+
+    pub(super) fn detail(&self) -> &str {
+        &self.detail
     }
 
     pub(super) fn tooltip(&mut self, commit: &GitCommitSummary) -> &str {
@@ -97,6 +116,18 @@ impl<'a> SourceControlHistoryRowDisplay<'a> {
 
 fn source_control_commit_label_age_start(short_oid: &str, summary: &str) -> usize {
     short_oid.len() + 2 + summary.len() + 2
+}
+
+fn source_control_commit_detail_from_display(author: Option<&str>, age: &str) -> String {
+    let Some(author) = author else {
+        return age.to_owned();
+    };
+    let mut detail =
+        String::with_capacity(author.len().saturating_add(age.len()).saturating_add(2));
+    detail.push_str(author);
+    detail.push_str("  ");
+    detail.push_str(age);
+    detail
 }
 
 fn source_control_commit_label_from_display(

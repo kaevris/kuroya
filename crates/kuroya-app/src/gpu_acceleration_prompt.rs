@@ -90,11 +90,6 @@ impl KuroyaApp {
         self.gpu_acceleration_prompt = None;
         self.gpu_acceleration_prompt_dismissed = true;
 
-        if !self.workspace_trusted {
-            self.status = "GPU acceleration enabled for this session; restricted workspace settings were not saved".to_owned();
-            return;
-        }
-
         let path = settings_path(&self.workspace.root);
         match self.settings.save(&path) {
             Ok(()) => {

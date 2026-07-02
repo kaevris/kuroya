@@ -193,12 +193,12 @@ impl Default for EditorSettings {
             mouse_wheel_scroll_sensitivity: DEFAULT_EDITOR_MOUSE_WHEEL_SCROLL_SENSITIVITY,
             fast_scroll_sensitivity: DEFAULT_EDITOR_FAST_SCROLL_SENSITIVITY,
             mouse_wheel_zoom: false,
-            scrollbar_vertical: EditorScrollbarVisibility::default(),
-            scrollbar_horizontal: EditorScrollbarVisibility::default(),
+            scrollbar_vertical: EditorScrollbarVisibility::Hidden,
+            scrollbar_horizontal: EditorScrollbarVisibility::Hidden,
             scrollbar_vertical_scrollbar_size: DEFAULT_EDITOR_SCROLLBAR_VERTICAL_SCROLLBAR_SIZE,
             scrollbar_horizontal_scrollbar_size: DEFAULT_EDITOR_SCROLLBAR_HORIZONTAL_SCROLLBAR_SIZE,
-            scrollbar_scroll_by_page: false,
             scrollbar_ignore_horizontal_scrollbar_in_content_height: false,
+            explorer_scrollbar: EditorScrollbarVisibility::Hidden,
             padding_top: DEFAULT_EDITOR_PADDING_TOP,
             padding_bottom: DEFAULT_EDITOR_PADDING_BOTTOM,
             links: true,
@@ -214,7 +214,7 @@ impl Default for EditorSettings {
             sticky_scroll_default_model: EditorStickyScrollDefaultModel::default(),
             sticky_scroll_scroll_with_editor: true,
             line_height: DEFAULT_EDITOR_LINE_HEIGHT,
-            minimap: true,
+            minimap: false,
             minimap_side: EditorMinimapSide::default(),
             minimap_autohide: EditorMinimapAutohide::default(),
             minimap_size: EditorMinimapSize::default(),
@@ -471,7 +471,7 @@ impl Default for EditorSettings {
             bracket_pair_colorization: true,
             bracket_pair_colorization_independent_color_pool_per_bracket_type: false,
             bracket_pair_guides: EditorBracketPairGuideMode::default(),
-            bracket_pair_guides_horizontal: EditorBracketPairGuideMode::Active,
+            bracket_pair_guides_horizontal: EditorBracketPairGuideMode::Off,
             highlight_active_bracket_pair: true,
             match_brackets: EditorMatchBrackets::default(),
             folding: true,
@@ -1131,6 +1131,9 @@ impl EditorSettings {
                 changed = true;
             }
         }
+        if source_version < 3 {
+            changed |= self.keymap.ensure_default_command_palette_binding();
+        }
         self.schema_version = SETTINGS_SCHEMA_VERSION;
         changed || source_version < SETTINGS_SCHEMA_VERSION
     }
@@ -1192,86 +1195,4 @@ impl EditorVimSettings {
         self.key_overrides = normalized;
         changed
     }
-}
-
-fn sanitize_lsp_server_configs(servers: &mut Vec<LspServerConfig>) -> bool {
-    let original = std::mem::take(servers);
-    let mut normalized: Vec<LspServerConfig> =
-        Vec::with_capacity(original.len().min(SETTINGS_LIST_MAX_ITEMS));
-    let mut changed = original.len() > SETTINGS_LIST_MAX_ITEMS;
-
-    for mut server in original {
-        if normalized.len() >= SETTINGS_LIST_MAX_ITEMS {
-            changed = true;
-            continue;
-        }
-
-        let original_server = server.clone();
-        server.language =
-            normalize_settings_plain_string(&server.language, SETTINGS_MAP_KEY_MAX_CHARS, true);
-        server.language.make_ascii_lowercase();
-        server.command =
-            normalize_settings_plain_string(&server.command, SETTINGS_STRING_MAX_CHARS, true);
-        changed |= sanitize_settings_string_list(
-            &mut server.args,
-            SETTINGS_LIST_MAX_ITEMS,
-            SETTINGS_STRING_MAX_CHARS,
-            false,
-        );
-        changed |= sanitize_settings_string_list(
-            &mut server.extensions,
-            SETTINGS_LIST_MAX_ITEMS,
-            SETTINGS_STRING_MAX_CHARS,
-            true,
-        );
-        changed |= normalize_lsp_server_extensions(&mut server.extensions);
-        changed |= sanitize_settings_string_list(
-            &mut server.root_markers,
-            SETTINGS_LIST_MAX_ITEMS,
-            SETTINGS_STRING_MAX_CHARS,
-            true,
-        );
-
-        if server.language.is_empty() || server.command.is_empty() {
-            changed = true;
-            continue;
-        }
-
-        changed |= server != original_server;
-        if let Some(index) = normalized
-            .iter()
-            .position(|existing| existing.language == server.language)
-        {
-            normalized[index] = server;
-            changed = true;
-        } else {
-            normalized.push(server);
-        }
-    }
-
-    *servers = normalized;
-    changed
-}
-
-fn normalize_lsp_server_extensions(extensions: &mut Vec<String>) -> bool {
-    let original = std::mem::take(extensions);
-    let mut normalized = Vec::with_capacity(original.len());
-    let mut changed = false;
-
-    for extension in original {
-        let trimmed = extension.trim_start_matches('.').to_owned();
-        if trimmed.is_empty() {
-            changed = true;
-            continue;
-        }
-        changed |= trimmed != extension;
-        if normalized.contains(&trimmed) {
-            changed = true;
-            continue;
-        }
-        normalized.push(trimmed);
-    }
-
-    *extensions = normalized;
-    changed
 }

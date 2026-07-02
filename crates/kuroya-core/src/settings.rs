@@ -184,8 +184,8 @@ pub const DEFAULT_EDITOR_PADDING_TOP: usize = 0;
 pub const DEFAULT_EDITOR_PADDING_BOTTOM: usize = 0;
 pub const MIN_EDITOR_PADDING: usize = 0;
 pub const MAX_EDITOR_PADDING: usize = 1_000;
-pub const DEFAULT_EDITOR_SCROLLBAR_VERTICAL_SCROLLBAR_SIZE: usize = 14;
-pub const DEFAULT_EDITOR_SCROLLBAR_HORIZONTAL_SCROLLBAR_SIZE: usize = 12;
+pub const DEFAULT_EDITOR_SCROLLBAR_VERTICAL_SCROLLBAR_SIZE: usize = 6;
+pub const DEFAULT_EDITOR_SCROLLBAR_HORIZONTAL_SCROLLBAR_SIZE: usize = 6;
 pub const MIN_EDITOR_SCROLLBAR_SIZE: usize = 0;
 pub const MAX_EDITOR_SCROLLBAR_SIZE: usize = 1_000;
 pub const DEFAULT_EDITOR_SCROLL_BEYOND_LAST_COLUMN: usize = 4;
@@ -302,7 +302,7 @@ pub const MAX_SCM_GRAPH_PAGE_SIZE: usize = 1_000;
 pub const DEFAULT_WINDOW_ZOOM_LEVEL: f32 = 0.0;
 pub const MIN_WINDOW_ZOOM_LEVEL: f32 = -5.0;
 pub const MAX_WINDOW_ZOOM_LEVEL: f32 = 5.0;
-pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 3;
 const SETTINGS_FILE_MAX_BYTES: u64 = 512 * 1024;
 const SETTINGS_STRING_MAX_CHARS: usize = 4096;
 const SETTINGS_DISPLAY_TEXT_MAX_CHARS: usize = 512;
@@ -759,8 +759,8 @@ pub struct EditorSettings {
     pub scrollbar_horizontal: EditorScrollbarVisibility,
     pub scrollbar_vertical_scrollbar_size: usize,
     pub scrollbar_horizontal_scrollbar_size: usize,
-    pub scrollbar_scroll_by_page: bool,
     pub scrollbar_ignore_horizontal_scrollbar_in_content_height: bool,
+    pub explorer_scrollbar: EditorScrollbarVisibility,
     pub padding_top: usize,
     pub padding_bottom: usize,
     pub links: bool,
@@ -1097,9 +1097,8 @@ pub struct EditorSettingsLoad {
 
 pub fn effective_lsp_server_configs(settings_servers: &[LspServerConfig]) -> Vec<LspServerConfig> {
     let mut servers = default_server_configs();
+    let (settings_servers, _) = normalize_lsp_server_configs(settings_servers.iter().cloned());
     for server in settings_servers {
-        let mut server = server.clone();
-        server.language.make_ascii_lowercase();
         if let Some(index) = servers
             .iter()
             .position(|existing| existing.language == server.language)
@@ -1110,6 +1109,102 @@ pub fn effective_lsp_server_configs(settings_servers: &[LspServerConfig]) -> Vec
         }
     }
     servers
+}
+
+fn sanitize_lsp_server_configs(servers: &mut Vec<LspServerConfig>) -> bool {
+    let (normalized, changed) = normalize_lsp_server_configs(std::mem::take(servers));
+    *servers = normalized;
+    changed
+}
+
+fn normalize_lsp_server_configs(
+    settings_servers: impl IntoIterator<Item = LspServerConfig>,
+) -> (Vec<LspServerConfig>, bool) {
+    let original: Vec<LspServerConfig> = settings_servers.into_iter().collect();
+    let mut normalized: Vec<LspServerConfig> =
+        Vec::with_capacity(original.len().min(SETTINGS_LIST_MAX_ITEMS));
+    let mut changed = original.len() > SETTINGS_LIST_MAX_ITEMS;
+
+    for server in original {
+        if normalized.len() >= SETTINGS_LIST_MAX_ITEMS {
+            changed = true;
+            continue;
+        }
+
+        let original_server = server.clone();
+        let Some(server) = normalized_lsp_server_config(server) else {
+            changed = true;
+            continue;
+        };
+        changed |= server != original_server;
+        if let Some(index) = normalized
+            .iter()
+            .position(|existing: &LspServerConfig| existing.language == server.language)
+        {
+            normalized[index] = server;
+            changed = true;
+        } else {
+            normalized.push(server);
+        }
+    }
+
+    (normalized, changed)
+}
+
+fn normalized_lsp_server_config(mut server: LspServerConfig) -> Option<LspServerConfig> {
+    server.language =
+        normalize_settings_plain_string(&server.language, SETTINGS_MAP_KEY_MAX_CHARS, true);
+    server.language.make_ascii_lowercase();
+    server.command =
+        normalize_settings_plain_string(&server.command, SETTINGS_STRING_MAX_CHARS, true);
+    sanitize_settings_string_list(
+        &mut server.args,
+        SETTINGS_LIST_MAX_ITEMS,
+        SETTINGS_STRING_MAX_CHARS,
+        false,
+    );
+    sanitize_settings_string_list(
+        &mut server.extensions,
+        SETTINGS_LIST_MAX_ITEMS,
+        SETTINGS_STRING_MAX_CHARS,
+        true,
+    );
+    normalize_lsp_server_extensions(&mut server.extensions);
+    sanitize_settings_string_list(
+        &mut server.root_markers,
+        SETTINGS_LIST_MAX_ITEMS,
+        SETTINGS_STRING_MAX_CHARS,
+        true,
+    );
+
+    if server.language.is_empty() || server.command.is_empty() {
+        None
+    } else {
+        Some(server)
+    }
+}
+
+fn normalize_lsp_server_extensions(extensions: &mut Vec<String>) -> bool {
+    let original = std::mem::take(extensions);
+    let mut normalized = Vec::with_capacity(original.len());
+    let mut changed = false;
+
+    for extension in original {
+        let trimmed = extension.trim_start_matches('.').to_owned();
+        if trimmed.is_empty() {
+            changed = true;
+            continue;
+        }
+        changed |= trimmed != extension;
+        if normalized.contains(&trimmed) {
+            changed = true;
+            continue;
+        }
+        normalized.push(trimmed);
+    }
+
+    *extensions = normalized;
+    changed
 }
 
 fn current_settings_schema_version() -> u32 {

@@ -7,7 +7,7 @@ use crate::{
     workspace_state::settings_path,
 };
 use kuroya_core::EditorSettings;
-use std::{fmt::Display, path::Path};
+use std::fmt::Display;
 
 mod draft;
 mod terminal;
@@ -61,6 +61,7 @@ impl KuroyaApp {
             return;
         }
 
+        let previous_settings = self.settings.clone();
         let previous_fonts = (
             self.settings.font_size,
             self.settings.ui_font_size,
@@ -85,6 +86,7 @@ impl KuroyaApp {
             self.settings.hover_enabled,
             self.settings.document_highlights_enabled,
         );
+        let previous_parameter_hints = self.settings.parameter_hints_enabled;
         let previous_source_control_defaults = (
             self.settings.scm_default_view_mode,
             self.settings.scm_default_view_sort_key,
@@ -107,6 +109,8 @@ impl KuroyaApp {
             return;
         }
 
+        let lsp_server_configs_changed =
+            previous_settings.lsp_server_configs() != next_settings.lsp_server_configs();
         self.settings = next_settings;
         let terminal_shell_profile_changed = previous_terminal_shell_profile
             != (
@@ -122,6 +126,7 @@ impl KuroyaApp {
         } else {
             0
         };
+        let reopened_lsp_buffers = self.sync_lsp_server_settings_after_reload(&previous_settings);
         self.sync_settings_panel_inputs();
 
         let current_fonts = (
@@ -171,6 +176,10 @@ impl KuroyaApp {
         if previous_navigation_annotations.1 && !self.settings.document_highlights_enabled {
             self.document_highlights_path = None;
             self.document_highlights.clear();
+        }
+        if previous_parameter_hints && !self.settings.parameter_hints_enabled {
+            self.pending_signature_help_requests.clear();
+            self.signature_help = None;
         }
         if previous_source_control_defaults
             != (
@@ -228,10 +237,11 @@ impl KuroyaApp {
             None
         };
         self.status = settings_save_success_status(
-            &path,
             apply_note,
             terminal_shell_profile_changed,
             restarted_terminal_sessions,
+            lsp_server_configs_changed,
+            reopened_lsp_buffers,
         );
         if let Some(error) = app_state_save_error {
             push_app_preference_save_failed_status(&mut self.status, error);
@@ -288,10 +298,11 @@ fn git_string_list_setting_key(values: &[String]) -> Vec<String> {
 }
 
 fn settings_save_success_status(
-    _path: &Path,
     apply_note: Option<&str>,
     terminal_shell_profile_changed: bool,
     restarted_terminal_sessions: usize,
+    lsp_server_configs_changed: bool,
+    reopened_lsp_buffers: usize,
 ) -> String {
     let mut status = "Saved settings".to_owned();
     if let Some(note) = apply_note {
@@ -308,6 +319,26 @@ fn settings_save_success_status(
         });
     } else if terminal_shell_profile_changed {
         status.push_str("; new terminals use the selected provider");
+    }
+    if lsp_server_configs_changed {
+        status.push_str("; LSP servers updated");
+        if reopened_lsp_buffers > 0 {
+            status.push_str("; reopened ");
+            status.push_str(&reopened_lsp_buffers.to_string());
+            status.push_str(if reopened_lsp_buffers == 1 {
+                " LSP buffer"
+            } else {
+                " LSP buffers"
+            });
+        }
+    } else if reopened_lsp_buffers > 0 {
+        status.push_str("; retried ");
+        status.push_str(&reopened_lsp_buffers.to_string());
+        status.push_str(if reopened_lsp_buffers == 1 {
+            " LSP buffer"
+        } else {
+            " LSP buffers"
+        });
     }
     status
 }
@@ -329,14 +360,18 @@ fn push_app_preference_save_failed_status(status: &mut String, error: impl Displ
 mod tests {
     use super::*;
     use crate::{
-        app_startup_context::AppStartupContext, lsp_runtime::LSP_SYMBOL_REFRESH_DEBOUNCE,
-        lsp_runtime::due_lsp_symbol_refresh_ids, path_display::DISPLAY_ERROR_LABEL_MAX_CHARS,
-        terminal::TerminalPane, workspace_state::settings_path,
+        app_startup_context::AppStartupContext, lsp_client::LspClientHandle,
+        lsp_runtime::LSP_SYMBOL_REFRESH_DEBOUNCE, lsp_runtime::due_lsp_symbol_refresh_ids,
+        path_display::DISPLAY_ERROR_LABEL_MAX_CHARS, terminal::TerminalPane,
+        transient_state::LspSignatureHelpPopup, workspace_state::settings_path,
     };
-    use kuroya_core::{EditorSettings, TextBuffer, ThemeSettings, Workspace};
+    use kuroya_core::{
+        EditorScrollbarVisibility, EditorSettings, LspServerConfig, LspSignatureHelp, TextBuffer,
+        ThemeSettings, Workspace,
+    };
     use std::{
         fs,
-        path::{Path, PathBuf},
+        path::PathBuf,
         time::{Instant, SystemTime, UNIX_EPOCH},
     };
     use tokio::runtime::Runtime;
@@ -427,7 +462,9 @@ mod tests {
     fn apply_settings_panel_does_not_apply_or_save_vim_app_state_when_settings_save_fails() {
         let root = temp_root("vim-app-state-after-settings-save-fail");
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join(".kuroya"), "not a settings directory").unwrap();
+        let settings_path = settings_path(&root);
+        fs::create_dir_all(settings_path.parent().unwrap().parent().unwrap()).unwrap();
+        fs::write(settings_path.parent().unwrap(), "not a settings directory").unwrap();
         let mut app = app_for_test(root.clone(), EditorSettings::default());
         let app_state_path = root.join("app-state.json");
         app.app_state_path_override = Some(app_state_path.clone());
@@ -550,6 +587,100 @@ mod tests {
     }
 
     #[test]
+    fn apply_settings_panel_persists_scrollbar_visibility_settings() {
+        let root = temp_root("scrollbar-visibility-persist");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+
+        app.settings_panel_draft.scrollbar_vertical = EditorScrollbarVisibility::Visible;
+        app.settings_panel_draft.scrollbar_horizontal = EditorScrollbarVisibility::Auto;
+        app.settings_panel_draft.explorer_scrollbar = EditorScrollbarVisibility::Visible;
+
+        app.apply_settings_panel();
+
+        assert_eq!(
+            app.settings.scrollbar_vertical,
+            EditorScrollbarVisibility::Visible
+        );
+        assert_eq!(
+            app.settings.scrollbar_horizontal,
+            EditorScrollbarVisibility::Auto
+        );
+        assert_eq!(
+            app.settings.explorer_scrollbar,
+            EditorScrollbarVisibility::Visible
+        );
+        assert_eq!(app.settings_panel_draft, app.settings);
+
+        let saved = EditorSettings::load_or_create_with_recovery(&settings_path(&root))
+            .unwrap()
+            .settings;
+        assert_eq!(saved.scrollbar_vertical, EditorScrollbarVisibility::Visible);
+        assert_eq!(saved.scrollbar_horizontal, EditorScrollbarVisibility::Auto);
+        assert_eq!(saved.explorer_scrollbar, EditorScrollbarVisibility::Visible);
+        assert!(app.status.starts_with("Saved settings"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_restarts_lsp_clients_when_server_config_changes() {
+        let root = temp_root("lsp-config-change");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        app.lsp_clients
+            .insert("rust".to_owned(), LspClientHandle::accepting_for_test());
+        app.lsp_unavailable.insert("rust".to_owned());
+        app.lsp_restart_attempts.insert("rust".to_owned(), 2);
+        app.pending_lsp_restarts
+            .insert("rust".to_owned(), Instant::now());
+        app.settings_panel_draft.lsp_servers = vec![LspServerConfig {
+            language: "rust".to_owned(),
+            command: "rust-analyzer-custom".to_owned(),
+            args: Vec::new(),
+            extensions: Vec::new(),
+            root_markers: vec!["Cargo.toml".to_owned()],
+        }];
+
+        app.apply_settings_panel();
+
+        assert!(app.lsp_clients.is_empty());
+        assert!(app.lsp_unavailable.is_empty());
+        assert!(app.lsp_restart_attempts.is_empty());
+        assert!(app.pending_lsp_restarts.is_empty());
+        assert_eq!(
+            app.settings
+                .lsp_server_configs()
+                .into_iter()
+                .find(|config| config.language == "rust")
+                .expect("rust config should be present")
+                .command,
+            "rust-analyzer-custom"
+        );
+        let saved = EditorSettings::load_or_create_with_recovery(&settings_path(&root))
+            .unwrap()
+            .settings;
+        assert_eq!(saved.lsp_servers, app.settings.lsp_servers);
+        assert!(app.status.contains("LSP servers updated"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_clears_signature_help_when_parameter_hints_are_disabled() {
+        let root = temp_root("parameter-hints-disabled");
+        let path = root.join("src").join("main.rs");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        app.pending_signature_help_requests
+            .insert(7, Instant::now());
+        app.signature_help = Some(signature_popup(7, path));
+
+        app.settings_panel_draft.parameter_hints_enabled = false;
+        app.apply_settings_panel();
+
+        assert!(!app.settings.parameter_hints_enabled);
+        assert!(app.pending_signature_help_requests.is_empty());
+        assert!(app.signature_help.is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn apply_settings_panel_does_not_scan_for_whitespace_only_scan_setting_changes() {
         let root = temp_root("scan-whitespace");
         let settings = EditorSettings {
@@ -585,43 +716,26 @@ mod tests {
     }
 
     #[test]
-    fn settings_save_success_status_omits_internal_settings_path() {
-        let path = PathBuf::from("workspace/.kuroya")
-            .join(format!("bad\n{}\u{202e}.toml", "segment-".repeat(40)));
-
-        let status =
-            settings_save_success_status(&path, Some("normalized invalid draft values"), false, 0);
-
-        assert_eq!(status, "Saved settings; normalized invalid draft values");
-        assert!(!status.contains("workspace"));
-        assert!(!status.contains(".kuroya"));
-        assert!(!status.contains('\n'));
-        assert!(!status.contains('\u{202e}'));
-    }
-
-    #[test]
     fn settings_save_success_status_mentions_terminal_provider_change() {
-        let status = settings_save_success_status(
-            Path::new("workspace/.kuroya/settings.toml"),
-            None,
-            true,
-            0,
-        );
+        let status = settings_save_success_status(None, true, 0, false, 0);
 
         assert!(status.contains("new terminals use the selected provider"));
     }
 
     #[test]
     fn settings_save_success_status_mentions_restarted_provider_sessions() {
-        let status = settings_save_success_status(
-            Path::new("workspace/.kuroya/settings.toml"),
-            None,
-            true,
-            2,
-        );
+        let status = settings_save_success_status(None, true, 2, false, 0);
 
         assert!(status.contains("restarted 2 terminals with the selected provider"));
         assert!(!status.contains("new terminals use the selected provider"));
+    }
+
+    #[test]
+    fn settings_save_success_status_mentions_lsp_updates() {
+        let status = settings_save_success_status(None, false, 0, true, 2);
+
+        assert!(status.contains("LSP servers updated"));
+        assert!(status.contains("reopened 2 LSP buffers"));
     }
 
     #[test]
@@ -651,6 +765,20 @@ mod tests {
             ),
             expected
         );
+    }
+
+    fn signature_popup(id: u64, path: PathBuf) -> LspSignatureHelpPopup {
+        LspSignatureHelpPopup {
+            id,
+            path,
+            line: 1,
+            column: 1,
+            help: LspSignatureHelp {
+                signatures: Vec::new(),
+                active_signature: 0,
+                active_parameter: None,
+            },
+        }
     }
 
     fn app_for_test(root: PathBuf, settings: EditorSettings) -> KuroyaApp {

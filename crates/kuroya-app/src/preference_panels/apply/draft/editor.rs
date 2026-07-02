@@ -281,9 +281,9 @@ pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: 
         clamp_editor_scrollbar_size(draft.scrollbar_vertical_scrollbar_size);
     settings.scrollbar_horizontal_scrollbar_size =
         clamp_editor_scrollbar_size(draft.scrollbar_horizontal_scrollbar_size);
-    settings.scrollbar_scroll_by_page = draft.scrollbar_scroll_by_page;
     settings.scrollbar_ignore_horizontal_scrollbar_in_content_height =
         draft.scrollbar_ignore_horizontal_scrollbar_in_content_height;
+    settings.explorer_scrollbar = draft.explorer_scrollbar;
     settings.padding_top = clamp_editor_padding(draft.padding_top);
     settings.padding_bottom = clamp_editor_padding(draft.padding_bottom);
     settings.links = draft.links;

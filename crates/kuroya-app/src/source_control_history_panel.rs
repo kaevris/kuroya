@@ -8,6 +8,10 @@ use crate::source_control_history_runtime::{
 };
 use crate::{
     KuroyaApp,
+    source_control_git_panel_ui::{
+        SOURCE_CONTROL_GIT_HISTORY_PANEL_DEFAULT_SIZE, SOURCE_CONTROL_GIT_ROW_HEIGHT,
+        apply_git_panel_spacing, render_git_panel_row,
+    },
     ui_state::{handle_list_navigation_keys, selected_row_scroll_offset, selection_page_step},
 };
 use eframe::egui::{self, Context, InputState, Key, RichText, ScrollArea, TextEdit};
@@ -33,8 +37,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const SOURCE_CONTROL_HISTORY_ROW_HEIGHT: f32 = 24.0;
-
 impl KuroyaApp {
     pub(crate) fn render_git_history_panel(&mut self, ctx: &Context) {
         let mut close = false;
@@ -54,8 +56,9 @@ impl KuroyaApp {
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 84.0])
-            .default_size([620.0, 420.0])
+            .default_size(SOURCE_CONTROL_GIT_HISTORY_PANEL_DEFAULT_SIZE)
             .show(ctx, |ui| {
+                apply_git_panel_spacing(ui);
                 ui.horizontal(|ui| {
                     let response = ui.add(
                         TextEdit::singleline(&mut self.source_control_history_query)
@@ -92,7 +95,7 @@ impl KuroyaApp {
                         input,
                         &mut self.source_control_history_selected,
                         commit_indices.len(),
-                        selection_page_step(SOURCE_CONTROL_HISTORY_ROW_HEIGHT, viewport_height),
+                        selection_page_step(SOURCE_CONTROL_GIT_ROW_HEIGHT, viewport_height),
                     )
                 });
                 let selected_entry = selected_history_entry(
@@ -175,13 +178,13 @@ impl KuroyaApp {
                             scroll_area.vertical_scroll_offset(selected_row_scroll_offset(
                                 self.source_control_history_selected,
                                 commit_indices.len(),
-                                SOURCE_CONTROL_HISTORY_ROW_HEIGHT,
+                                SOURCE_CONTROL_GIT_ROW_HEIGHT,
                                 viewport_height,
                             ));
                     }
                     let history_scroll = scroll_area.show_rows(
                         ui,
-                        SOURCE_CONTROL_HISTORY_ROW_HEIGHT,
+                        SOURCE_CONTROL_GIT_ROW_HEIGHT,
                         commit_indices.len(),
                         |ui, rows| {
                             let visible_rows = source_control_history_prepared_visible_rows(
@@ -194,11 +197,16 @@ impl KuroyaApp {
                             for mut row in visible_rows {
                                 let index = row.row_index();
                                 let selected = index == self.source_control_history_selected;
-                                let response = ui
-                                    .selectable_label(selected, row.label())
-                                    .on_hover_ui(|ui| {
-                                        ui.label(row.tooltip());
-                                    });
+                                let response = render_git_panel_row(
+                                    ui,
+                                    selected,
+                                    row.short_oid(),
+                                    row.summary(),
+                                    row.detail(),
+                                )
+                                .on_hover_ui(|ui| {
+                                    ui.label(row.tooltip());
+                                });
                                 if response.clicked() {
                                     self.source_control_history_selected = index;
                                 }
@@ -701,8 +709,21 @@ impl<'a> SourceControlHistoryPreparedRow<'a> {
         self.commit
     }
 
+    #[cfg(test)]
     fn label(&self) -> &str {
         self.display.label()
+    }
+
+    fn short_oid(&self) -> &str {
+        self.display.short_oid()
+    }
+
+    fn summary(&self) -> &str {
+        self.display.summary()
+    }
+
+    fn detail(&self) -> &str {
+        self.display.detail()
     }
 
     fn tooltip(&mut self) -> &str {

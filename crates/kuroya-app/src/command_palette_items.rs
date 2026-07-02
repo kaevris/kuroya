@@ -38,6 +38,7 @@ const COMMAND_PALETTE_MEMORY_QUERY_MAX_CHARS: usize = 128;
 const COMMAND_PALETTE_QUERY_SCAN_CHARS: usize = 4096;
 const COMMAND_PALETTE_PLUGIN_LABEL_MAX_CHARS: usize = 120;
 
+pub(crate) const COMMAND_PALETTE_DEFAULT_SECTION: &str = "Commands";
 pub(crate) type CommandPaletteItem = (String, Command, String);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -372,6 +373,175 @@ fn command_palette_item(command: &Command, chord: Option<&str>) -> CommandPalett
     let label = command_label(command);
     let chord = chord.unwrap_or_default().to_owned();
     (label, command.clone(), chord)
+}
+
+pub(crate) fn command_palette_item_section(label: &str, command: &Command) -> &'static str {
+    match command {
+        Command::NewFile
+        | Command::SaveActive
+        | Command::SaveAs
+        | Command::SaveAll
+        | Command::ReloadActiveFromDisk
+        | Command::OpenActiveFileLatestLocalHistory
+        | Command::ToggleReadOnly
+        | Command::CloseActive
+        | Command::ReopenClosedFile
+        | Command::SelectActiveFileForCompare
+        | Command::CompareActiveFileWithSelected
+        | Command::CompareActiveFileWithSaved
+        | Command::CopyActiveFilePath
+        | Command::CopyActiveFileRelativePath => "File",
+        Command::OpenWorkspacePrompt
+        | Command::TrustWorkspace
+        | Command::RevokeWorkspaceTrust
+        | Command::RefreshWorkspace
+        | Command::SaveWorkspaceSnapshot
+        | Command::RestoreLatestWorkspaceSnapshot
+        | Command::RevealActiveFileInExplorer
+        | Command::CreateFileIn(_)
+        | Command::CreateFolderIn(_) => "Workspace",
+        Command::OpenWorkspace(_) if label.starts_with("Open Recent ") => "Recent Workspaces",
+        Command::IndentLines
+        | Command::OutdentLines
+        | Command::DeleteLines
+        | Command::JoinLines
+        | Command::DuplicateLines
+        | Command::MoveLineUp
+        | Command::MoveLineDown
+        | Command::Undo
+        | Command::Redo => "Edit",
+        Command::SelectLines
+        | Command::SelectRectangularBlock
+        | Command::ExpandSelection
+        | Command::SelectNextOccurrence
+        | Command::SelectAllOccurrences
+        | Command::AddCursorAbove
+        | Command::AddCursorBelow
+        | Command::AddCursorsToLineEnds => "Selection",
+        Command::ToggleMinimap
+        | Command::ToggleStickyScroll
+        | Command::ToggleCommandPalette
+        | Command::ToggleDiagnosticsPanel
+        | Command::CycleDiagnosticsPanelPlacement
+        | Command::SplitEditorRight
+        | Command::CloseEditorPane
+        | Command::ResetEditorPaneWeights => "View",
+        Command::NextTab
+        | Command::PreviousTab
+        | Command::NavigateBack
+        | Command::NavigateForward
+        | Command::ToggleQuickOpen
+        | Command::ToggleGoToLine
+        | Command::GoToMatchingBracket
+        | Command::NextDiagnostic
+        | Command::PreviousDiagnostic
+        | Command::GoToDefinition
+        | Command::FindReferences
+        | Command::ShowCallHierarchy
+        | Command::ShowTypeHierarchy
+        | Command::ToggleSymbolsPanel
+        | Command::CycleSymbolsPanelPlacement
+        | Command::ToggleWorkspaceSymbols => "Navigation",
+        Command::OpenFileAt { .. } if label.starts_with("Go to Recent Location ") => {
+            "Recent Locations"
+        }
+        Command::ToggleBufferFind
+        | Command::FindNext
+        | Command::FindPrevious
+        | Command::ToggleProjectSearch
+        | Command::CycleProjectSearchPlacement
+        | Command::NextProjectSearchResult
+        | Command::PreviousProjectSearchResult => "Search",
+        Command::ToggleLineComment
+        | Command::RequestDocumentHighlights
+        | Command::RequestHover
+        | Command::RenameSymbol
+        | Command::RequestCompletions
+        | Command::RequestSignatureHelp
+        | Command::RequestFoldingRanges
+        | Command::ToggleFold
+        | Command::ExpandAllFolds
+        | Command::FormatDocument
+        | Command::RequestCodeActions => "Code",
+        Command::NextGitChange
+        | Command::PreviousGitChange
+        | Command::NextDiffHunk
+        | Command::PreviousDiffHunk
+        | Command::RefreshActiveDiff
+        | Command::SwapActiveDiffSides
+        | Command::ToggleSourceControl
+        | Command::CycleSourceControlPlacement
+        | Command::RevealActiveFileInSourceControl
+        | Command::OpenActiveFileChanges
+        | Command::OpenActiveFileStagedChanges
+        | Command::OpenActiveFileHeadChanges
+        | Command::OpenActiveFileHeadRevision
+        | Command::OpenActiveFileIndexRevision
+        | Command::OpenAllChanges
+        | Command::OpenAllUnstagedChanges
+        | Command::OpenAllStagedChanges
+        | Command::CopyAllChangesPatch
+        | Command::CopyUnstagedChangesPatch
+        | Command::CopyStagedChangesPatch
+        | Command::CopyActiveFilePatch
+        | Command::CopyActiveFileStagedPatch
+        | Command::OpenActiveFileHunks
+        | Command::OpenActiveFileStagedHunks
+        | Command::OpenActiveFileBlame
+        | Command::StageActiveFileChanges
+        | Command::StageAllChanges
+        | Command::StageActiveFileHunk
+        | Command::StageActiveDiffHunk
+        | Command::OpenActiveDiffBaseFile
+        | Command::OpenActiveDiffHunkBase
+        | Command::OpenActiveDiffSourceFile
+        | Command::OpenActiveDiffHunkSource
+        | Command::OpenActiveFileHunkDiff
+        | Command::OpenActiveFileStagedHunkDiff
+        | Command::OpenActiveAccessibleDiffViewer
+        | Command::CopyActiveFileHunkPatch
+        | Command::CopyActiveFileStagedHunkPatch
+        | Command::CopyActiveDiffPatch
+        | Command::CopyActiveDiffHunkPatch
+        | Command::UnstageActiveFileChanges
+        | Command::UnstageAllChanges
+        | Command::UnstageActiveFileHunk
+        | Command::UnstageActiveDiffHunk
+        | Command::DiscardActiveFileChanges
+        | Command::DiscardAllChanges
+        | Command::DiscardActiveFileHunk
+        | Command::DiscardActiveDiffHunk
+        | Command::CommitStagedChanges
+        | Command::AcceptCurrentConflict
+        | Command::AcceptIncomingConflict
+        | Command::AcceptBothConflicts
+        | Command::ToggleGitBranchSwitcher
+        | Command::ToggleGitHistory
+        | Command::ToggleGitStashes
+        | Command::OpenSourceControlInIntegratedTerminal
+        | Command::SaveGitStash => "Source Control",
+        Command::ToggleTerminal
+        | Command::ToggleTerminalSearch
+        | Command::NextTerminalSearchResult
+        | Command::PreviousTerminalSearchResult
+        | Command::NextTerminalSession
+        | Command::PreviousTerminalSession => "Terminal",
+        Command::ToggleWorkspaceTasks
+        | Command::RunWorkspaceTaskKind(_)
+        | Command::RunWorkspaceTaskSnapshot { .. }
+        | Command::CancelWorkspaceTaskSnapshot { .. } => "Tasks and Extensions",
+        Command::RunPluginCommand { .. } => "Extensions",
+        Command::ToggleVimMode
+        | Command::ReloadSettings
+        | Command::ToggleSettingsPanel
+        | Command::OpenSettingsFile
+        | Command::ToggleKeybindingsPanel
+        | Command::ToggleThemePicker
+        | Command::CycleTheme => "Settings",
+        Command::ToggleDevtools => "Developer",
+        Command::CheckForUpdates => "Help",
+        _ => COMMAND_PALETTE_DEFAULT_SECTION,
+    }
 }
 
 fn push_workspace_task_palette_items(items: &mut Vec<CommandPaletteItem>, tasks: &[WorkspaceTask]) {
@@ -1081,13 +1251,17 @@ fn is_command_palette_query_format_control(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        COMMAND_PALETTE_QUERY_SCAN_CHARS, COMMAND_PALETTE_RECENT_PROJECT_SCAN_LIMIT,
-        CommandPaletteQueryMemoryEntry, CommandPaletteRanker, command_palette_command_match_score,
+        COMMAND_PALETTE_DEFAULT_SECTION, COMMAND_PALETTE_QUERY_SCAN_CHARS,
+        COMMAND_PALETTE_RECENT_PROJECT_SCAN_LIMIT, CommandPaletteQueryMemoryEntry,
+        CommandPaletteRanker, command_palette_command_match_score, command_palette_item_section,
         recent_navigation_palette_items, recent_workspace_palette_items,
         recent_workspace_palette_items_with_dir_probe, record_command_palette_query_memory,
         sanitize_command_palette_query_input,
     };
-    use crate::history::NavigationLocation;
+    use crate::{
+        command_catalog::command_catalog_slice, commands::command_label,
+        history::NavigationLocation,
+    };
     use fuzzy_matcher::skim::SkimMatcherV2;
     use kuroya_core::Command;
     use std::{
@@ -1115,6 +1289,43 @@ mod tests {
             )
             .is_some()
         );
+    }
+
+    #[test]
+    fn command_palette_item_section_classifies_static_and_generated_commands() {
+        assert_eq!(
+            command_palette_item_section("Quick Open", &Command::ToggleQuickOpen),
+            "Navigation"
+        );
+        assert_eq!(
+            command_palette_item_section(
+                "Open Recent workspace",
+                &Command::OpenWorkspace(PathBuf::from("workspace")),
+            ),
+            "Recent Workspaces"
+        );
+        assert_eq!(
+            command_palette_item_section(
+                "Run Build Task build",
+                &Command::RunWorkspaceTaskSnapshot {
+                    index: 0,
+                    fingerprint: 7,
+                },
+            ),
+            "Tasks and Extensions"
+        );
+    }
+
+    #[test]
+    fn static_command_catalog_entries_have_specific_palette_sections() {
+        for command in command_catalog_slice() {
+            let label = command_label(command);
+            assert_ne!(
+                command_palette_item_section(&label, command),
+                COMMAND_PALETTE_DEFAULT_SECTION,
+                "{command:?} should have an explicit command palette section"
+            );
+        }
     }
 
     #[test]

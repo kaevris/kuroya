@@ -13,19 +13,23 @@ mod sections;
 
 use actions::PendingSettingsPanelActions;
 use sections::{
-    SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_EDITOR, SETTINGS_SECTION_FILES,
-    SETTINGS_SECTION_GENERAL, SETTINGS_SECTION_TERMINAL, SETTINGS_SECTION_VIM, SETTINGS_SECTIONS,
-    SETTINGS_TARGET_APPEARANCE, SETTINGS_TARGET_EDITOR_CODE_VIEW, SETTINGS_TARGET_EDITOR_CURSOR,
-    SETTINGS_TARGET_EDITOR_DIFF, SETTINGS_TARGET_EDITOR_DISPLAY, SETTINGS_TARGET_EDITOR_LANGUAGE,
-    SETTINGS_TARGET_EDITOR_SOURCE_CONTROL, SETTINGS_TARGET_EDITOR_TEXT_LAYOUT,
-    SETTINGS_TARGET_EDITOR_TYPING, SETTINGS_TARGET_FILES_SAVE_ACTIONS,
-    SETTINGS_TARGET_FILES_SAVE_CLEANUP, SETTINGS_TARGET_GENERAL, SETTINGS_TARGET_TERMINAL_BUFFER,
+    SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_DEVELOPER, SETTINGS_SECTION_EDITOR,
+    SETTINGS_SECTION_FILES, SETTINGS_SECTION_GENERAL, SETTINGS_SECTION_LSP,
+    SETTINGS_SECTION_SOURCE_CONTROL, SETTINGS_SECTION_TERMINAL, SETTINGS_SECTION_VIM,
+    SETTINGS_SECTIONS, SETTINGS_TARGET_APPEARANCE, SETTINGS_TARGET_DEVELOPER,
+    SETTINGS_TARGET_EDITOR_CODE_VIEW, SETTINGS_TARGET_EDITOR_CURSOR, SETTINGS_TARGET_EDITOR_DIFF,
+    SETTINGS_TARGET_EDITOR_DISPLAY, SETTINGS_TARGET_EDITOR_LANGUAGE,
+    SETTINGS_TARGET_EDITOR_TEXT_LAYOUT, SETTINGS_TARGET_EDITOR_TYPING,
+    SETTINGS_TARGET_FILES_SAVE_ACTIONS, SETTINGS_TARGET_FILES_SAVE_CLEANUP,
+    SETTINGS_TARGET_GENERAL, SETTINGS_TARGET_LSP, SETTINGS_TARGET_SCROLLBARS,
+    SETTINGS_TARGET_SOURCE_CONTROL, SETTINGS_TARGET_TERMINAL_BUFFER,
     SETTINGS_TARGET_TERMINAL_COLOR, SETTINGS_TARGET_TERMINAL_CURSOR,
     SETTINGS_TARGET_TERMINAL_INTERACTION, SETTINGS_TARGET_TERMINAL_PROFILE,
     SETTINGS_TARGET_VIM_KEYBINDINGS, SettingsHighlightState, bounded_settings_singleline_input,
-    render_appearance_settings, render_editor_settings, render_files_settings,
-    render_general_settings, render_settings_sidebar, render_terminal_settings,
-    render_vim_settings, vim_key_capture_active, vim_key_capture_clear,
+    render_appearance_settings, render_developer_settings, render_editor_settings,
+    render_files_settings, render_general_settings, render_lsp_settings, render_settings_sidebar,
+    render_source_control_settings, render_terminal_settings, render_vim_settings,
+    vim_key_capture_active, vim_key_capture_clear,
 };
 
 const SETTINGS_WINDOW_SIZE: [f32; 2] = [620.0, 440.0];
@@ -47,14 +51,14 @@ struct SettingsSearchEntry {
 
 const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_GENERAL,
-        group: "General",
+        section: SETTINGS_SECTION_FILES,
+        group: "Save Actions",
         title: "Autosave",
         keywords: "auto save after delay focus window off file write",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_GENERAL,
-        group: "General",
+        section: SETTINGS_SECTION_FILES,
+        group: "Save Actions",
         title: "Autosave delay",
         keywords: "auto save delay milliseconds ms timer",
     },
@@ -68,7 +72,7 @@ const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
         section: SETTINGS_SECTION_GENERAL,
         group: "General",
         title: "Minimap",
-        keywords: "overview map scroll preview code",
+        keywords: "overview map scroll preview code visible",
     },
     SettingsSearchEntry {
         section: SETTINGS_SECTION_GENERAL,
@@ -79,12 +83,18 @@ const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
     SettingsSearchEntry {
         section: SETTINGS_SECTION_GENERAL,
         group: "General",
-        title: "Status bar",
-        keywords: "footer diagnostics git branch visible",
+        title: "Scroll beyond last line",
+        keywords: "scroll beyond last line end file editor",
     },
     SettingsSearchEntry {
         section: SETTINGS_SECTION_GENERAL,
         group: "General",
+        title: "Status bar",
+        keywords: "footer diagnostics git branch visible",
+    },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_DEVELOPER,
+        group: "Developer",
         title: "Devtools",
         keywords: "verbose logging profiling debug diagnostics",
     },
@@ -95,8 +105,8 @@ const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
         keywords: "font text size zoom pixels code",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_EDITOR,
-        group: "Text and Layout",
+        section: SETTINGS_SECTION_GENERAL,
+        group: "General",
         title: "UI font size",
         keywords: "interface font size panels labels",
     },
@@ -132,9 +142,9 @@ const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
     },
     SettingsSearchEntry {
         section: SETTINGS_SECTION_EDITOR,
-        group: "Display",
+        group: "Scrollbars",
         title: "Scrollbars",
-        keywords: "vertical horizontal scrollbar size scroll inertial mouse wheel",
+        keywords: "vertical horizontal scrollbar scrollbars scroller editor explorer code container visible hidden auto size theme track",
     },
     SettingsSearchEntry {
         section: SETTINGS_SECTION_EDITOR,
@@ -233,14 +243,14 @@ const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
         keywords: "completion popup widget icons status details items methods functions snippets",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_EDITOR,
-        group: "Language Features",
+        section: SETTINGS_SECTION_LSP,
+        group: "LSP",
         title: "Hover",
         keywords: "lsp hover tooltip delay sticky above long line warning",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_EDITOR,
-        group: "Language Features",
+        section: SETTINGS_SECTION_LSP,
+        group: "LSP",
         title: "LSP servers",
         keywords: "lsp language server servers command args arguments root markers rust analyzer pyright typescript gopls clangd jdtls intelephense ruby lua dart kotlin swift vue svelte docker terraform powershell",
     },
@@ -251,22 +261,40 @@ const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
         keywords: "inline suggest completions ghost text ai edits toolbar delay",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_EDITOR,
-        group: "Language Features",
+        section: SETTINGS_SECTION_LSP,
+        group: "LSP",
         title: "Code lens",
         keywords: "code lens inline actions font size",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_EDITOR,
-        group: "Language Features",
+        section: SETTINGS_SECTION_LSP,
+        group: "LSP",
         title: "Inlay hints",
         keywords: "inlay hints type parameter inline labels padding font",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_EDITOR,
-        group: "Language Features",
+        section: SETTINGS_SECTION_LSP,
+        group: "LSP",
         title: "Parameter hints",
         keywords: "signature help lsp parameter trigger cycle",
+    },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_LSP,
+        group: "LSP",
+        title: "Lightbulb",
+        keywords: "lightbulb code actions quick fix refactor lsp",
+    },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_LSP,
+        group: "LSP",
+        title: "Document highlights",
+        keywords: "document highlights symbol references lsp",
+    },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_LSP,
+        group: "LSP",
+        title: "Go to definitions",
+        keywords: "go to definition declarations implementations references tests lsp navigation peek",
     },
     SettingsSearchEntry {
         section: SETTINGS_SECTION_EDITOR,
@@ -323,25 +351,25 @@ const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
         keywords: "diff side by side inline whitespace unchanged algorithm word wrap",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_EDITOR,
+        section: SETTINGS_SECTION_SOURCE_CONTROL,
         group: "Source Control",
         title: "Source Control",
         keywords: "scm source control commit input actions badges repositories",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_EDITOR,
+        section: SETTINGS_SECTION_SOURCE_CONTROL,
         group: "Git",
         title: "Git repository detection",
         keywords: "git repository detection scan parent folders submodules worktrees",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_EDITOR,
+        section: SETTINGS_SECTION_SOURCE_CONTROL,
         group: "Git",
         title: "Git fetch, pull, and sync",
         keywords: "git fetch pull sync push prune tags rebase stash autofetch",
     },
     SettingsSearchEntry {
-        section: SETTINGS_SECTION_EDITOR,
+        section: SETTINGS_SECTION_SOURCE_CONTROL,
         group: "Git",
         title: "Git blame",
         keywords: "git blame status bar decoration hover whitespace template",
@@ -600,6 +628,9 @@ impl KuroyaApp {
                                     "settings_panel_section_scroll",
                                     self.settings_panel_section,
                                 ))
+                                .scroll_bar_visibility(
+                                    egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                                )
                                 .max_height((body_height - 44.0).max(160.0))
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
@@ -615,6 +646,11 @@ impl KuroyaApp {
                                             &mut highlight,
                                         ),
                                         SETTINGS_SECTION_EDITOR => render_editor_settings(
+                                            ui,
+                                            &mut self.settings_panel_draft,
+                                            &mut highlight,
+                                        ),
+                                        SETTINGS_SECTION_LSP => render_lsp_settings(
                                             ui,
                                             &mut self.settings_panel_draft,
                                             &mut highlight,
@@ -646,6 +682,18 @@ impl KuroyaApp {
                                             &mut actions.choose_ui_font,
                                             &mut actions.clear_ui_font,
                                             &mut actions.status,
+                                            &mut highlight,
+                                        ),
+                                        SETTINGS_SECTION_SOURCE_CONTROL => {
+                                            render_source_control_settings(
+                                                ui,
+                                                &mut self.settings_panel_draft,
+                                                &mut highlight,
+                                            )
+                                        }
+                                        SETTINGS_SECTION_DEVELOPER => render_developer_settings(
+                                            ui,
+                                            &mut self.settings_panel_draft,
                                             &mut highlight,
                                         ),
                                         _ => {}
@@ -885,6 +933,7 @@ fn render_settings_search_results(
     let mut clicked_result = None;
     egui::ScrollArea::vertical()
         .id_salt("settings_panel_search_results_scroll")
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .max_height(max_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -944,9 +993,7 @@ fn settings_search_entry_target(entry: SettingsSearchEntry) -> &'static str {
         (SETTINGS_SECTION_EDITOR, "Cursor and Highlight") => SETTINGS_TARGET_EDITOR_CURSOR,
         (SETTINGS_SECTION_EDITOR, "Code View") => SETTINGS_TARGET_EDITOR_CODE_VIEW,
         (SETTINGS_SECTION_EDITOR, "Diff Editor") => SETTINGS_TARGET_EDITOR_DIFF,
-        (SETTINGS_SECTION_EDITOR, "Source Control") | (SETTINGS_SECTION_EDITOR, "Git") => {
-            SETTINGS_TARGET_EDITOR_SOURCE_CONTROL
-        }
+        (SETTINGS_SECTION_EDITOR, "Scrollbars") => SETTINGS_TARGET_SCROLLBARS,
         (SETTINGS_SECTION_VIM, _) => SETTINGS_TARGET_VIM_KEYBINDINGS,
         (SETTINGS_SECTION_TERMINAL, "Profile") => SETTINGS_TARGET_TERMINAL_PROFILE,
         (SETTINGS_SECTION_TERMINAL, "Buffer and Text") => SETTINGS_TARGET_TERMINAL_BUFFER,
@@ -955,7 +1002,10 @@ fn settings_search_entry_target(entry: SettingsSearchEntry) -> &'static str {
         (SETTINGS_SECTION_TERMINAL, "Interaction") => SETTINGS_TARGET_TERMINAL_INTERACTION,
         (SETTINGS_SECTION_FILES, "Save Actions") => SETTINGS_TARGET_FILES_SAVE_ACTIONS,
         (SETTINGS_SECTION_FILES, "Save Cleanup") => SETTINGS_TARGET_FILES_SAVE_CLEANUP,
+        (SETTINGS_SECTION_LSP, _) => SETTINGS_TARGET_LSP,
         (SETTINGS_SECTION_APPEARANCE, _) => SETTINGS_TARGET_APPEARANCE,
+        (SETTINGS_SECTION_SOURCE_CONTROL, _) => SETTINGS_TARGET_SOURCE_CONTROL,
+        (SETTINGS_SECTION_DEVELOPER, _) => SETTINGS_TARGET_DEVELOPER,
         _ => SETTINGS_TARGET_GENERAL,
     }
 }
@@ -996,8 +1046,12 @@ fn settings_search_entry_matches(entry: &SettingsSearchEntry, tokens: &[String])
 mod tests {
     use super::actions::PendingSettingsPanelActions;
     use super::{
-        SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_EDITOR, SETTINGS_SECTION_TERMINAL,
-        SETTINGS_SECTION_VIM, SETTINGS_TARGET_APPEARANCE, SETTINGS_TARGET_TERMINAL_INTERACTION,
+        SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_DEVELOPER, SETTINGS_SECTION_EDITOR,
+        SETTINGS_SECTION_FILES, SETTINGS_SECTION_GENERAL, SETTINGS_SECTION_LSP,
+        SETTINGS_SECTION_SOURCE_CONTROL, SETTINGS_SECTION_TERMINAL, SETTINGS_SECTION_VIM,
+        SETTINGS_TARGET_APPEARANCE, SETTINGS_TARGET_DEVELOPER, SETTINGS_TARGET_FILES_SAVE_ACTIONS,
+        SETTINGS_TARGET_GENERAL, SETTINGS_TARGET_LSP, SETTINGS_TARGET_SCROLLBARS,
+        SETTINGS_TARGET_SOURCE_CONTROL, SETTINGS_TARGET_TERMINAL_INTERACTION,
         SETTINGS_TARGET_VIM_KEYBINDINGS, apply_settings_panel_escape,
         settings_panel_close_button_hover_text, settings_panel_close_button_label,
         settings_panel_escape_should_apply, settings_panel_footer_actions_enabled,
@@ -1045,9 +1099,12 @@ mod tests {
     fn settings_search_finds_lsp_servers() {
         let results = settings_search_results("lsp server");
 
-        assert!(results.iter().any(|entry| {
-            entry.section == SETTINGS_SECTION_EDITOR && entry.title == "LSP servers"
-        }));
+        let entry = results
+            .iter()
+            .find(|entry| entry.section == SETTINGS_SECTION_LSP && entry.title == "LSP servers")
+            .copied()
+            .expect("lsp server search result");
+        assert_eq!(settings_search_entry_target(entry), SETTINGS_TARGET_LSP);
     }
 
     #[test]
@@ -1057,6 +1114,122 @@ mod tests {
         assert!(results.iter().any(|entry| {
             entry.section == SETTINGS_SECTION_APPEARANCE && entry.title == "Custom theme files"
         }));
+    }
+
+    #[test]
+    fn settings_search_routes_split_entries_to_logical_sections() {
+        for (query, title, section, target) in [
+            (
+                "autosave delay",
+                "Autosave delay",
+                SETTINGS_SECTION_FILES,
+                SETTINGS_TARGET_FILES_SAVE_ACTIONS,
+            ),
+            (
+                "window zoom",
+                "Window zoom",
+                SETTINGS_SECTION_GENERAL,
+                SETTINGS_TARGET_GENERAL,
+            ),
+            (
+                "status bar visible",
+                "Status bar",
+                SETTINGS_SECTION_GENERAL,
+                SETTINGS_TARGET_GENERAL,
+            ),
+            (
+                "ui font size",
+                "UI font size",
+                SETTINGS_SECTION_GENERAL,
+                SETTINGS_TARGET_GENERAL,
+            ),
+            (
+                "font family",
+                "Font family",
+                SETTINGS_SECTION_EDITOR,
+                super::SETTINGS_TARGET_EDITOR_TEXT_LAYOUT,
+            ),
+            (
+                "minimap",
+                "Minimap",
+                SETTINGS_SECTION_GENERAL,
+                SETTINGS_TARGET_GENERAL,
+            ),
+            (
+                "minimap side",
+                "Editor minimap",
+                SETTINGS_SECTION_EDITOR,
+                super::SETTINGS_TARGET_EDITOR_CODE_VIEW,
+            ),
+            (
+                "smooth scroll",
+                "Smooth scrolling",
+                SETTINGS_SECTION_GENERAL,
+                SETTINGS_TARGET_GENERAL,
+            ),
+            (
+                "scroll beyond last line",
+                "Scroll beyond last line",
+                SETTINGS_SECTION_GENERAL,
+                SETTINGS_TARGET_GENERAL,
+            ),
+            (
+                "scrollbar visible",
+                "Scrollbars",
+                SETTINGS_SECTION_EDITOR,
+                SETTINGS_TARGET_SCROLLBARS,
+            ),
+            (
+                "devtools profiling",
+                "Devtools",
+                SETTINGS_SECTION_DEVELOPER,
+                SETTINGS_TARGET_DEVELOPER,
+            ),
+            (
+                "lsp server",
+                "LSP servers",
+                SETTINGS_SECTION_LSP,
+                SETTINGS_TARGET_LSP,
+            ),
+            (
+                "lsp hover",
+                "Hover",
+                SETTINGS_SECTION_LSP,
+                SETTINGS_TARGET_LSP,
+            ),
+            (
+                "code lens",
+                "Code lens",
+                SETTINGS_SECTION_LSP,
+                SETTINGS_TARGET_LSP,
+            ),
+            (
+                "inlay hints",
+                "Inlay hints",
+                SETTINGS_SECTION_LSP,
+                SETTINGS_TARGET_LSP,
+            ),
+            (
+                "signature help",
+                "Parameter hints",
+                SETTINGS_SECTION_LSP,
+                SETTINGS_TARGET_LSP,
+            ),
+            (
+                "git autofetch",
+                "Git fetch, pull, and sync",
+                SETTINGS_SECTION_SOURCE_CONTROL,
+                SETTINGS_TARGET_SOURCE_CONTROL,
+            ),
+        ] {
+            let entry = search_result(query, title);
+
+            assert_eq!(
+                entry.section, section,
+                "{query:?} should route to {section}"
+            );
+            assert_eq!(settings_search_entry_target(entry), target);
+        }
     }
 
     #[test]
@@ -1081,6 +1254,26 @@ mod tests {
             .into_iter()
             .find(|entry| entry.title == "Custom theme files")
             .expect("custom theme result");
+        let scrollbars = settings_search_results("horizontal scrollbar")
+            .into_iter()
+            .find(|entry| entry.title == "Scrollbars")
+            .expect("scrollbars result");
+        let lsp_servers = settings_search_results("lsp server")
+            .into_iter()
+            .find(|entry| entry.title == "LSP servers")
+            .expect("lsp server result");
+        let hover = settings_search_results("lsp hover")
+            .into_iter()
+            .find(|entry| entry.title == "Hover")
+            .expect("hover result");
+        let code_lens = settings_search_results("code lens")
+            .into_iter()
+            .find(|entry| entry.title == "Code lens")
+            .expect("code lens result");
+        let inlay_hints = settings_search_results("inlay hints")
+            .into_iter()
+            .find(|entry| entry.title == "Inlay hints")
+            .expect("inlay hints result");
 
         assert_eq!(
             settings_search_entry_target(vim),
@@ -1101,6 +1294,20 @@ mod tests {
         assert_eq!(
             settings_search_entry_target(custom_theme),
             SETTINGS_TARGET_APPEARANCE
+        );
+        assert_eq!(
+            settings_search_entry_target(scrollbars),
+            SETTINGS_TARGET_SCROLLBARS
+        );
+        assert_eq!(
+            settings_search_entry_target(lsp_servers),
+            SETTINGS_TARGET_LSP
+        );
+        assert_eq!(settings_search_entry_target(hover), SETTINGS_TARGET_LSP);
+        assert_eq!(settings_search_entry_target(code_lens), SETTINGS_TARGET_LSP);
+        assert_eq!(
+            settings_search_entry_target(inlay_hints),
+            SETTINGS_TARGET_LSP
         );
     }
 
@@ -1175,5 +1382,12 @@ mod tests {
     fn settings_footer_actions_are_disabled_while_vim_key_capture_is_active() {
         assert!(settings_panel_footer_actions_enabled(false));
         assert!(!settings_panel_footer_actions_enabled(true));
+    }
+
+    fn search_result(query: &str, title: &str) -> super::SettingsSearchEntry {
+        settings_search_results(query)
+            .into_iter()
+            .find(|entry| entry.title == title)
+            .unwrap_or_else(|| panic!("{query:?} should find {title:?}"))
     }
 }

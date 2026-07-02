@@ -1,6 +1,10 @@
 use crate::{
     KuroyaApp,
     path_display::{sanitized_display_label_cow, sanitized_owned_display_label},
+    source_control_git_panel_ui::{
+        SOURCE_CONTROL_GIT_ROW_HEIGHT, SOURCE_CONTROL_GIT_STASH_PANEL_DEFAULT_SIZE,
+        apply_git_panel_spacing, render_git_panel_row,
+    },
     ui_state::{
         clamp_selection, handle_list_navigation_keys, selected_row_scroll_offset,
         selection_page_step,
@@ -10,7 +14,6 @@ use eframe::egui::{self, Context, InputState, Key, RichText, ScrollArea, TextEdi
 use kuroya_core::{Command, GitStashEntry};
 use std::{borrow::Cow, ops::Range};
 
-const SOURCE_CONTROL_STASH_ROW_HEIGHT: f32 = 24.0;
 const SOURCE_CONTROL_STASH_PANEL_FRAGMENT_MAX_CHARS: usize = 160;
 const SOURCE_CONTROL_STASH_PANEL_FRAGMENT_ELLIPSIS: &str = "...";
 
@@ -27,8 +30,9 @@ impl KuroyaApp {
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 96.0])
-            .default_size([560.0, 380.0])
+            .default_size(SOURCE_CONTROL_GIT_STASH_PANEL_DEFAULT_SIZE)
             .show(ctx, |ui| {
+                apply_git_panel_spacing(ui);
                 ui.horizontal(|ui| {
                     ui.add(
                         TextEdit::singleline(&mut self.source_control_stash_message)
@@ -59,7 +63,7 @@ impl KuroyaApp {
                         input,
                         &mut self.source_control_stash_selected,
                         self.source_control_stashes.len(),
-                        selection_page_step(SOURCE_CONTROL_STASH_ROW_HEIGHT, viewport_height),
+                        selection_page_step(SOURCE_CONTROL_GIT_ROW_HEIGHT, viewport_height),
                     )
                 });
                 if ui.input(|input| input.key_pressed(Key::Enter)) {
@@ -82,13 +86,13 @@ impl KuroyaApp {
                             scroll_area.vertical_scroll_offset(selected_row_scroll_offset(
                                 self.source_control_stash_selected,
                                 self.source_control_stashes.len(),
-                                SOURCE_CONTROL_STASH_ROW_HEIGHT,
+                                SOURCE_CONTROL_GIT_ROW_HEIGHT,
                                 viewport_height,
                             ));
                     }
                     scroll_area.show_rows(
                         ui,
-                        SOURCE_CONTROL_STASH_ROW_HEIGHT,
+                        SOURCE_CONTROL_GIT_ROW_HEIGHT,
                         self.source_control_stashes.len(),
                         |ui, rows| {
                             let visible_rows = source_control_stash_visible_rows(
@@ -100,7 +104,14 @@ impl KuroyaApp {
                             for row_display in visible_rows.row_displays() {
                                 let row = row_display.row();
                                 let selected = row == self.source_control_stash_selected;
-                                let response = ui.selectable_label(selected, row_display.label());
+                                let response = render_git_panel_row(
+                                    ui,
+                                    selected,
+                                    row_display.stash_ref(),
+                                    row_display.message(),
+                                    row_display.short_oid(),
+                                )
+                                .on_hover_text(row_display.label());
                                 if response.clicked() {
                                     self.source_control_stash_selected = row;
                                     visible_selected_row = Some(row);
@@ -204,15 +215,29 @@ pub(crate) fn source_control_stash_label(stash: &GitStashEntry) -> String {
 struct SourceControlStashRowDisplay<'a> {
     row: usize,
     stash: &'a GitStashEntry,
+    stash_ref: String,
+    short_oid: Cow<'a, str>,
+    message: Cow<'a, str>,
     label: String,
 }
 
 impl<'a> SourceControlStashRowDisplay<'a> {
     fn new(row: usize, stash: &'a GitStashEntry) -> Self {
+        let stash_ref = source_control_stash_ref(stash);
+        let short_oid = source_control_stash_panel_display_label(&stash.short_oid, "unknown");
+        let message = source_control_stash_panel_display_label(&stash.message, "No message");
+        let label = source_control_stash_row_label_from_display(
+            &stash_ref,
+            short_oid.as_ref(),
+            message.as_ref(),
+        );
         Self {
             row,
             stash,
-            label: source_control_stash_row_label(stash),
+            stash_ref,
+            short_oid,
+            message,
+            label,
         }
     }
 
@@ -226,6 +251,18 @@ impl<'a> SourceControlStashRowDisplay<'a> {
 
     fn label(&self) -> &str {
         &self.label
+    }
+
+    fn stash_ref(&self) -> &str {
+        &self.stash_ref
+    }
+
+    fn short_oid(&self) -> &str {
+        self.short_oid.as_ref()
+    }
+
+    fn message(&self) -> &str {
+        self.message.as_ref()
     }
 }
 
@@ -448,17 +485,25 @@ fn source_control_hidden_stash_selection_status() -> String {
     "Selected git stash is not visible; scroll to it before acting".to_owned()
 }
 
+#[cfg(test)]
 fn source_control_stash_row_label(stash: &GitStashEntry) -> String {
+    let stash_ref = source_control_stash_ref(stash);
     let oid = source_control_stash_panel_display_label(&stash.short_oid, "unknown");
     let message = source_control_stash_panel_display_label(&stash.message, "No message");
-    let mut label = String::with_capacity(
-        source_control_stash_ref_len(stash.index) + 4 + oid.len() + message.len(),
-    );
-    push_source_control_stash_ref(&mut label, stash.index);
+    source_control_stash_row_label_from_display(&stash_ref, oid.as_ref(), message.as_ref())
+}
+
+fn source_control_stash_row_label_from_display(
+    stash_ref: &str,
+    oid: &str,
+    message: &str,
+) -> String {
+    let mut label = String::with_capacity(stash_ref.len() + 4 + oid.len() + message.len());
+    label.push_str(stash_ref);
     label.push_str("  ");
-    label.push_str(oid.as_ref());
+    label.push_str(oid);
     label.push_str("  ");
-    label.push_str(message.as_ref());
+    label.push_str(message);
     label
 }
 

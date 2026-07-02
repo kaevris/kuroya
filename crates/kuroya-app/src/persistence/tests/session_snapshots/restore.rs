@@ -16,5 +16,5 @@ fn load_session_starts_clean_when_snapshot_dir_is_obstructed() {
     assert!(snapshots.is_file());
     assert_eq!(quarantined_session_files(&state).len(), 1);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }

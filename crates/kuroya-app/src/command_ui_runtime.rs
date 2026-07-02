@@ -579,7 +579,9 @@ mod tests {
     fn toggle_vim_mode_does_not_apply_or_save_app_state_when_settings_save_fails() {
         let root = temp_root("vim-toggle-settings-save-fail");
         std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join(".kuroya"), "not a settings directory").unwrap();
+        let settings_path = settings_path(&root);
+        std::fs::create_dir_all(settings_path.parent().unwrap().parent().unwrap()).unwrap();
+        std::fs::write(settings_path.parent().unwrap(), "not a settings directory").unwrap();
         let mut app = app_for_test(root.clone(), EditorSettings::default());
         let app_state_path = root.join("app-state.json");
 

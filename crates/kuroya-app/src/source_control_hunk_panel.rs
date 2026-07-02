@@ -2,6 +2,10 @@ use crate::{
     KuroyaApp,
     file_runtime::file_path_open_buffer_or_known_openable,
     path_display::{display_path_label_cow, sanitized_display_label_cow},
+    source_control_git_panel_ui::{
+        SOURCE_CONTROL_GIT_HUNK_PANEL_DEFAULT_SIZE, SOURCE_CONTROL_GIT_ROW_HEIGHT,
+        apply_git_panel_spacing, render_git_panel_row,
+    },
     ui_state::{
         clamp_selection, handle_list_navigation_keys, plain_key_pressed,
         selected_row_scroll_offset, selection_page_step,
@@ -11,7 +15,6 @@ use eframe::egui::{self, Context, InputState, Key, RichText, ScrollArea};
 use kuroya_core::{Command, GitChangeStage, GitDiffHunk};
 use std::{borrow::Cow, fmt::Write as _, path::Path};
 
-const SOURCE_CONTROL_HUNK_ROW_HEIGHT: f32 = 24.0;
 const SOURCE_CONTROL_HUNK_HEADER_LABEL_MAX_CHARS: usize = 140;
 
 impl KuroyaApp {
@@ -27,8 +30,9 @@ impl KuroyaApp {
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 108.0])
-            .default_size([560.0, 360.0])
+            .default_size(SOURCE_CONTROL_GIT_HUNK_PANEL_DEFAULT_SIZE)
             .show(ctx, |ui| {
+                apply_git_panel_spacing(ui);
                 ui.horizontal(|ui| {
                     let title = self
                         .source_control_hunk_path
@@ -68,7 +72,7 @@ impl KuroyaApp {
                         input,
                         &mut self.source_control_hunk_selected,
                         self.source_control_hunks.len(),
-                        selection_page_step(SOURCE_CONTROL_HUNK_ROW_HEIGHT, viewport_height),
+                        selection_page_step(SOURCE_CONTROL_GIT_ROW_HEIGHT, viewport_height),
                     )
                 });
                 let stage = self.source_control_hunk_stage;
@@ -114,13 +118,13 @@ impl KuroyaApp {
                             scroll_area.vertical_scroll_offset(selected_row_scroll_offset(
                                 self.source_control_hunk_selected,
                                 self.source_control_hunks.len(),
-                                SOURCE_CONTROL_HUNK_ROW_HEIGHT,
+                                SOURCE_CONTROL_GIT_ROW_HEIGHT,
                                 viewport_height,
                             ));
                     }
                     scroll_area.show_rows(
                         ui,
-                        SOURCE_CONTROL_HUNK_ROW_HEIGHT,
+                        SOURCE_CONTROL_GIT_ROW_HEIGHT,
                         self.source_control_hunks.len(),
                         |ui, rows| {
                             for row in rows {
@@ -132,8 +136,14 @@ impl KuroyaApp {
                                     continue;
                                 };
                                 let selected = row == self.source_control_hunk_selected;
-                                let response =
-                                    ui.selectable_label(selected, row_display.label.as_str());
+                                let response = render_git_panel_row(
+                                    ui,
+                                    selected,
+                                    row_display.badge.as_str(),
+                                    row_display.header.as_str(),
+                                    row_display.detail.as_str(),
+                                )
+                                .on_hover_text(row_display.label.as_str());
                                 if response.clicked() {
                                     self.source_control_hunk_selected = row;
                                 }
@@ -333,6 +343,9 @@ fn source_control_hunk_header_label_cow(header: &str) -> Cow<'_, str> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceControlHunkRowDisplay {
+    badge: String,
+    header: String,
+    detail: String,
     label: String,
     hunk_index: usize,
     hunk_fingerprint: u64,
@@ -341,9 +354,14 @@ struct SourceControlHunkRowDisplay {
 
 impl SourceControlHunkRowDisplay {
     fn new(hunk: &GitDiffHunk) -> Self {
-        let header = source_control_hunk_header_label_cow(&hunk.header);
+        let header = source_control_hunk_header_label_cow(&hunk.header).into_owned();
+        let detail = source_control_hunk_detail(hunk);
+        let label = source_control_hunk_label_with_header(hunk, &header);
         Self {
-            label: source_control_hunk_label_with_header(hunk, header.as_ref()),
+            badge: source_control_hunk_badge(hunk.index),
+            header,
+            detail,
+            label,
             hunk_index: hunk.index,
             hunk_fingerprint: hunk.fingerprint,
             source_line: source_control_hunk_source_line(hunk),
@@ -362,6 +380,14 @@ impl SourceControlHunkRowDisplay {
             source_line: self.source_line,
         }
     }
+}
+
+fn source_control_hunk_badge(index: usize) -> String {
+    format!("#{index}")
+}
+
+fn source_control_hunk_detail(hunk: &GitDiffHunk) -> String {
+    format!("+{} -{}", hunk.additions, hunk.deletions)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

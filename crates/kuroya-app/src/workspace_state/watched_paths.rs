@@ -1,3 +1,7 @@
+#[cfg(not(test))]
+use crate::persistence_storage::app_settings_path;
+#[cfg(test)]
+use crate::persistence_storage::state_dir;
 use crate::workspace_trust::{
     trusted_workspace_paths_match, workspace_path_contains_lexically,
     workspace_path_stays_within_root_lexically,
@@ -61,8 +65,14 @@ fn watched_project_paths_match(left: &[PathBuf], right: &[PathBuf]) -> bool {
             .all(|(left, right)| left == right || trusted_workspace_paths_match(left, right))
 }
 
-pub(crate) fn settings_path(root: &Path) -> PathBuf {
-    root.join(".kuroya").join("settings.toml")
+pub(crate) fn settings_path(_root: &Path) -> PathBuf {
+    #[cfg(test)]
+    {
+        return state_dir(_root).join("settings.toml");
+    }
+
+    #[cfg(not(test))]
+    app_settings_path()
 }
 
 pub(crate) fn classify_watched_paths(
@@ -79,11 +89,11 @@ pub(crate) fn classify_watched_paths(
 
     for raw_path in changed {
         let path = lexical_normalize_path(raw_path);
-        if !path_is_within_workspace(&workspace_root, raw_path, &path) {
-            continue;
-        }
         if trusted_workspace_paths_match(&path, &settings) {
             classified.settings_changed = true;
+            continue;
+        }
+        if !path_is_within_workspace(&workspace_root, raw_path, &path) {
             continue;
         }
         if trusted_workspace_paths_match(&path, &tasks) {
@@ -303,8 +313,55 @@ fn changed_paths_affect_buffer_path(changed: &[PathBuf], buffer_path: &Path) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{WatchedPathChanges, classify_watched_paths};
+    use super::{WatchedPathChanges, classify_watched_paths, settings_path};
     use std::path::PathBuf;
+
+    #[test]
+    fn settings_path_uses_app_state_dir_outside_workspace() {
+        let root =
+            std::env::temp_dir().join(format!("kuroya-settings-workspace-{}", std::process::id()));
+        let settings = settings_path(&root);
+
+        assert_eq!(
+            settings.file_name().and_then(|name| name.to_str()),
+            Some("settings.toml")
+        );
+        assert!(
+            !settings.starts_with(&root),
+            "{} unexpectedly stayed under {}",
+            settings.display(),
+            root.display()
+        );
+        assert!(
+            !settings.starts_with(root.join(".kuroya")),
+            "{} unexpectedly used workspace-local settings",
+            settings.display()
+        );
+    }
+
+    #[test]
+    fn classify_watched_paths_uses_global_settings_but_keeps_tasks_and_plugins_local() {
+        let root = PathBuf::from("workspace");
+        let settings = settings_path(&root);
+        let workspace_settings = root.join(".kuroya/settings.toml");
+        let tasks = root.join(".kuroya/tasks.toml");
+        let plugin_manifest = root.join(".kuroya/plugins/example/plugin.toml");
+
+        assert_eq!(
+            classify_watched_paths(&root, &[workspace_settings]),
+            WatchedPathChanges::default()
+        );
+        assert_eq!(
+            classify_watched_paths(&root, &[settings, tasks, plugin_manifest]),
+            WatchedPathChanges {
+                settings_changed: true,
+                tasks_changed: true,
+                plugins_changed: true,
+                workspace_refresh_needed: false,
+                project_paths: Vec::new(),
+            }
+        );
+    }
 
     #[test]
     fn classify_watched_paths_keeps_first_raw_project_path_for_normalized_duplicates() {

@@ -327,11 +327,11 @@ fn partial_settings_toml_uses_defaults() {
     assert!(!settings.mouse_wheel_zoom);
     assert_eq!(
         settings.scrollbar_vertical,
-        EditorScrollbarVisibility::default()
+        EditorScrollbarVisibility::Hidden
     );
     assert_eq!(
         settings.scrollbar_horizontal,
-        EditorScrollbarVisibility::default()
+        EditorScrollbarVisibility::Hidden
     );
     assert_eq!(
         settings.scrollbar_vertical_scrollbar_size,
@@ -341,8 +341,11 @@ fn partial_settings_toml_uses_defaults() {
         settings.scrollbar_horizontal_scrollbar_size,
         DEFAULT_EDITOR_SCROLLBAR_HORIZONTAL_SCROLLBAR_SIZE
     );
-    assert!(!settings.scrollbar_scroll_by_page);
     assert!(!settings.scrollbar_ignore_horizontal_scrollbar_in_content_height);
+    assert_eq!(
+        settings.explorer_scrollbar,
+        EditorScrollbarVisibility::Hidden
+    );
     assert_eq!(settings.padding_top, DEFAULT_EDITOR_PADDING_TOP);
     assert_eq!(settings.padding_bottom, DEFAULT_EDITOR_PADDING_BOTTOM);
     assert!(settings.links);
@@ -373,7 +376,7 @@ fn partial_settings_toml_uses_defaults() {
     );
     assert!(settings.sticky_scroll_scroll_with_editor);
     assert_eq!(settings.line_height, DEFAULT_EDITOR_LINE_HEIGHT);
-    assert!(settings.minimap);
+    assert!(!settings.minimap);
     assert_eq!(settings.minimap_side, EditorMinimapSide::default());
     assert_eq!(settings.minimap_autohide, EditorMinimapAutohide::default());
     assert_eq!(settings.minimap_size, EditorMinimapSize::default());
@@ -833,7 +836,7 @@ fn partial_settings_toml_uses_defaults() {
     );
     assert_eq!(
         settings.bracket_pair_guides_horizontal,
-        EditorBracketPairGuideMode::Active
+        EditorBracketPairGuideMode::Off
     );
     assert!(settings.highlight_active_bracket_pair);
     assert_eq!(settings.match_brackets, EditorMatchBrackets::Always);
@@ -1232,6 +1235,128 @@ fn settings_parse_and_save_sanitize_stale_keymap_bindings() {
 
     assert!(!should_resave_saved);
     assert_eq!(saved.keymap.bindings, settings.keymap.bindings);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn settings_migrates_schema_two_keymap_to_include_command_palette_shortcut() {
+    let mut raw = EditorSettings::default();
+    raw.schema_version = 2;
+    raw.keymap
+        .bindings
+        .retain(|binding| binding.command != Command::ToggleCommandPalette);
+    assert!(
+        !raw.keymap
+            .bindings
+            .iter()
+            .any(|binding| binding.chord == "Ctrl+Shift+P")
+    );
+
+    let raw_text = toml::to_string_pretty(&raw).unwrap();
+    let (settings, should_resave) = parse_settings_text(&raw_text).unwrap();
+
+    assert!(should_resave);
+    assert_eq!(settings.schema_version, SETTINGS_SCHEMA_VERSION);
+    assert!(settings.keymap.bindings.iter().any(|binding| {
+        binding.chord == "Ctrl+Shift+P" && binding.command == Command::ToggleCommandPalette
+    }));
+}
+
+#[test]
+fn settings_command_palette_keymap_migration_respects_custom_ctrl_shift_p_binding() {
+    let mut raw = EditorSettings::default();
+    raw.schema_version = 2;
+    raw.keymap
+        .bindings
+        .retain(|binding| binding.command != Command::ToggleCommandPalette);
+    let terminal_binding = raw
+        .keymap
+        .bindings
+        .iter_mut()
+        .find(|binding| binding.command == Command::ToggleTerminal)
+        .expect("default keymap includes terminal shortcut");
+    terminal_binding.chord = "Ctrl+Shift+P".to_owned();
+
+    let raw_text = toml::to_string_pretty(&raw).unwrap();
+    let (settings, should_resave) = parse_settings_text(&raw_text).unwrap();
+
+    assert!(should_resave);
+    assert_eq!(settings.schema_version, SETTINGS_SCHEMA_VERSION);
+    assert!(
+        !settings
+            .keymap
+            .bindings
+            .iter()
+            .any(|binding| binding.command == Command::ToggleCommandPalette)
+    );
+    assert!(settings.keymap.bindings.iter().any(|binding| {
+        binding.chord == "Ctrl+Shift+P" && binding.command == Command::ToggleTerminal
+    }));
+}
+
+#[test]
+fn settings_save_sanitizes_lsp_server_configs() {
+    let path = temp_settings_path("lsp-sanitize");
+    let root = path.parent().unwrap().parent().unwrap().to_path_buf();
+    let raw = EditorSettings {
+        lsp_servers: vec![
+            crate::lsp::LspServerConfig {
+                language: " Rust ".to_owned(),
+                command: " rust-analyzer-custom ".to_owned(),
+                args: vec![" --stdio ".to_owned()],
+                extensions: vec![".rs".to_owned(), "rs".to_owned(), ".".to_owned()],
+                root_markers: vec![" Cargo.toml ".to_owned()],
+            },
+            crate::lsp::LspServerConfig {
+                language: "kuroya-empty".to_owned(),
+                command: String::new(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+            },
+            crate::lsp::LspServerConfig {
+                language: " kuroya-test ".to_owned(),
+                command: " kuroya-lsp ".to_owned(),
+                args: vec![" --stdio ".to_owned()],
+                extensions: vec![".kuroya".to_owned(), "kuroya".to_owned(), ".".to_owned()],
+                root_markers: vec![" .kuroya-root ".to_owned()],
+            },
+            crate::lsp::LspServerConfig {
+                language: "RUST".to_owned(),
+                command: "rust-analyzer-final".to_owned(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+            },
+        ],
+        ..EditorSettings::default()
+    };
+
+    raw.save(&path).unwrap();
+    let (saved, should_resave_saved) =
+        parse_settings_text(&fs::read_to_string(&path).unwrap()).unwrap();
+
+    assert!(!should_resave_saved);
+    assert_eq!(
+        saved.lsp_servers,
+        vec![
+            crate::lsp::LspServerConfig {
+                language: "rust".to_owned(),
+                command: "rust-analyzer-final".to_owned(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+            },
+            crate::lsp::LspServerConfig {
+                language: "kuroya-test".to_owned(),
+                command: "kuroya-lsp".to_owned(),
+                args: vec!["--stdio".to_owned()],
+                extensions: vec!["kuroya".to_owned()],
+                root_markers: vec![".kuroya-root".to_owned()],
+            },
+        ]
+    );
 
     fs::remove_dir_all(root).unwrap();
 }
