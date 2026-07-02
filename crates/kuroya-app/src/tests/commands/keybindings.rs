@@ -422,7 +422,7 @@ fn saving_keybinding_rolls_back_when_settings_save_fails() {
     assert_eq!(app.settings.keymap.bindings, original_bindings);
     assert!(app.status.starts_with("Could not save keybinding change: "));
     assert!(!settings_path(&root).exists());
-    fs::remove_dir_all(root).unwrap();
+    remove_root(&root);
 }
 
 #[test]
@@ -603,7 +603,7 @@ fn removing_keybinding_rolls_back_when_settings_save_fails() {
         keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
         Some("Ctrl+Shift+Z".to_owned())
     );
-    fs::remove_dir_all(root).unwrap();
+    remove_root(&root);
 }
 
 #[test]
@@ -1157,7 +1157,7 @@ fn keybinding_panel_captured_chord_persists_when_unbound() {
         keybinding_chord_for_command(&reloaded.keymap.bindings, &Command::Undo),
         Some("Ctrl+K".to_owned())
     );
-    fs::remove_dir_all(root).unwrap();
+    remove_root(&root);
 }
 
 fn app_for_keybindings_test(root: PathBuf, settings: EditorSettings) -> KuroyaApp {
@@ -1192,5 +1192,15 @@ fn temp_root(name: &str) -> PathBuf {
 
 fn block_settings_directory(root: &Path) {
     fs::create_dir_all(root).unwrap();
-    fs::write(root.join(".kuroya"), "not a directory").unwrap();
+    let settings = settings_path(root);
+    fs::create_dir_all(settings.parent().unwrap().parent().unwrap()).unwrap();
+    fs::write(settings.parent().unwrap(), "not a directory").unwrap();
+}
+
+fn remove_root(root: &Path) {
+    match fs::remove_dir_all(root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("failed to remove temp root: {error}"),
+    }
 }

@@ -214,11 +214,10 @@ pub(super) fn paint_sticky_scroll_row(
     } else {
         Vec::new()
     };
-    let active_indent_guide_column = data
-        .highlight_active_indentation
-        .visible(data.focused)
-        .then(|| active_indent_guide_column_for_buffer(buffer, data.tab_width))
-        .flatten();
+    let active_indent_guide_column = (data.indent_guides
+        && data.highlight_active_indentation.visible(data.focused))
+    .then(|| active_indent_guide_column_for_buffer(buffer, data.tab_width))
+    .flatten();
     let row_context = EditorRowContext {
         buffer,
         row_height: data.row_height,

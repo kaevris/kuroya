@@ -8,7 +8,8 @@ use eframe::egui;
 use kuroya_core::{
     DEFAULT_DIFF_SPLIT_VIEW_DEFAULT_RATIO, DEFAULT_EDITOR_MINIMAP_SECTION_HEADER_FONT_SIZE,
     DEFAULT_EDITOR_MINIMAP_SECTION_HEADER_LETTER_SPACING, DEFAULT_SCM_INPUT_FONT_SIZE,
-    EditorSettings, MAX_DIFF_CONTEXT_LINES, MAX_DIFF_HIDE_UNCHANGED_REGIONS_MINIMUM_LINE_COUNT,
+    EditorHighlightActiveIndentation, EditorSettings, MAX_DIFF_CONTEXT_LINES,
+    MAX_DIFF_HIDE_UNCHANGED_REGIONS_MINIMUM_LINE_COUNT,
     MAX_DIFF_HIDE_UNCHANGED_REGIONS_REVEAL_LINE_COUNT, MAX_DIFF_MAX_COMPUTATION_TIME_MS,
     MAX_DIFF_MAX_FILE_SIZE_MB, MAX_DIFF_RENDER_SIDE_BY_SIDE_INLINE_BREAKPOINT,
     MAX_DIFF_SPLIT_VIEW_DEFAULT_RATIO, MAX_EDITOR_FOLDING_MAXIMUM_REGIONS,
@@ -161,11 +162,21 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Active indent guide");
-            editor_highlight_active_indentation_combo(
-                ui,
-                "editor_highlight_active_indentation",
-                &mut draft.highlight_active_indentation,
-            );
+            let mut active_indentation = if draft.indent_guides {
+                draft.highlight_active_indentation
+            } else {
+                EditorHighlightActiveIndentation::Off
+            };
+            ui.add_enabled_ui(draft.indent_guides, |ui| {
+                editor_highlight_active_indentation_combo(
+                    ui,
+                    "editor_highlight_active_indentation",
+                    &mut active_indentation,
+                );
+            });
+            if draft.indent_guides {
+                draft.highlight_active_indentation = active_indentation;
+            }
             ui.end_row();
 
             ui.label("Bracket colorization");
@@ -607,8 +618,13 @@ pub(super) fn render_code_view_settings_with_highlight(
             );
             ui.end_row();
         });
+}
 
-    ui.add_space(12.0);
+pub(super) fn render_source_control_settings_with_highlight(
+    ui: &mut egui::Ui,
+    draft: &mut EditorSettings,
+    highlight: &mut SettingsHighlightState<'_>,
+) {
     settings_target_heading(
         ui,
         highlight,

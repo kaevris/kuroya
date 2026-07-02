@@ -30,11 +30,10 @@ pub(super) fn render_visible_editor_rows(
     active_find_match: usize,
     pending_actions: &mut PendingEditorPaneActions,
 ) {
-    let active_indent_guide_column = data
-        .highlight_active_indentation
-        .visible(data.focused)
-        .then(|| active_indent_guide_column_for_buffer(buffer, data.tab_width))
-        .flatten();
+    let active_indent_guide_column = (data.indent_guides
+        && data.highlight_active_indentation.visible(data.focused))
+    .then(|| active_indent_guide_column_for_buffer(buffer, data.tab_width))
+    .flatten();
     let visuals = ui.visuals();
     let row_context = EditorRowContext {
         buffer,

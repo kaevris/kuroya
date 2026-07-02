@@ -332,7 +332,6 @@ fn editor_visual_settings_parse_vs_code_style_values() {
              scrollbar_horizontal = \"hidden\"\n\
              scrollbar_vertical_scrollbar_size = 18\n\
              scrollbar_horizontal_scrollbar_size = 16\n\
-             scrollbar_scroll_by_page = true\n\
              scrollbar_ignore_horizontal_scrollbar_in_content_height = true\n\
              padding_top = 12\n\
              padding_bottom = 24\n\
@@ -957,7 +956,6 @@ fn editor_visual_settings_parse_vs_code_style_values() {
     );
     assert_eq!(settings.scrollbar_vertical_scrollbar_size, 18);
     assert_eq!(settings.scrollbar_horizontal_scrollbar_size, 16);
-    assert!(settings.scrollbar_scroll_by_page);
     assert!(settings.scrollbar_ignore_horizontal_scrollbar_in_content_height);
     assert_eq!(settings.padding_top, 12);
     assert_eq!(settings.padding_bottom, 24);

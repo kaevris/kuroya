@@ -359,13 +359,6 @@ async fn local_history_snapshot_lookup_candidates_async(
 async fn local_history_snapshot_lookup_candidate_sets_async(
     lookup: &LocalHistorySnapshotLookup,
 ) -> anyhow::Result<LocalHistorySnapshotLookupCandidates> {
-    let mut entries = match tokio::fs::read_dir(&lookup.dir).await {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            return Ok(LocalHistorySnapshotLookupCandidates::default());
-        }
-        Err(error) => return Err(error.into()),
-    };
     let primary_suffix = local_history_snapshot_suffix(&lookup.primary_name);
     let legacy_suffix = lookup
         .legacy_name
@@ -376,6 +369,41 @@ async fn local_history_snapshot_lookup_candidate_sets_async(
         legacy: Vec::with_capacity(LOCAL_HISTORY_MAX_READ_CANDIDATES),
     };
 
+    collect_local_history_snapshot_lookup_candidates_async(
+        &lookup.dir,
+        &primary_suffix,
+        legacy_suffix.as_deref(),
+        true,
+        &mut candidates,
+    )
+    .await?;
+    if let Some(legacy_dir) = &lookup.legacy_dir {
+        collect_local_history_snapshot_lookup_candidates_async(
+            legacy_dir,
+            &primary_suffix,
+            legacy_suffix.as_deref(),
+            false,
+            &mut candidates,
+        )
+        .await?;
+    }
+
+    Ok(candidates)
+}
+
+async fn collect_local_history_snapshot_lookup_candidates_async(
+    dir: &Path,
+    primary_suffix: &str,
+    legacy_suffix: Option<&str>,
+    prefer_primary: bool,
+    candidates: &mut LocalHistorySnapshotLookupCandidates,
+) -> anyhow::Result<()> {
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+
     while let Some(entry) = entries.next_entry().await? {
         let file_name = entry.file_name();
         let Some(file_name) = file_name.to_str() else {
@@ -383,14 +411,18 @@ async fn local_history_snapshot_lookup_candidate_sets_async(
         };
         if let Some(sequence) = local_history_snapshot_sequence(file_name, &primary_suffix) {
             push_local_history_snapshot_lookup_candidate_async(
-                &mut candidates.primary,
+                if prefer_primary {
+                    &mut candidates.primary
+                } else {
+                    &mut candidates.legacy
+                },
                 &entry,
                 sequence,
             )
             .await?;
             continue;
         }
-        if let Some(legacy_suffix) = &legacy_suffix {
+        if let Some(legacy_suffix) = legacy_suffix {
             if let Some(sequence) = local_history_snapshot_sequence(file_name, legacy_suffix) {
                 push_local_history_snapshot_lookup_candidate_async(
                     &mut candidates.legacy,
@@ -402,7 +434,7 @@ async fn local_history_snapshot_lookup_candidate_sets_async(
         }
     }
 
-    Ok(candidates)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -588,7 +620,7 @@ mod tests {
         prune_local_history_snapshots_async, push_bounded_local_history_snapshot_candidate,
         snapshot_file_before_save_async,
     };
-    use crate::persistence_storage::state_dir;
+    use crate::persistence_storage::{legacy_state_dir, state_dir};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -777,7 +809,7 @@ mod tests {
 
         assert_eq!(
             snapshot.parent().unwrap(),
-            workspace.join(".kuroya").join("history").join("src")
+            state_dir(&workspace).join("history").join("src")
         );
         assert!(snapshot_name.starts_with("42.bad_name.rs."));
         assert!(snapshot_name.ends_with(".bak"));
@@ -792,15 +824,14 @@ mod tests {
         let plain = local_history_snapshot_path(&workspace, &workspace.join("src/main.rs"), 42);
         assert_eq!(
             plain,
-            workspace
-                .join(".kuroya")
+            state_dir(&workspace)
                 .join("history")
                 .join("src")
                 .join("42.main.rs.bak")
         );
 
         let external = local_history_snapshot_path(&workspace, Path::new("D:/other/file.rs"), 7);
-        assert!(external.starts_with(workspace.join(".kuroya").join("history").join("external")));
+        assert!(external.starts_with(state_dir(&workspace).join("history").join("external")));
         assert_eq!(external.file_name().unwrap(), "7.file.rs.bak");
     }
 
@@ -850,8 +881,7 @@ mod tests {
         assert_ne!(first.file_name(), second.file_name());
         assert_eq!(
             first.parent().unwrap(),
-            workspace
-                .join(".kuroya")
+            state_dir(&workspace)
                 .join("history")
                 .join("src")
                 .join("bad_name")
@@ -885,8 +915,7 @@ mod tests {
 
         assert!(
             snapshot.starts_with(
-                workspace
-                    .join(".kuroya")
+                state_dir(&workspace)
                     .join("history")
                     .join("_CON")
                     .join("folder__")
@@ -961,6 +990,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_history_reads_workspace_local_legacy_state_dir() {
+        let workspace = temp_workspace("workspace-local-legacy");
+        fs::create_dir_all(workspace.join("src")).unwrap();
+        let path = workspace.join("src/main.rs");
+        fs::write(&path, "legacy text").unwrap();
+        let legacy_snapshot = legacy_state_dir(&workspace)
+            .join("history")
+            .join("src")
+            .join("1.main.rs.bak");
+        fs::create_dir_all(legacy_snapshot.parent().unwrap()).unwrap();
+        fs::write(&legacy_snapshot, "legacy text").unwrap();
+
+        let (snapshot, text) = latest_local_history_snapshot_text_async(&workspace, &path, 1024)
+            .await
+            .unwrap()
+            .expect("legacy workspace-local snapshot should load");
+
+        assert_eq!(snapshot.path, legacy_snapshot);
+        assert_eq!(text, "legacy text");
+        assert!(
+            snapshot_file_before_save_async(&workspace, &path, b"new text", 1024)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[tokio::test]
     async fn local_history_falls_back_to_legacy_when_primary_candidates_are_stale() {
         let workspace = temp_workspace("legacy-after-stale-primary");
         let path = workspace.join("src").join("bad:name.rs");
@@ -999,8 +1058,7 @@ mod tests {
         assert_eq!(equivalent, direct);
         assert_eq!(
             equivalent,
-            normalized_workspace
-                .join(".kuroya")
+            state_dir(&normalized_workspace)
                 .join("history")
                 .join("11.main.rs.bak")
         );
@@ -1012,8 +1070,7 @@ mod tests {
         );
         assert!(
             escaped.starts_with(
-                normalized_workspace
-                    .join(".kuroya")
+                state_dir(&normalized_workspace)
                     .join("history")
                     .join("external")
             )
@@ -1419,13 +1476,15 @@ mod tests {
     }
 
     fn temp_workspace(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
+        let workspace = std::env::temp_dir().join(format!(
             "kuroya-local-history-{name}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
-        ))
+        ));
+        fs::create_dir_all(&workspace).unwrap();
+        workspace
     }
 }

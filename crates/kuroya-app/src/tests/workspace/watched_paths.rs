@@ -1,4 +1,5 @@
 use crate::workspace_state::{WatchedPathChanges, classify_watched_paths};
+use crate::{persistence_storage::state_dir, workspace_state::settings_path};
 use std::path::PathBuf;
 
 #[test]
@@ -6,7 +7,7 @@ fn watched_paths_ignore_internal_state_but_keep_settings_and_project_changes() {
     let root = PathBuf::from("workspace");
     let src = root.join("src/main.rs");
     let duplicate_src = src.clone();
-    let settings = root.join(".kuroya/settings.toml");
+    let legacy_settings = root.join(".kuroya/settings.toml");
     let tasks = root.join(".kuroya/tasks.toml");
     let plugin_manifest = root.join(".kuroya/plugins/example/plugin.toml");
     let session = root.join(".kuroya/session.json");
@@ -18,7 +19,7 @@ fn watched_paths_ignore_internal_state_but_keep_settings_and_project_changes() {
             &[
                 session,
                 session_temp,
-                settings.clone(),
+                legacy_settings,
                 tasks.clone(),
                 plugin_manifest,
                 src.clone(),
@@ -26,7 +27,7 @@ fn watched_paths_ignore_internal_state_but_keep_settings_and_project_changes() {
             ]
         ),
         WatchedPathChanges {
-            settings_changed: true,
+            settings_changed: false,
             tasks_changed: true,
             plugins_changed: true,
             workspace_refresh_needed: true,
@@ -99,15 +100,15 @@ fn watched_paths_ignore_stacked_parent_reentry_and_current_dir_escapes() {
 #[test]
 fn watched_paths_match_workspace_paths_case_insensitively() {
     let root = PathBuf::from(r"C:\Repo\Project");
-    let settings = PathBuf::from(r"c:\repo\project\.kuroya\settings.toml");
+    let legacy_settings = PathBuf::from(r"c:\repo\project\.kuroya\settings.toml");
     let tasks = PathBuf::from(r"c:\repo\project\.kuroya\tasks.toml");
     let plugin_manifest = PathBuf::from(r"c:\repo\project\.kuroya\plugins\example\plugin.toml");
     let outside = PathBuf::from(r"c:\repo\other\src\main.rs");
 
     assert_eq!(
-        classify_watched_paths(&root, &[settings, tasks, plugin_manifest, outside]),
+        classify_watched_paths(&root, &[legacy_settings, tasks, plugin_manifest, outside]),
         WatchedPathChanges {
-            settings_changed: true,
+            settings_changed: false,
             tasks_changed: true,
             plugins_changed: true,
             workspace_refresh_needed: false,
@@ -125,10 +126,47 @@ fn watched_paths_do_not_treat_crash_recovery_writes_as_project_changes() {
             &root,
             &[
                 root.join(".kuroya/session.json"),
-                root.join(".kuroya/.session.json.tmp.2")
+                root.join(".kuroya/.session.json.tmp.2"),
+                state_dir(&root).join("session.json"),
+                state_dir(&root).join(".session.json.tmp.2"),
             ]
         ),
         WatchedPathChanges::default()
+    );
+}
+
+#[test]
+fn watched_paths_reload_global_settings_path() {
+    let root = PathBuf::from("workspace");
+    let settings = settings_path(&root);
+
+    assert_eq!(
+        classify_watched_paths(&root, &[settings]),
+        WatchedPathChanges {
+            settings_changed: true,
+            tasks_changed: false,
+            plugins_changed: false,
+            workspace_refresh_needed: false,
+            project_paths: Vec::new(),
+        }
+    );
+}
+
+#[test]
+fn watched_paths_keep_project_tasks_and_plugins_under_workspace_kuroya() {
+    let root = PathBuf::from("workspace");
+    let tasks = root.join(".kuroya/tasks.toml");
+    let plugin_manifest = root.join(".kuroya/plugins/example/plugin.toml");
+
+    assert_eq!(
+        classify_watched_paths(&root, &[tasks, plugin_manifest]),
+        WatchedPathChanges {
+            settings_changed: false,
+            tasks_changed: true,
+            plugins_changed: true,
+            workspace_refresh_needed: false,
+            project_paths: Vec::new(),
+        }
     );
 }
 

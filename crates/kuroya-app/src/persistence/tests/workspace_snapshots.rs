@@ -21,7 +21,7 @@ fn workspace_snapshot_save_and_load_latest_round_trip() {
     assert_eq!(workspace_snapshot_files(&workspace).unwrap().len(), 2);
     assert_no_session_temps(&workspace);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn workspace_snapshot_save_reuses_duplicate_latest_snapshot() {
     assert_eq!(loaded.path, changed_path);
     assert_eq!(loaded.session, changed);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -68,7 +68,7 @@ fn workspace_snapshot_save_rejects_mismatched_workspace_root() {
     );
     assert!(workspace_snapshot_files(&workspace).unwrap().is_empty());
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -101,7 +101,7 @@ fn workspace_snapshot_load_skips_corrupt_latest_snapshot() {
         .count();
     assert_eq!(quarantined, 1);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn workspace_snapshot_load_skips_mismatched_latest_snapshot() {
         .count();
     assert_eq!(quarantined, 1);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -164,7 +164,7 @@ fn workspace_snapshot_load_ignores_snapshot_named_directories() {
         vec![valid_path]
     );
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -186,7 +186,7 @@ fn workspace_snapshot_load_prefers_generated_names_over_unparsed_backups() {
     assert_eq!(loaded.path, newer_path);
     assert_eq!(loaded.session, newer);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -228,7 +228,7 @@ fn workspace_snapshot_load_normalizes_restored_paths() {
         "outside workspace snapshot text"
     );
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -264,7 +264,7 @@ fn workspace_snapshots_are_bounded_to_recent_entries() {
         MAX_WORKSPACE_SNAPSHOTS + 3
     )));
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -285,7 +285,7 @@ fn workspace_snapshot_save_trims_volatile_state_to_file_limit() {
     assert_eq!(loaded.session.recovery[0].text, "small recovered buffer");
     assert_eq!(workspace_snapshot_files(&workspace).unwrap().len(), 1);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -310,7 +310,7 @@ fn workspace_snapshot_save_trims_volatile_text_to_file_limit() {
     assert!(loaded.session.project_search_recent.is_empty());
     assert_eq!(workspace_snapshot_files(&workspace).unwrap().len(), 1);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -353,5 +353,5 @@ fn workspace_snapshot_records_skipped_recovery_instead_of_writing_unloadable_sna
             .contains("omitted to keep session file under")
     );
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }

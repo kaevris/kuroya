@@ -31,7 +31,7 @@ fn load_session_quarantines_corrupt_snapshot_and_starts_clean() {
     save_session(&workspace, &clean).unwrap();
     assert_eq!(PersistedSession::load(&workspace).unwrap(), Some(clean));
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -55,7 +55,7 @@ fn load_session_restores_latest_valid_backup_when_current_session_is_corrupt() {
     assert!(!session.exists());
     assert_eq!(quarantined_session_files(&state).len(), 1);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn load_session_quarantines_non_file_current_session_and_restores_backup() {
     assert_eq!(quarantined.len(), 1);
     assert!(quarantined[0].is_dir());
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -104,7 +104,7 @@ fn load_session_restores_latest_valid_backup_when_current_session_is_missing() {
     assert_eq!(PersistedSession::load(&workspace).unwrap(), Some(second));
     assert!(!session.exists());
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn load_session_quarantines_mismatched_current_session_and_restores_matching_bac
         1
     );
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn load_session_skips_corrupt_backup_and_restores_older_valid_backup() {
     assert_eq!(quarantined_session_files(&state).len(), 1);
     assert_eq!(quarantined_session_files(&snapshots).len(), 1);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -191,7 +191,7 @@ fn load_session_skips_mismatched_backup_and_restores_older_valid_backup() {
         1
     );
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn load_session_ignores_snapshot_named_backup_directories() {
     assert_eq!(quarantined_session_files(&state).len(), 1);
     assert!(snapshots.join("session.zzz.json").is_dir());
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn load_session_prefers_parsed_snapshot_names_over_unparsed_backups() {
 
     assert_eq!(PersistedSession::load(&workspace).unwrap(), Some(newer));
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn load_session_bounds_malformed_snapshot_scan_and_restores_generated_snapshot()
 
     assert_eq!(PersistedSession::load(&workspace).unwrap(), Some(valid));
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -301,5 +301,5 @@ fn load_session_quarantines_oversized_snapshot_and_starts_clean() {
         PERSISTED_SESSION_MAX_BYTES + 1
     );
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }

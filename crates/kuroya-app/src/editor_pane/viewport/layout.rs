@@ -2,8 +2,13 @@ use super::{
     EDITOR_MAX_FONT_SIZE, EDITOR_MIN_FONT_SIZE, EDITOR_MINIMAP_MIN_VIEWPORT_WIDTH,
     EDITOR_MINIMAP_WIDTH,
 };
+use crate::ui_scrollbars;
+#[cfg(test)]
+use eframe::egui::Color32;
 use eframe::egui::{self, Rect, pos2};
-use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
+#[cfg(test)]
+use egui::scroll_area::ScrollBarVisibility;
+use egui::scroll_area::ScrollSource;
 use kuroya_core::{
     EditorMinimapAutohide, EditorMinimapSide, EditorMinimapSize, EditorScrollbarVisibility,
     MAX_EDITOR_LINE_HEIGHT, TextBuffer, buffer::CursorPosition,
@@ -180,6 +185,28 @@ pub(super) fn editor_row_width(
     saturated_f32_from_f64(base_width + scroll_width + reveal_padding)
 }
 
+pub(super) fn editor_vertical_scrollbar_needed(
+    line_total: usize,
+    row_height: f32,
+    viewport_height: f32,
+) -> bool {
+    if !row_height.is_finite()
+        || row_height <= 0.0
+        || !viewport_height.is_finite()
+        || viewport_height <= 0.0
+    {
+        return false;
+    }
+
+    (line_total as f64 * row_height as f64) > viewport_height as f64 + 0.5
+}
+
+pub(super) fn editor_horizontal_scrollbar_needed(content_width: f32, viewport_width: f32) -> bool {
+    content_width.is_finite()
+        && viewport_width.is_finite()
+        && content_width > viewport_width.max(0.0) + 0.5
+}
+
 pub(super) fn editor_visible_rows_for_render(
     rows: Range<usize>,
     line_total: usize,
@@ -194,32 +221,67 @@ pub(super) fn editor_visible_rows_for_render(
 pub(super) fn editor_scrollbar_visibility(
     setting: EditorScrollbarVisibility,
 ) -> ScrollBarVisibility {
-    match setting {
-        EditorScrollbarVisibility::Auto => ScrollBarVisibility::VisibleWhenNeeded,
-        EditorScrollbarVisibility::Visible => ScrollBarVisibility::AlwaysVisible,
-        EditorScrollbarVisibility::Hidden => ScrollBarVisibility::AlwaysHidden,
-    }
+    ui_scrollbars::scrollbar_visibility(setting)
 }
 
-pub(super) fn editor_horizontal_scroll_enabled(_setting: EditorScrollbarVisibility) -> bool {
-    true
+#[cfg(test)]
+pub(super) fn editor_scrollbar_axis_enabled(setting: EditorScrollbarVisibility) -> bool {
+    ui_scrollbars::scrollbar_axis_enabled(setting)
 }
 
+pub(super) fn editor_scrollbar_axes(
+    vertical: EditorScrollbarVisibility,
+    horizontal: EditorScrollbarVisibility,
+    vertical_needed: bool,
+    horizontal_needed: bool,
+) -> ui_scrollbars::ScrollbarAxes {
+    ui_scrollbars::scrollbar_axes(vertical, horizontal, vertical_needed, horizontal_needed)
+}
+
+#[cfg(test)]
 pub(super) fn editor_scrollbar_visibility_for_axes(
     vertical: EditorScrollbarVisibility,
     horizontal: EditorScrollbarVisibility,
+    vertical_needed: bool,
+    horizontal_needed: bool,
 ) -> ScrollBarVisibility {
-    if matches!(vertical, EditorScrollbarVisibility::Visible)
-        || matches!(horizontal, EditorScrollbarVisibility::Visible)
-    {
-        return ScrollBarVisibility::AlwaysVisible;
-    }
-
-    ScrollBarVisibility::AlwaysHidden
+    ui_scrollbars::scrollbar_visibility_for_axes(
+        vertical,
+        horizontal,
+        vertical_needed,
+        horizontal_needed,
+    )
 }
 
+pub(super) fn editor_scrollbar_rect_for_axes(
+    rect: Rect,
+    axes: ui_scrollbars::ScrollbarAxes,
+) -> Rect {
+    ui_scrollbars::scrollbar_rect_for_axes(rect, axes)
+}
+
+#[cfg(test)]
 pub(super) fn editor_scrollbar_width(vertical_size: usize, horizontal_size: usize) -> f32 {
-    vertical_size.max(horizontal_size).max(1) as f32
+    ui_scrollbars::themed_scrollbar_width(vertical_size, horizontal_size)
+}
+
+pub(super) fn editor_scrollbar_style(
+    vertical_size: usize,
+    horizontal_size: usize,
+    floating: bool,
+) -> egui::style::ScrollStyle {
+    ui_scrollbars::themed_scrollbar_style(vertical_size, horizontal_size, floating)
+}
+
+pub(super) fn apply_editor_scrollbar_visuals(ui: &mut egui::Ui) {
+    ui_scrollbars::apply_themed_scrollbar_visuals(ui);
+}
+
+#[cfg(test)]
+pub(super) fn editor_scrollbar_handle_colors(
+    visuals: &egui::Visuals,
+) -> (Color32, Color32, Color32) {
+    ui_scrollbars::themed_scrollbar_handle_colors(visuals)
 }
 
 pub(super) fn editor_wheel_scroll_multiplier(

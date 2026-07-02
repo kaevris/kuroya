@@ -528,14 +528,15 @@ fn terminal_restore_bounds_total_scrollback_and_prioritizes_active_session() {
         .sum::<usize>();
     assert!(total_scrollback_bytes <= max_persisted_terminal_scrollback_total_bytes_for_test());
     assert!(
-        pane.sessions[5]
+        pane.sessions[pane.active_session]
             .search_buffer
             .ends_with("active-marker-6\n")
     );
+    assert!(pane.sessions.len() < snapshots.len());
     assert!(
         pane.sessions
             .iter()
-            .any(|session| session.search_buffer.is_empty())
+            .all(|session| !session.search_buffer.is_empty())
     );
 }
 

@@ -61,12 +61,9 @@ impl AppStartupContext {
 
         let workspace_trusted =
             workspace_is_trusted(&app_state.trusted_workspaces, &workspace.root);
-        let mut settings = load_workspace_settings(&workspace.root, workspace_trusted)
-            .map(|loaded| loaded.settings)
-            .unwrap_or_default();
-        if !workspace_trusted {
-            apply_restricted_app_state_vim_settings(&mut settings, &app_state);
-        }
+        let settings =
+            load_startup_workspace_settings(&workspace.root, workspace_trusted, &app_state)
+                .unwrap_or_default();
         startup_profiler.record("Load settings");
 
         install_fonts(&cc.egui_ctx, &workspace.root, &settings);
@@ -201,6 +198,19 @@ fn load_startup_session(
     PersistedSession::load(workspace_root)
 }
 
+fn load_startup_workspace_settings(
+    workspace_root: &Path,
+    workspace_trusted: bool,
+    app_state: &AppState,
+) -> anyhow::Result<EditorSettings> {
+    let loaded = load_workspace_settings(workspace_root, workspace_trusted)?;
+    let mut settings = loaded.settings;
+    if loaded.source.applies_startup_app_state_fallback() {
+        apply_restricted_app_state_vim_settings(&mut settings, app_state);
+    }
+    Ok(settings)
+}
+
 fn startup_file_watcher(workspace_root: &Path, workspace_placeholder: bool) -> Option<FileWatcher> {
     if workspace_placeholder {
         None
@@ -271,10 +281,10 @@ mod tests {
     use super::{
         apply_restricted_app_state_vim_settings, create_runtime, empty_startup_workspace_root,
         home_dir_from_env_values, is_empty_startup_workspace_root, load_startup_session,
-        startup_recent_project_is_usable, startup_workspace_root,
+        load_startup_workspace_settings, startup_recent_project_is_usable, startup_workspace_root,
         startup_workspace_root_with_dir_probe, terminal_root_for_workspace_with_home,
     };
-    use crate::persistence::AppState;
+    use crate::{persistence::AppState, workspace_state::settings_path};
     use kuroya_core::{EditorSettings, EditorVimKeyOverride, EditorVimSettings, ThemeSettings};
     use std::{
         ffi::OsString,
@@ -401,6 +411,82 @@ mod tests {
         let root = empty_startup_workspace_root();
 
         assert_eq!(load_startup_session(&root, true).unwrap(), None);
+    }
+
+    #[test]
+    fn startup_missing_workspace_settings_restores_vim_from_app_state() {
+        let root = temp_workspace("missing-settings-vim-fallback");
+        fs::create_dir_all(&root).unwrap();
+        let settings_path = settings_path(&root);
+        let app_state = AppState {
+            vim_keybindings: Some(true),
+            vim: Some(EditorVimSettings {
+                disabled_bindings: vec!["Q".to_owned(), "<Nope>".to_owned()],
+                key_overrides: vec![
+                    EditorVimKeyOverride {
+                        before: "<Home>".to_owned(),
+                        after: "0".to_owned(),
+                        command: None,
+                    },
+                    EditorVimKeyOverride {
+                        before: "L".to_owned(),
+                        after: "<Left>".to_owned(),
+                        command: None,
+                    },
+                ],
+            }),
+            ..AppState::default()
+        };
+
+        let settings = load_startup_workspace_settings(&root, true, &app_state).unwrap();
+
+        assert!(settings.vim_keybindings);
+        assert_eq!(
+            settings.vim,
+            EditorVimSettings {
+                disabled_bindings: vec!["Q".to_owned()],
+                key_overrides: vec![EditorVimKeyOverride {
+                    before: "<Home>".to_owned(),
+                    after: "0".to_owned(),
+                    command: None,
+                }],
+            }
+        );
+        assert!(!settings_path.exists());
+        assert!(!settings_path.parent().unwrap().exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_untrusted_workspace_settings_restores_vim_from_app_state() {
+        let root = temp_workspace("untrusted-settings-vim-fallback");
+        fs::create_dir_all(&root).unwrap();
+        let settings_path = settings_path(&root);
+        fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        fs::write(
+            &settings_path,
+            "vim_keybindings = false\nword_separators = \".\"\n",
+        )
+        .unwrap();
+        let app_state = AppState {
+            vim_keybindings: Some(true),
+            vim: Some(EditorVimSettings {
+                disabled_bindings: vec!["Q".to_owned()],
+                key_overrides: Vec::new(),
+            }),
+            ..AppState::default()
+        };
+
+        let settings = load_startup_workspace_settings(&root, false, &app_state).unwrap();
+
+        assert!(settings.vim_keybindings);
+        assert_eq!(settings.vim.disabled_bindings, ["Q"]);
+        assert_eq!(
+            settings.word_separators,
+            EditorSettings::default().word_separators
+        );
+        fs::remove_dir_all(settings_path.parent().unwrap()).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

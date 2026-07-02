@@ -1,4 +1,4 @@
-use crate::persistence_storage::state_dir;
+use crate::persistence_storage::{legacy_state_dir, state_dir};
 use std::{
     ffi::{OsStr, OsString},
     path::{Component, Path, PathBuf},
@@ -34,6 +34,7 @@ pub(super) fn local_history_snapshot_location(
 #[derive(Debug, Clone)]
 pub(super) struct LocalHistorySnapshotLookup {
     pub(super) dir: PathBuf,
+    pub(super) legacy_dir: Option<PathBuf>,
     pub(super) primary_name: String,
     pub(super) legacy_name: Option<String>,
 }
@@ -45,17 +46,22 @@ pub(super) fn local_history_snapshot_lookup(
     let workspace_root = normalize_path_lexically(workspace_root);
     let path = normalize_path_lexically(path);
     let mut dir = state_dir(&workspace_root).join("history");
+    let mut legacy_dir = legacy_state_dir(&workspace_root).join("history");
     let collision_path = if let Ok(relative) = path.strip_prefix(&workspace_root) {
         append_sanitized_parent_components(&mut dir, relative);
+        append_sanitized_parent_components(&mut legacy_dir, relative);
         relative
     } else {
         dir = dir.join("external").join(path_hash(&path));
+        legacy_dir = legacy_dir.join("external").join(path_hash(&path));
         path.as_path()
     };
     let (primary_name, legacy_name) =
         local_history_file_names_from_normalized_path(&path, collision_path);
+    let legacy_dir = (legacy_dir != dir).then_some(legacy_dir);
     LocalHistorySnapshotLookup {
         dir,
+        legacy_dir,
         primary_name,
         legacy_name,
     }

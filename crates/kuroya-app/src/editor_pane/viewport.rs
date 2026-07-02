@@ -21,10 +21,10 @@ use eframe::egui::{
 use kuroya_core::settings::clamp_editor_font_size;
 use kuroya_core::{BufferId, EditorCursorSurroundingLinesStyle, buffer::CursorPosition};
 use layout::{
-    editor_content_rect_with_padding, editor_horizontal_scroll_enabled, editor_minimap_visible,
+    editor_content_rect_with_padding, editor_horizontal_scrollbar_needed, editor_minimap_visible,
     editor_minimap_width, editor_mouse_wheel_zoom_delta_y, editor_mouse_wheel_zoom_modifier,
-    editor_rect_finite, editor_row_width, editor_scroll_source,
-    editor_scrollbar_visibility_for_axes, editor_scrollbar_width, editor_viewport_rects,
+    editor_rect_finite, editor_row_width, editor_scroll_source, editor_scrollbar_axes,
+    editor_scrollbar_rect_for_axes, editor_vertical_scrollbar_needed, editor_viewport_rects,
     editor_viewport_row_height, editor_visible_rows_for_render, editor_wheel_scroll_multiplier,
     editor_zoomed_font_size, finite_non_negative_or, minimap_decoration_line_sets,
 };
@@ -43,7 +43,7 @@ use sticky::{
 
 pub(crate) use layout::editor_scroll_row_count;
 #[cfg(test)]
-use layout::editor_scrollbar_visibility;
+use layout::{editor_scrollbar_visibility, editor_scrollbar_visibility_for_axes};
 pub(crate) use overview::diff_patch_overview_lines;
 
 mod layout;
@@ -154,6 +154,16 @@ impl KuroyaApp {
             viewport_height,
             data.row_height,
             self.settings.scroll_beyond_last_line,
+        );
+        let vertical_scrollbar_needed =
+            editor_vertical_scrollbar_needed(line_total, data.row_height, viewport_height);
+        let horizontal_scrollbar_needed =
+            editor_horizontal_scrollbar_needed(row_width, content_rect.width());
+        let scrollbar_axes = editor_scrollbar_axes(
+            self.settings.scrollbar_vertical,
+            self.settings.scrollbar_horizontal,
+            vertical_scrollbar_needed,
+            horizontal_scrollbar_needed,
         );
         let scroll_to_visible_row = pending_scroll_to_line
             .or_else(|| {
@@ -300,14 +310,16 @@ impl KuroyaApp {
                 |ui| {
                     ui.set_min_size(content_rect.size());
                     ui.set_max_size(content_rect.size());
+                    let content_style = ui.style().clone();
+                    ui.visuals_mut().clip_rect_margin = 0.0;
                     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                    ui.spacing_mut().scroll.floating = self
-                        .settings
-                        .scrollbar_ignore_horizontal_scrollbar_in_content_height;
-                    ui.spacing_mut().scroll.bar_width = editor_scrollbar_width(
+                    ui.spacing_mut().scroll = layout::editor_scrollbar_style(
                         self.settings.scrollbar_vertical_scrollbar_size,
                         self.settings.scrollbar_horizontal_scrollbar_size,
+                        self.settings
+                            .scrollbar_ignore_horizontal_scrollbar_in_content_height,
                     );
+                    layout::apply_editor_scrollbar_visuals(ui);
                     let zoom_modifier_active = self.settings.mouse_wheel_zoom
                         && ui.input(|input| editor_mouse_wheel_zoom_modifier(input.modifiers));
                     let smooth_scroll_delta = ui.input(|input| input.smooth_scroll_delta);
@@ -332,16 +344,19 @@ impl KuroyaApp {
                             .hover_pos()
                             .is_some_and(|pos| content_rect.contains(pos))
                     });
+                    let current_vertical_offset = self
+                        .editor_scroll_offsets
+                        .get(&scroll_key)
+                        .copied()
+                        .unwrap_or_default();
+                    let current_horizontal_offset = horizontal_scroll_offset.unwrap_or_default();
                     let inertial_offsets = editor_inertial_scroll_offsets(
                         &mut self.editor_inertial_scrolls,
                         scroll_key,
                         self.settings.inertial_scroll && !zoom_modifier_active,
                         content_hovered,
-                        self.editor_scroll_offsets
-                            .get(&scroll_key)
-                            .copied()
-                            .unwrap_or_default(),
-                        horizontal_scroll_offset.unwrap_or_default(),
+                        current_vertical_offset,
+                        current_horizontal_offset,
                         line_total,
                         data.row_height,
                         viewport_height,
@@ -368,19 +383,17 @@ impl KuroyaApp {
                     if inertial_offsets.active {
                         ui.ctx().request_repaint_after(Duration::from_millis(16));
                     }
-                    let mut scroll_area = ScrollArea::new([
-                        editor_horizontal_scroll_enabled(self.settings.scrollbar_horizontal),
-                        true,
-                    ])
-                    .id_salt(scroll_id)
-                    .scroll_bar_visibility(editor_scrollbar_visibility_for_axes(
-                        self.settings.scrollbar_vertical,
-                        self.settings.scrollbar_horizontal,
-                    ))
-                    .scroll_source(editor_scroll_source(self.settings.inertial_scroll))
-                    .auto_shrink([false, false])
-                    .wheel_scroll_multiplier(wheel_scroll_multiplier)
-                    .animated(self.settings.smooth_scrolling);
+                    let mut scroll_area = ScrollArea::new([true, true])
+                        .id_salt(scroll_id)
+                        .scroll_bar_visibility(scrollbar_axes.visibility)
+                        .scroll_bar_rect(editor_scrollbar_rect_for_axes(
+                            content_rect,
+                            scrollbar_axes,
+                        ))
+                        .scroll_source(editor_scroll_source(self.settings.inertial_scroll))
+                        .auto_shrink([false, false])
+                        .wheel_scroll_multiplier(wheel_scroll_multiplier)
+                        .animated(self.settings.smooth_scrolling);
                     if let Some(offset) = forced_scroll_offset {
                         scroll_area = scroll_area.vertical_scroll_offset(offset);
                     }
@@ -388,6 +401,7 @@ impl KuroyaApp {
                         scroll_area = scroll_area.horizontal_scroll_offset(offset);
                     }
                     scroll_area.show_rows(ui, data.row_height, line_total, |ui, rows| {
+                        ui.set_style(content_style.clone());
                         ui.set_min_width(row_width);
                         if let Some(rows) = editor_visible_rows_for_render(rows, line_total) {
                             render_visible_editor_rows(
@@ -640,16 +654,20 @@ mod tests {
     use super::{
         DIFF_PATCH_OVERVIEW_MAX_SCAN_BYTES, DIFF_PATCH_OVERVIEW_MAX_SCAN_LINES,
         EDITOR_PLACEHOLDER_MAX_CHARS, active_find_match_for_cursor, diff_patch_overview_lines,
-        editor_content_rect_with_padding, editor_horizontal_scroll_enabled, editor_minimap_visible,
-        editor_minimap_width, editor_placeholder_display_text, editor_row_width,
-        editor_scroll_row_count, editor_scroll_source, editor_scrollbar_visibility,
-        editor_scrollbar_visibility_for_axes, editor_scrollbar_width, editor_viewport_rects,
-        editor_viewport_row_height, editor_visible_rows_for_render, editor_wheel_scroll_multiplier,
-        editor_zoomed_font_size, minimap_decoration_line_sets, overview_ruler_border_rect,
-        overview_ruler_cursor_lines, overview_ruler_cursor_marker_rect,
-        scm_diff_overview_marker_rect,
+        editor_content_rect_with_padding, editor_minimap_visible, editor_minimap_width,
+        editor_placeholder_display_text, editor_row_width, editor_scroll_row_count,
+        editor_scroll_source, editor_scrollbar_axes, editor_scrollbar_visibility,
+        editor_scrollbar_visibility_for_axes, editor_viewport_rects, editor_viewport_row_height,
+        editor_visible_rows_for_render, editor_wheel_scroll_multiplier, editor_zoomed_font_size,
+        layout::{
+            editor_horizontal_scrollbar_needed, editor_scrollbar_axis_enabled,
+            editor_scrollbar_handle_colors, editor_scrollbar_rect_for_axes, editor_scrollbar_style,
+            editor_scrollbar_width, editor_vertical_scrollbar_needed,
+        },
+        minimap_decoration_line_sets, overview_ruler_border_rect, overview_ruler_cursor_lines,
+        overview_ruler_cursor_marker_rect, scm_diff_overview_marker_rect,
     };
-    use eframe::egui::{Rect, pos2};
+    use eframe::egui::{Color32, Rect, pos2};
     use egui::scroll_area::ScrollBarVisibility;
     use kuroya_core::{
         EditorMinimapAutohide, EditorMinimapSide, EditorMinimapSize, EditorScrollbarVisibility,
@@ -898,6 +916,19 @@ mod tests {
     }
 
     #[test]
+    fn editor_scrollbar_needed_checks_axis_overflow() {
+        assert!(editor_vertical_scrollbar_needed(11, 10.0, 100.0));
+        assert!(!editor_vertical_scrollbar_needed(10, 10.0, 100.0));
+        assert!(!editor_vertical_scrollbar_needed(11, f32::NAN, 100.0));
+        assert!(!editor_vertical_scrollbar_needed(11, 10.0, f32::INFINITY));
+
+        assert!(editor_horizontal_scrollbar_needed(120.0, 100.0));
+        assert!(!editor_horizontal_scrollbar_needed(100.0, 100.0));
+        assert!(!editor_horizontal_scrollbar_needed(f32::NAN, 100.0));
+        assert!(!editor_horizontal_scrollbar_needed(120.0, f32::NAN));
+    }
+
+    #[test]
     fn editor_visible_rows_for_render_clamps_huge_ranges() {
         assert_eq!(
             editor_visible_rows_for_render(5..usize::MAX, 10),
@@ -925,46 +956,165 @@ mod tests {
             editor_scrollbar_visibility(EditorScrollbarVisibility::Hidden),
             ScrollBarVisibility::AlwaysHidden
         );
-        assert!(editor_horizontal_scroll_enabled(
+        assert!(editor_scrollbar_axis_enabled(
             EditorScrollbarVisibility::Auto
         ));
-        assert!(editor_horizontal_scroll_enabled(
+        assert!(editor_scrollbar_axis_enabled(
             EditorScrollbarVisibility::Visible
         ));
-        assert!(editor_horizontal_scroll_enabled(
+        assert!(!editor_scrollbar_axis_enabled(
             EditorScrollbarVisibility::Hidden
         ));
-        assert_eq!(
-            editor_scrollbar_visibility_for_axes(
-                EditorScrollbarVisibility::Auto,
-                EditorScrollbarVisibility::Auto
-            ),
-            ScrollBarVisibility::AlwaysHidden
+
+        let axes = editor_scrollbar_axes(
+            EditorScrollbarVisibility::Auto,
+            EditorScrollbarVisibility::Auto,
+            true,
+            false,
         );
-        assert_eq!(
-            editor_scrollbar_visibility_for_axes(
-                EditorScrollbarVisibility::Hidden,
-                EditorScrollbarVisibility::Hidden
-            ),
-            ScrollBarVisibility::AlwaysHidden
+        assert!(axes.vertical_visible);
+        assert!(!axes.horizontal_visible);
+        assert_eq!(axes.visibility, ScrollBarVisibility::AlwaysVisible);
+
+        let axes = editor_scrollbar_axes(
+            EditorScrollbarVisibility::Hidden,
+            EditorScrollbarVisibility::Hidden,
+            true,
+            true,
         );
-        assert_eq!(
-            editor_scrollbar_visibility_for_axes(
-                EditorScrollbarVisibility::Auto,
-                EditorScrollbarVisibility::Hidden
-            ),
-            ScrollBarVisibility::AlwaysHidden
+        assert!(!axes.vertical_visible);
+        assert!(!axes.horizontal_visible);
+        assert_eq!(axes.visibility, ScrollBarVisibility::AlwaysHidden);
+
+        let axes = editor_scrollbar_axes(
+            EditorScrollbarVisibility::Visible,
+            EditorScrollbarVisibility::Hidden,
+            false,
+            true,
         );
+        assert!(axes.vertical_visible);
+        assert!(!axes.horizontal_visible);
+        assert_eq!(axes.visibility, ScrollBarVisibility::AlwaysVisible);
+        let rect = Rect::from_min_max(pos2(10.0, 20.0), pos2(110.0, 220.0));
+        let vertical_only_rect = editor_scrollbar_rect_for_axes(rect, axes);
+        assert!(vertical_only_rect.left() > rect.right());
+        assert_eq!(vertical_only_rect.top(), rect.top());
+        assert_eq!(vertical_only_rect.bottom(), rect.bottom());
+
+        let axes = editor_scrollbar_axes(
+            EditorScrollbarVisibility::Hidden,
+            EditorScrollbarVisibility::Visible,
+            true,
+            false,
+        );
+        assert!(!axes.vertical_visible);
+        assert!(axes.horizontal_visible);
+        assert_eq!(axes.visibility, ScrollBarVisibility::AlwaysVisible);
+        let horizontal_only_rect = editor_scrollbar_rect_for_axes(rect, axes);
+        assert_eq!(horizontal_only_rect.left(), rect.left());
+        assert_eq!(horizontal_only_rect.right(), rect.right());
+        assert!(horizontal_only_rect.top() > rect.bottom());
+
+        let axes = editor_scrollbar_axes(
+            EditorScrollbarVisibility::Auto,
+            EditorScrollbarVisibility::Hidden,
+            true,
+            true,
+        );
+        assert!(axes.vertical_visible);
+        assert!(!axes.horizontal_visible);
+        assert_eq!(axes.visibility, ScrollBarVisibility::AlwaysVisible);
+
+        let axes = editor_scrollbar_axes(
+            EditorScrollbarVisibility::Hidden,
+            EditorScrollbarVisibility::Auto,
+            true,
+            true,
+        );
+        assert!(!axes.vertical_visible);
+        assert!(axes.horizontal_visible);
+        assert_eq!(axes.visibility, ScrollBarVisibility::AlwaysVisible);
+
+        let axes = editor_scrollbar_axes(
+            EditorScrollbarVisibility::Auto,
+            EditorScrollbarVisibility::Auto,
+            false,
+            false,
+        );
+        assert!(!axes.vertical_visible);
+        assert!(!axes.horizontal_visible);
+        assert_eq!(axes.visibility, ScrollBarVisibility::AlwaysHidden);
+        let hidden_rect = editor_scrollbar_rect_for_axes(rect, axes);
+        assert!(hidden_rect.left() > rect.right());
+        assert!(hidden_rect.top() > rect.bottom());
+
         assert_eq!(
             editor_scrollbar_visibility_for_axes(
-                EditorScrollbarVisibility::Auto,
-                EditorScrollbarVisibility::Visible
+                EditorScrollbarVisibility::Visible,
+                EditorScrollbarVisibility::Visible,
+                false,
+                false,
             ),
             ScrollBarVisibility::AlwaysVisible
+        );
+        assert_eq!(
+            editor_scrollbar_visibility_for_axes(
+                EditorScrollbarVisibility::Visible,
+                EditorScrollbarVisibility::Auto,
+                false,
+                false,
+            ),
+            ScrollBarVisibility::AlwaysVisible
+        );
+        assert_eq!(
+            editor_scrollbar_visibility_for_axes(
+                EditorScrollbarVisibility::Auto,
+                EditorScrollbarVisibility::Visible,
+                false,
+                false,
+            ),
+            ScrollBarVisibility::AlwaysVisible
+        );
+        assert_eq!(
+            editor_scrollbar_visibility_for_axes(
+                EditorScrollbarVisibility::Auto,
+                EditorScrollbarVisibility::Auto,
+                false,
+                false,
+            ),
+            ScrollBarVisibility::AlwaysHidden
         );
         assert_eq!(editor_scrollbar_width(18, 12), 18.0);
         assert_eq!(editor_scrollbar_width(0, 16), 16.0);
         assert_eq!(editor_scrollbar_width(0, 0), 1.0);
+    }
+
+    #[test]
+    fn editor_scrollbar_style_is_thin_floating_and_theme_derived() {
+        let style = editor_scrollbar_style(8, 8, true);
+        assert!(style.floating);
+        assert_eq!(style.bar_width, 8.0);
+        assert!((style.floating_width - 3.04).abs() < f32::EPSILON);
+        assert_eq!(style.floating_allocated_width, 0.0);
+        assert!(style.foreground_color);
+        assert!(style.dormant_handle_opacity < style.active_handle_opacity);
+        assert!(style.active_handle_opacity < style.interact_handle_opacity);
+        assert!(style.interact_background_opacity < style.interact_handle_opacity);
+
+        let solid = editor_scrollbar_style(8, 8, false);
+        assert!(!solid.floating);
+        assert_eq!(solid.bar_width, 8.0);
+
+        let mut visuals = egui::Visuals::dark();
+        visuals.code_bg_color = Color32::from_rgb(20, 30, 40);
+        visuals.selection.stroke.color = Color32::from_rgb(120, 180, 240);
+        visuals.override_text_color = Some(Color32::from_rgb(220, 220, 220));
+
+        let (inactive, hovered, active) = editor_scrollbar_handle_colors(&visuals);
+
+        assert_eq!(inactive, Color32::from_rgb(60, 90, 120));
+        assert_eq!(hovered, Color32::from_rgb(82, 123, 164));
+        assert_eq!(active, Color32::from_rgb(164, 167, 170));
     }
 
     #[test]

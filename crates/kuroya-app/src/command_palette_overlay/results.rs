@@ -7,8 +7,9 @@ use crate::command_palette_items::MAX_COMMAND_PALETTE_QUERY_PATTERN_CHARS;
 use crate::{
     KuroyaApp,
     command_palette_items::{
-        CommandPaletteQueryMemoryEntry, CommandPaletteRanker,
-        command_palette_command_match_score_non_empty, command_palette_items,
+        COMMAND_PALETTE_DEFAULT_SECTION, CommandPaletteItem, CommandPaletteQueryMemoryEntry,
+        CommandPaletteRanker, command_palette_command_match_score_non_empty,
+        command_palette_item_section, command_palette_items,
     },
     command_runtime::command_requires_git,
     history::collect_navigation_locations,
@@ -28,6 +29,9 @@ use text::{
 use text::{COMMAND_PALETTE_RESULT_TEXT_SCAN_CHARS, normalize_command_palette_result_text};
 
 const COMMAND_PALETTE_RESULT_QUERY_RESERVE_LIMIT: usize = 512;
+const COMMAND_PALETTE_RESULT_SECTION_LIMIT: usize = 80;
+
+pub(super) type CommandPaletteCatalogEntry = (String, Command, String, String);
 
 pub(crate) use cache::CommandPaletteResultsCache;
 #[cfg(test)]
@@ -45,11 +49,13 @@ pub(super) struct CommandPaletteResult {
 impl CommandPaletteResult {
     fn catalog_entry<'a>(
         &self,
-        commands_catalog: &'a [(String, Command, String)],
-    ) -> Option<(&'a str, &'a Command, &'a str)> {
+        commands_catalog: &'a [CommandPaletteCatalogEntry],
+    ) -> Option<(&'a str, &'a Command, &'a str, &'a str)> {
         commands_catalog
             .get(self.catalog_index)
-            .map(|(label, command, chord)| (label.as_str(), command, chord.as_str()))
+            .map(|(label, command, chord, section)| {
+                (label.as_str(), command, chord.as_str(), section.as_str())
+            })
     }
 }
 
@@ -283,10 +289,11 @@ fn refresh_cached_query_memory(
 }
 
 fn normalized_command_palette_catalog(
-    catalog: Vec<(String, Command, String)>,
-) -> Vec<(String, Command, String)> {
+    catalog: Vec<CommandPaletteItem>,
+) -> Vec<CommandPaletteCatalogEntry> {
     let mut normalized = Vec::with_capacity(catalog.len());
     for (label, command, chord) in catalog {
+        let section = command_palette_item_section(&label, &command);
         let label =
             normalize_command_palette_result_text_owned(label, COMMAND_PALETTE_RESULT_LABEL_LIMIT);
         if label.is_empty() {
@@ -295,14 +302,23 @@ fn normalized_command_palette_catalog(
 
         if normalized
             .iter()
-            .any(|(_, existing_command, _)| existing_command == &command)
+            .any(|(_, existing_command, _, _)| existing_command == &command)
         {
             continue;
         }
 
         let chord =
             normalize_command_palette_result_text_owned(chord, COMMAND_PALETTE_RESULT_CHORD_LIMIT);
-        normalized.push((label, command, chord));
+        let section = normalize_command_palette_result_text_owned(
+            section.to_owned(),
+            COMMAND_PALETTE_RESULT_SECTION_LIMIT,
+        );
+        let section = if section.is_empty() {
+            COMMAND_PALETTE_DEFAULT_SECTION.to_owned()
+        } else {
+            section
+        };
+        normalized.push((label, command, chord, section));
     }
     normalized
 }
@@ -314,7 +330,7 @@ fn filtered_command_palette_results_into(
     query: &str,
     command_recent: &VecDeque<Command>,
     command_query_memory: &VecDeque<CommandPaletteQueryMemoryEntry>,
-    commands_catalog: &[(String, Command, String)],
+    commands_catalog: &[CommandPaletteCatalogEntry],
     commands: &mut Vec<CommandPaletteResult>,
 ) {
     let query = command_palette_match_query(query);
@@ -330,7 +346,7 @@ fn filtered_command_palette_results_into(
             .len()
             .min(COMMAND_PALETTE_RESULT_QUERY_RESERVE_LIMIT)
     });
-    for (catalog_index, (label, command, chord)) in commands_catalog.iter().enumerate() {
+    for (catalog_index, (label, command, chord, _section)) in commands_catalog.iter().enumerate() {
         if !command_palette_command_visible_with_workspace(
             git_enabled,
             workspace_tasks_runnable,
@@ -373,7 +389,7 @@ fn filtered_command_palette_results_into(
 fn handle_command_palette_result_keys(
     ui: &mut Ui,
     commands: &[CommandPaletteResult],
-    commands_catalog: &[(String, Command, String)],
+    commands_catalog: &[CommandPaletteCatalogEntry],
     selected: &mut usize,
     viewport_height: f32,
 ) -> (Option<Command>, bool) {
@@ -390,7 +406,7 @@ fn handle_command_palette_result_keys(
             commands
                 .get(*selected)
                 .and_then(|result| result.catalog_entry(commands_catalog))
-                .map(|(_, command, _)| command.clone()),
+                .map(|(_, command, _, _)| command.clone()),
             selection_changed,
         );
     }
@@ -399,12 +415,20 @@ fn handle_command_palette_result_keys(
 
 fn sort_command_palette_results(
     commands: &mut [CommandPaletteResult],
-    commands_catalog: &[(String, Command, String)],
+    commands_catalog: &[CommandPaletteCatalogEntry],
 ) {
     commands.sort_unstable_by(|a, b| {
         b.score
             .cmp(&a.score)
             .then(b.match_score.cmp(&a.match_score))
+            .then(
+                command_palette_result_section_rank(a, commands_catalog)
+                    .cmp(&command_palette_result_section_rank(b, commands_catalog)),
+            )
+            .then(
+                command_palette_result_section(a, commands_catalog)
+                    .cmp(command_palette_result_section(b, commands_catalog)),
+            )
             .then(
                 command_palette_result_label(a, commands_catalog)
                     .cmp(command_palette_result_label(b, commands_catalog)),
@@ -415,11 +439,51 @@ fn sort_command_palette_results(
 
 fn command_palette_result_label<'a>(
     result: &CommandPaletteResult,
-    commands_catalog: &'a [(String, Command, String)],
+    commands_catalog: &'a [CommandPaletteCatalogEntry],
 ) -> &'a str {
     commands_catalog
         .get(result.catalog_index)
-        .map_or("", |(label, _, _)| label.as_str())
+        .map_or("", |(label, _, _, _)| label.as_str())
+}
+
+fn command_palette_result_section_rank(
+    result: &CommandPaletteResult,
+    commands_catalog: &[CommandPaletteCatalogEntry],
+) -> usize {
+    command_palette_section_rank(command_palette_result_section(result, commands_catalog))
+}
+
+fn command_palette_result_section<'a>(
+    result: &CommandPaletteResult,
+    commands_catalog: &'a [CommandPaletteCatalogEntry],
+) -> &'a str {
+    commands_catalog
+        .get(result.catalog_index)
+        .map_or("", |(_, _, _, section)| section.as_str())
+}
+
+fn command_palette_section_rank(section: &str) -> usize {
+    match section {
+        "File" => 0,
+        "Workspace" => 1,
+        "Recent Workspaces" => 2,
+        "Edit" => 3,
+        "Selection" => 4,
+        "View" => 5,
+        "Navigation" => 6,
+        "Recent Locations" => 7,
+        "Search" => 8,
+        "Code" => 9,
+        "Source Control" => 10,
+        "Terminal" => 11,
+        "Tasks and Extensions" => 12,
+        "Extensions" => 13,
+        "Settings" => 14,
+        "Developer" => 15,
+        "Help" => 16,
+        COMMAND_PALETTE_DEFAULT_SECTION => 17,
+        _ => 18,
+    }
 }
 
 #[cfg(test)]
@@ -449,17 +513,19 @@ fn command_requires_workspace_tasks_runnable(command: &Command) -> bool {
 mod tests {
     use super::{
         COMMAND_PALETTE_RESULT_SNAPSHOT_LIMIT, COMMAND_PALETTE_RESULT_SNAPSHOT_RESULT_LIMIT,
-        COMMAND_PALETTE_RESULT_TEXT_SCAN_CHARS, CommandPaletteResult, CommandPaletteResultsCache,
-        CommandPaletteResultsSnapshot, MAX_COMMAND_PALETTE_QUERY_PATTERN_CHARS,
-        command_palette_command_visible, command_palette_command_visible_with_workspace,
-        command_palette_empty_state_label, command_palette_empty_state_label_into,
-        command_palette_match_query, command_palette_result_summary,
-        command_palette_result_summary_into, filtered_command_palette_results_into,
-        normalize_command_palette_result_text, normalized_command_palette_catalog,
-        refresh_cached_command_palette_results, sort_command_palette_results,
+        COMMAND_PALETTE_RESULT_TEXT_SCAN_CHARS, CommandPaletteCatalogEntry, CommandPaletteResult,
+        CommandPaletteResultsCache, CommandPaletteResultsSnapshot,
+        MAX_COMMAND_PALETTE_QUERY_PATTERN_CHARS, command_palette_command_visible,
+        command_palette_command_visible_with_workspace, command_palette_empty_state_label,
+        command_palette_empty_state_label_into, command_palette_match_query,
+        command_palette_result_summary, command_palette_result_summary_into,
+        filtered_command_palette_results_into, normalize_command_palette_result_text,
+        normalized_command_palette_catalog, refresh_cached_command_palette_results,
+        sort_command_palette_results,
     };
     use crate::{
-        command_palette_items::CommandPaletteQueryMemoryEntry, history::NavigationLocation,
+        command_palette_items::{COMMAND_PALETTE_DEFAULT_SECTION, CommandPaletteQueryMemoryEntry},
+        history::NavigationLocation,
     };
     use kuroya_core::{Command, PluginCommandRegistry, WorkspaceTaskKind, keymap::KeyBinding};
     use std::{collections::VecDeque, path::PathBuf};
@@ -472,16 +538,23 @@ mod tests {
         }
     }
 
-    fn catalog(entries: &[(&str, Command)]) -> Vec<(String, Command, String)> {
+    fn catalog(entries: &[(&str, Command)]) -> Vec<CommandPaletteCatalogEntry> {
         entries
             .iter()
-            .map(|(label, command)| (label.to_string(), command.clone(), String::new()))
+            .map(|(label, command)| {
+                (
+                    label.to_string(),
+                    command.clone(),
+                    String::new(),
+                    COMMAND_PALETTE_DEFAULT_SECTION.to_owned(),
+                )
+            })
             .collect()
     }
 
     fn result_commands(
         results: Vec<CommandPaletteResult>,
-        catalog: &[(String, Command, String)],
+        catalog: &[CommandPaletteCatalogEntry],
     ) -> Vec<Command> {
         results
             .into_iter()
@@ -569,6 +642,7 @@ mod tests {
                 "Quick Open".to_owned(),
                 Command::ToggleQuickOpen,
                 "Ctrl+P".to_owned(),
+                COMMAND_PALETTE_DEFAULT_SECTION.to_owned(),
             )],
             command_recent: command_recent.clone(),
             command_query_memory: command_query_memory.clone(),
@@ -1295,6 +1369,7 @@ mod tests {
         assert_eq!(catalog[0].0, "Run Plugin Command Now");
         assert_eq!(catalog[0].1, Command::ToggleQuickOpen);
         assert_eq!(catalog[0].2, "Ctrl P");
+        assert_eq!(catalog[0].3, "Navigation");
     }
 
     #[test]
@@ -1321,7 +1396,9 @@ mod tests {
         assert_eq!(catalog[0].0, "Quick Open");
         assert_eq!(catalog[0].1, Command::ToggleQuickOpen);
         assert_eq!(catalog[0].2, "Ctrl P");
+        assert_eq!(catalog[0].3, "Navigation");
         assert_eq!(catalog[1].1, Command::ToggleTerminal);
+        assert_eq!(catalog[1].3, "Terminal");
     }
 
     #[test]

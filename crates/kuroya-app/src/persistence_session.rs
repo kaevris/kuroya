@@ -29,8 +29,9 @@ use crate::{
         PERSISTED_SESSION_VOLATILE_TEXT_MAX_CHARS,
     },
     persistence_storage::{
-        atomic_write, atomic_write_async, read_file_bytes_with_limit,
-        read_file_bytes_with_limit_async, session_path, session_snapshots_dir, state_dir,
+        atomic_write, atomic_write_async, legacy_session_path, legacy_session_snapshots_dir,
+        read_file_bytes_with_limit, read_file_bytes_with_limit_async, session_path,
+        session_snapshots_dir, state_dir,
     },
     project_search_state::{MAX_PROJECT_SEARCH_RECENT_QUERIES, normalize_recent_project_searches},
     quick_open::{
@@ -63,33 +64,46 @@ static SESSION_SNAPSHOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 impl PersistedSession {
     pub fn load(workspace_root: &Path) -> anyhow::Result<Option<Self>> {
         let path = session_path(workspace_root);
-        let bytes = match read_file_bytes_with_limit(&path, PERSISTED_SESSION_MAX_BYTES) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                return load_latest_session_snapshot(workspace_root);
-            }
-            Err(error) if error.kind() == ErrorKind::InvalidData => {
-                return load_latest_session_snapshot_after_quarantine(
-                    workspace_root,
-                    quarantine_corrupt_session,
-                );
-            }
-            Err(error) => return Err(error.into()),
-        };
+        let snapshots = session_snapshots_dir(workspace_root);
+        if let Some(session) = load_session_with_snapshots(workspace_root, &path, &snapshots)? {
+            return Ok(Some(session));
+        }
 
-        match serde_json::from_slice(&bytes) {
-            Ok(mut session) if persisted_session_workspace_matches(workspace_root, &session) => {
-                normalize_persisted_session_paths_for_restore(workspace_root, &mut session);
-                Ok(Some(session))
-            }
-            Ok(_) => load_latest_session_snapshot_after_quarantine(
-                workspace_root,
-                quarantine_mismatched_session,
-            ),
-            Err(_) => load_latest_session_snapshot_after_quarantine(
-                workspace_root,
-                quarantine_corrupt_session,
-            ),
+        let legacy_path = legacy_session_path(workspace_root);
+        let legacy_snapshots = legacy_session_snapshots_dir(workspace_root);
+        load_session_with_snapshots(workspace_root, &legacy_path, &legacy_snapshots)
+    }
+}
+
+fn load_session_with_snapshots(
+    workspace_root: &Path,
+    path: &Path,
+    snapshots_dir: &Path,
+) -> anyhow::Result<Option<PersistedSession>> {
+    let bytes = match read_file_bytes_with_limit(path, PERSISTED_SESSION_MAX_BYTES) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return load_latest_session_snapshot_in_dir(workspace_root, snapshots_dir);
+        }
+        Err(error) if error.kind() == ErrorKind::InvalidData => {
+            let _ = quarantine_corrupt_session_file(path);
+            return load_latest_session_snapshot_in_dir(workspace_root, snapshots_dir);
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    match serde_json::from_slice(&bytes) {
+        Ok(mut session) if persisted_session_workspace_matches(workspace_root, &session) => {
+            normalize_persisted_session_paths_for_restore(workspace_root, &mut session);
+            Ok(Some(session))
+        }
+        Ok(_) => {
+            let _ = quarantine_mismatched_session_file(path);
+            load_latest_session_snapshot_in_dir(workspace_root, snapshots_dir)
+        }
+        Err(_) => {
+            let _ = quarantine_corrupt_session_file(path);
+            load_latest_session_snapshot_in_dir(workspace_root, snapshots_dir)
         }
     }
 }
@@ -129,12 +143,14 @@ fn mismatched_session_path(path: &Path) -> PathBuf {
     quarantined_session_path(path, "mismatched")
 }
 
+#[cfg(test)]
 fn load_latest_session_snapshot_after_quarantine(
     workspace_root: &Path,
     quarantine: impl FnOnce(&Path) -> anyhow::Result<PathBuf>,
 ) -> anyhow::Result<Option<PersistedSession>> {
     let _ = quarantine(workspace_root);
-    load_latest_session_snapshot(workspace_root)
+    let dir = session_snapshots_dir(workspace_root);
+    load_latest_session_snapshot_in_dir(workspace_root, &dir)
 }
 
 fn quarantined_session_path(path: &Path, reason: &str) -> PathBuf {
@@ -153,8 +169,10 @@ fn quarantined_session_path(path: &Path, reason: &str) -> PathBuf {
     ))
 }
 
-fn load_latest_session_snapshot(workspace_root: &Path) -> anyhow::Result<Option<PersistedSession>> {
-    let dir = session_snapshots_dir(workspace_root);
+fn load_latest_session_snapshot_in_dir(
+    workspace_root: &Path,
+    dir: &Path,
+) -> anyhow::Result<Option<PersistedSession>> {
     for path in session_snapshot_files(&dir)?.into_iter().rev() {
         match read_file_bytes_with_limit(&path, PERSISTED_SESSION_MAX_BYTES) {
             Ok(bytes) => match serde_json::from_slice::<PersistedSession>(&bytes) {

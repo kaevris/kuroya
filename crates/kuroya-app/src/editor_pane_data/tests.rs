@@ -244,6 +244,7 @@ fn large_file_mode_disables_editor_minimap() {
     assert_eq!(
         editor_highlight_active_indentation_for_mode(
             EditorHighlightActiveIndentation::Always,
+            true,
             false
         ),
         EditorHighlightActiveIndentation::Always
@@ -251,7 +252,16 @@ fn large_file_mode_disables_editor_minimap() {
     assert_eq!(
         editor_highlight_active_indentation_for_mode(
             EditorHighlightActiveIndentation::Always,
+            true,
             true
+        ),
+        EditorHighlightActiveIndentation::Off
+    );
+    assert_eq!(
+        editor_highlight_active_indentation_for_mode(
+            EditorHighlightActiveIndentation::Always,
+            false,
+            false
         ),
         EditorHighlightActiveIndentation::Off
     );
@@ -293,6 +303,26 @@ fn performance_mode_keeps_normal_editor_surface_before_hard_large_file_mode() {
     assert!(data.show_scm_diff_gutter);
     assert!(data.show_scm_diff_overview);
     assert!(data.show_scm_diff_minimap);
+}
+
+#[test]
+fn pane_data_disables_active_indentation_when_indent_guides_are_disabled() {
+    let mut app = app_for_test(PathBuf::from("workspace"));
+    app.buffers.push(TextBuffer::from_text(
+        7,
+        None,
+        "fn main() {\n    println!(\"hi\");\n}\n".to_owned(),
+    ));
+    app.settings.indent_guides = false;
+    app.settings.highlight_active_indentation = EditorHighlightActiveIndentation::Always;
+
+    let data = app.prepare_editor_pane_data(7, 0, 8.0, true, true);
+
+    assert!(!data.indent_guides);
+    assert_eq!(
+        data.highlight_active_indentation,
+        EditorHighlightActiveIndentation::Off
+    );
 }
 
 #[test]

@@ -57,6 +57,29 @@ impl Keymap {
         self.bindings = sanitized;
         changes
     }
+
+    pub fn ensure_default_command_palette_binding(&mut self) -> bool {
+        const DEFAULT_CHORD: &str = "Ctrl+Shift+P";
+
+        if self.bindings.len() >= KEYMAP_MAX_BINDINGS
+            || self
+                .bindings
+                .iter()
+                .any(|binding| binding.command == Command::ToggleCommandPalette)
+            || self
+                .bindings
+                .iter()
+                .any(|binding| binding.chord == DEFAULT_CHORD)
+        {
+            return false;
+        }
+
+        self.bindings.push(KeyBinding {
+            chord: DEFAULT_CHORD.to_owned(),
+            command: Command::ToggleCommandPalette,
+        });
+        true
+    }
 }
 
 pub fn normalize_keymap_chord(chord: &str) -> Option<String> {

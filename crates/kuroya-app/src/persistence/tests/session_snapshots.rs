@@ -678,7 +678,7 @@ fn session_bytes_for_write_sanitizes_oversized_workspace_symbol_query_memory() {
     assert!(!entry.name.contains('\t'));
     assert!(!entry.name.contains('\u{202e}'));
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -744,7 +744,7 @@ fn session_bytes_for_write_sanitizes_workspace_symbol_query_memory() {
         ]
     );
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -835,7 +835,7 @@ fn session_bytes_for_write_normalizes_workspace_paths() {
     assert_eq!(restored.terminal_sessions[4].cwd, None);
     assert_eq!(restored.recovery_skipped[0].path, None);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -949,7 +949,7 @@ fn session_bytes_for_write_sanitizes_command_palette_query_memory() {
     );
     assert_eq!(restored.command_query_memory[2].uses, 1);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -1077,7 +1077,28 @@ fn save_session_trims_terminal_scrollback_before_writing_unloadable_session() {
         Some("terminal 3")
     );
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
+}
+
+#[test]
+fn load_session_reads_workspace_local_legacy_state_dir() {
+    let workspace = temp_workspace("legacy-workspace-session");
+    fs::create_dir_all(&workspace).unwrap();
+    let legacy_state = crate::persistence_storage::legacy_state_dir(&workspace);
+    fs::create_dir_all(&legacy_state).unwrap();
+    let session = sample_session(&workspace, "legacy recovery");
+    fs::write(
+        legacy_state.join("session.json"),
+        serde_json::to_string_pretty(&session).unwrap(),
+    )
+    .unwrap();
+
+    let loaded = PersistedSession::load(&workspace).unwrap();
+
+    assert_eq!(loaded, Some(session));
+    assert!(!state_dir(&workspace).join("session.json").exists());
+
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -1120,7 +1141,7 @@ fn save_session_records_skipped_recovery_instead_of_writing_unloadable_session()
             .contains("omitted to keep session file under")
     );
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -1158,7 +1179,7 @@ fn save_session_trims_volatile_text_before_writing_unloadable_session() {
         previous
     );
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -1178,7 +1199,7 @@ fn save_session_leaves_previous_file_when_session_cannot_be_trimmed_to_limit() {
     assert_eq!(PersistedSession::load(&workspace).unwrap(), Some(previous));
     assert!(session_snapshot_files_for_test(&workspace).is_empty());
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -1198,7 +1219,7 @@ fn load_session_accepts_lexically_equivalent_workspace_root() {
     assert_eq!(PersistedSession::load(&workspace).unwrap(), Some(session));
     assert!(quarantined_session_files_with_marker(&state, "mismatched").is_empty());
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -1423,7 +1444,7 @@ fn load_session_normalizes_restored_workspace_paths_and_drops_escaped_paths() {
         "outside recovery text stays recoverable"
     );
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -1569,7 +1590,7 @@ fn load_session_prunes_stale_pane_only_saved_state() {
     assert_eq!(loaded.fold_states[0].path, main);
     assert_eq!(loaded.fold_states[0].ranges.len(), 1);
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 #[test]
@@ -1605,7 +1626,7 @@ fn load_session_rejects_raw_parent_reentry_paths_that_normalize_inside_workspace
     assert_eq!(loaded.recovery[0].path, None);
     assert_eq!(loaded.recovery[0].text, "raw reentry recovery");
 
-    fs::remove_dir_all(workspace).unwrap();
+    remove_workspace(&workspace);
 }
 
 fn quarantined_session_files(dir: &Path) -> Vec<PathBuf> {

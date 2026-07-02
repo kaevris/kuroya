@@ -1,5 +1,6 @@
 use crate::persistence_storage::{
-    atomic_write, project_index_cache_path, read_file_bytes_with_limit, state_dir,
+    atomic_write, legacy_project_index_cache_path, project_index_cache_path,
+    read_file_bytes_with_limit, state_dir,
 };
 use kuroya_core::{ProjectIndex, ProjectIndexSignature};
 use serde::{Deserialize, Serialize};
@@ -64,22 +65,34 @@ fn load_project_index_cache_with_fresh_signature(
     fresh_signature: Option<ProjectIndexSignature>,
 ) -> Option<LoadedProjectIndexCache> {
     let path = project_index_cache_path(workspace_root);
-    let bytes = match read_file_bytes_with_limit(&path, PROJECT_INDEX_CACHE_MAX_BYTES) {
+    load_project_index_cache_file(&path, workspace_root, max_files, fresh_signature).or_else(|| {
+        let legacy_path = legacy_project_index_cache_path(workspace_root);
+        load_project_index_cache_file(&legacy_path, workspace_root, max_files, fresh_signature)
+    })
+}
+
+fn load_project_index_cache_file(
+    path: &Path,
+    workspace_root: &Path,
+    max_files: usize,
+    fresh_signature: Option<ProjectIndexSignature>,
+) -> Option<LoadedProjectIndexCache> {
+    let bytes = match read_file_bytes_with_limit(path, PROJECT_INDEX_CACHE_MAX_BYTES) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == ErrorKind::NotFound => return None,
         Err(error) if error.kind() == ErrorKind::InvalidData => {
-            return quarantine_invalid_project_index_cache(&path);
+            return quarantine_invalid_project_index_cache(path);
         }
         Err(_) => return None,
     };
     let cache = match serde_json::from_slice::<ProjectIndexCache>(&bytes) {
         Ok(cache) => cache,
         Err(_) => {
-            return quarantine_invalid_project_index_cache(&path);
+            return quarantine_invalid_project_index_cache(path);
         }
     };
     if cache.schema != PROJECT_INDEX_CACHE_SCHEMA {
-        return quarantine_invalid_project_index_cache(&path);
+        return quarantine_invalid_project_index_cache(path);
     }
     if !project_index_cache_roots_are_exact(&cache.root, workspace_root)
         || !project_index_cache_roots_are_exact(cache.index.root(), workspace_root)
@@ -89,16 +102,16 @@ fn load_project_index_cache_with_fresh_signature(
         {
             return None;
         }
-        return quarantine_invalid_project_index_cache(&path);
+        return quarantine_invalid_project_index_cache(path);
     }
     if cache.signature.max_files != max_files {
         return None;
     }
     if !project_index_cache_index_matches_signature(&cache.index, cache.signature) {
-        return quarantine_invalid_project_index_cache(&path);
+        return quarantine_invalid_project_index_cache(path);
     }
     if !project_index_cache_paths_are_inside_root(&cache.index, workspace_root) {
-        return quarantine_invalid_project_index_cache(&path);
+        return quarantine_invalid_project_index_cache(path);
     }
     if fresh_signature.is_some_and(|fresh_signature| cache.signature != fresh_signature) {
         return None;
@@ -106,11 +119,11 @@ fn load_project_index_cache_with_fresh_signature(
     let payload_hash = match project_index_cache_payload_hash(&cache.index) {
         Ok(payload_hash) => payload_hash,
         Err(_) => {
-            return quarantine_invalid_project_index_cache(&path);
+            return quarantine_invalid_project_index_cache(path);
         }
     };
     if cache.payload_hash != payload_hash {
-        return quarantine_invalid_project_index_cache(&path);
+        return quarantine_invalid_project_index_cache(path);
     }
     Some(LoadedProjectIndexCache {
         index: cache.index,
@@ -1266,7 +1279,9 @@ mod tests {
     }
 
     fn temp_workspace(prefix: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("{prefix}-{}", unique_suffix()))
+        let workspace = std::env::temp_dir().join(format!("{prefix}-{}", unique_suffix()));
+        fs::create_dir_all(&workspace).unwrap();
+        workspace
     }
 
     #[cfg(windows)]

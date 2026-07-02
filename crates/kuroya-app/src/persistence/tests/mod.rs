@@ -22,6 +22,14 @@ fn temp_workspace(name: &str) -> PathBuf {
     ))
 }
 
+fn remove_workspace(workspace: impl AsRef<Path>) {
+    match fs::remove_dir_all(workspace.as_ref()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("failed to remove workspace: {error}"),
+    }
+}
+
 fn sample_session(workspace: &Path, text: &str) -> PersistedSession {
     PersistedSession {
         workspace_root: workspace.to_path_buf(),

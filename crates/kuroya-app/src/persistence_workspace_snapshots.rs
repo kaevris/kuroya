@@ -4,7 +4,10 @@ use crate::{
         PERSISTED_SESSION_MAX_BYTES, normalize_persisted_session_paths_for_restore,
         persisted_session_workspace_matches, session_bytes_for_write,
     },
-    persistence_storage::{atomic_write, read_file_bytes_with_limit, workspace_snapshots_dir},
+    persistence_storage::{
+        atomic_write, legacy_workspace_snapshots_dir, read_file_bytes_with_limit,
+        workspace_snapshots_dir,
+    },
 };
 use std::{
     fs,
@@ -52,8 +55,18 @@ pub(crate) fn save_workspace_snapshot(
 pub(crate) fn load_latest_workspace_snapshot(
     workspace_root: &Path,
 ) -> anyhow::Result<Option<LoadedWorkspaceSnapshot>> {
-    load_latest_workspace_snapshot_with_quarantine(
+    if let Some(snapshot) = load_latest_workspace_snapshot_with_quarantine(
         workspace_root,
+        quarantine_workspace_snapshot,
+        quarantine_mismatched_workspace_snapshot,
+    )? {
+        return Ok(Some(snapshot));
+    }
+
+    let legacy_dir = legacy_workspace_snapshots_dir(workspace_root);
+    load_latest_workspace_snapshot_in_dir(
+        workspace_root,
+        &legacy_dir,
         quarantine_workspace_snapshot,
         quarantine_mismatched_workspace_snapshot,
     )
@@ -64,7 +77,22 @@ fn load_latest_workspace_snapshot_with_quarantine(
     mut quarantine_corrupt: impl FnMut(&Path) -> anyhow::Result<PathBuf>,
     mut quarantine_mismatched: impl FnMut(&Path) -> anyhow::Result<PathBuf>,
 ) -> anyhow::Result<Option<LoadedWorkspaceSnapshot>> {
-    let mut snapshots = workspace_snapshot_files(workspace_root)?;
+    let dir = workspace_snapshots_dir(workspace_root);
+    load_latest_workspace_snapshot_in_dir(
+        workspace_root,
+        &dir,
+        &mut quarantine_corrupt,
+        &mut quarantine_mismatched,
+    )
+}
+
+fn load_latest_workspace_snapshot_in_dir(
+    workspace_root: &Path,
+    dir: &Path,
+    mut quarantine_corrupt: impl FnMut(&Path) -> anyhow::Result<PathBuf>,
+    mut quarantine_mismatched: impl FnMut(&Path) -> anyhow::Result<PathBuf>,
+) -> anyhow::Result<Option<LoadedWorkspaceSnapshot>> {
+    let mut snapshots = workspace_snapshot_files_in_dir(dir)?;
     while let Some(path) = snapshots.pop() {
         let bytes = match read_file_bytes_with_limit(&path, PERSISTED_SESSION_MAX_BYTES) {
             Ok(bytes) => bytes,
@@ -92,6 +120,7 @@ fn load_latest_workspace_snapshot_with_quarantine(
     Ok(None)
 }
 
+#[cfg(test)]
 pub(crate) fn workspace_snapshot_files(workspace_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     workspace_snapshot_files_in_dir(&workspace_snapshots_dir(workspace_root))
 }
@@ -297,7 +326,8 @@ mod tests {
     use super::{
         WORKSPACE_SNAPSHOT_SCAN_LIMIT, load_latest_workspace_snapshot,
         load_latest_workspace_snapshot_with_quarantine, save_workspace_snapshot,
-        sort_workspace_snapshot_paths, unique_workspace_snapshot_path, workspace_snapshot_files,
+        sort_workspace_snapshot_paths, unique_workspace_snapshot_path,
+        workspace_snapshot_files_in_dir,
     };
     use crate::{
         layout::{
@@ -400,7 +430,7 @@ mod tests {
             snapshot_dir.join("workspace.999999999999999999999999999999.0.0000000000000000.json");
         fs::write(&valid_path, serde_json::to_string_pretty(&valid).unwrap()).unwrap();
 
-        let files = workspace_snapshot_files(&workspace).unwrap();
+        let files = workspace_snapshot_files_in_dir(&snapshot_dir).unwrap();
         assert_eq!(files.len(), WORKSPACE_SNAPSHOT_SCAN_LIMIT);
         assert!(files.contains(&valid_path));
 
@@ -469,13 +499,15 @@ mod tests {
     }
 
     fn temp_workspace(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
+        let workspace = std::env::temp_dir().join(format!(
             "kuroya-workspace-snapshot-{name}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
-        ))
+        ));
+        fs::create_dir_all(&workspace).unwrap();
+        workspace
     }
 }

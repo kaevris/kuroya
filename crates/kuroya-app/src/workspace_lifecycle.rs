@@ -149,6 +149,7 @@ mod tests {
         },
         terminal::TerminalPane,
         transient_state::{PendingExit, PendingWorkspaceSwitch},
+        workspace_state::settings_path,
     };
     use kuroya_core::{EditorSettings, TextBuffer, Workspace};
     use std::{
@@ -268,6 +269,26 @@ mod tests {
         assert_eq!(app.workspace.root, target);
         assert!(app.session_save_in_flight.is_none());
         assert!(!app.queued_session_saves.contains_key(&root));
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn open_workspace_now_does_not_create_missing_trusted_workspace_settings() {
+        let root = temp_workspace("no-settings-open-root");
+        let target = temp_workspace("no-settings-open-target");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        let mut app = app_for_test(root.clone());
+        app.app_state_path_override = Some(root.join("app-state.json"));
+        app.trusted_workspaces.push(target.clone());
+
+        app.open_workspace_now(target.clone());
+
+        assert_eq!(app.workspace.root, target);
+        assert!(app.workspace_trusted);
+        assert!(!settings_path(&app.workspace.root).exists());
         drop(app);
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(target).unwrap();

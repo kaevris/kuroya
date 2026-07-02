@@ -10,13 +10,13 @@ use kuroya_core::{
     DEFAULT_EDITOR_MOUSE_WHEEL_SCROLL_SENSITIVITY, EditorColorDecoratorsActivatedOn,
     EditorDefaultColorDecorators, EditorExperimentalGpuAcceleration,
     EditorExperimentalWhitespaceRendering, EditorLineDecorationsWidth, EditorLineNumbers,
-    EditorRenderFinalNewline, EditorRenderWhitespace, EditorScrollbarVisibility, EditorSettings,
+    EditorRenderFinalNewline, EditorRenderWhitespace, EditorSettings,
     EditorUnicodeHighlightNonBasicAscii, EditorUnicodeHighlightScope,
     MAX_EDITOR_COLOR_DECORATORS_LIMIT, MAX_EDITOR_LINE_DECORATIONS_WIDTH,
     MAX_EDITOR_LINE_NUMBERS_MIN_CHARS, MAX_EDITOR_PADDING, MAX_EDITOR_SCROLL_BEYOND_LAST_COLUMN,
-    MAX_EDITOR_SCROLL_SENSITIVITY, MAX_EDITOR_SCROLLBAR_SIZE, MIN_EDITOR_COLOR_DECORATORS_LIMIT,
+    MAX_EDITOR_SCROLL_SENSITIVITY, MIN_EDITOR_COLOR_DECORATORS_LIMIT,
     MIN_EDITOR_LINE_DECORATIONS_WIDTH, MIN_EDITOR_LINE_NUMBERS_MIN_CHARS, MIN_EDITOR_PADDING,
-    MIN_EDITOR_SCROLL_BEYOND_LAST_COLUMN, MIN_EDITOR_SCROLL_SENSITIVITY, MIN_EDITOR_SCROLLBAR_SIZE,
+    MIN_EDITOR_SCROLL_BEYOND_LAST_COLUMN, MIN_EDITOR_SCROLL_SENSITIVITY,
 };
 pub(super) fn render_display_settings_with_highlight(
     ui: &mut egui::Ui,
@@ -48,22 +48,6 @@ pub(super) fn render_display_settings_with_highlight(
                 "Select line when clicking line number",
             )
             .on_hover_text("Clicking a visible line number selects the whole line");
-            ui.end_row();
-
-            ui.label("Vertical scrollbar");
-            editor_scrollbar_visibility_combo(
-                ui,
-                "editor_scrollbar_vertical",
-                &mut draft.scrollbar_vertical,
-            );
-            ui.end_row();
-
-            ui.label("Horizontal scrollbar");
-            editor_scrollbar_visibility_combo(
-                ui,
-                "editor_scrollbar_horizontal",
-                &mut draft.scrollbar_horizontal,
-            );
             ui.end_row();
 
             ui.label("Scroll beyond last column");
@@ -106,36 +90,6 @@ pub(super) fn render_display_settings_with_highlight(
                 0.5,
                 MIN_EDITOR_SCROLL_SENSITIVITY..=MAX_EDITOR_SCROLL_SENSITIVITY,
                 DEFAULT_EDITOR_FAST_SCROLL_SENSITIVITY,
-            );
-            ui.end_row();
-
-            ui.label("Vertical scrollbar size");
-            ui.add(ranged_drag_value(
-                &mut draft.scrollbar_vertical_scrollbar_size,
-                1.0,
-                MIN_EDITOR_SCROLLBAR_SIZE..=MAX_EDITOR_SCROLLBAR_SIZE,
-            ));
-            ui.end_row();
-
-            ui.label("Horizontal scrollbar size");
-            ui.add(ranged_drag_value(
-                &mut draft.scrollbar_horizontal_scrollbar_size,
-                1.0,
-                MIN_EDITOR_SCROLLBAR_SIZE..=MAX_EDITOR_SCROLLBAR_SIZE,
-            ));
-            ui.end_row();
-
-            ui.label("Scrollbar page click");
-            ui.checkbox(
-                &mut draft.scrollbar_scroll_by_page,
-                "Click scrollbars by page",
-            );
-            ui.end_row();
-
-            ui.label("Scrollbar content height");
-            ui.checkbox(
-                &mut draft.scrollbar_ignore_horizontal_scrollbar_in_content_height,
-                "Ignore horizontal scrollbar height",
             );
             ui.end_row();
 
@@ -350,17 +304,6 @@ editor_enum_combo!(
         EditorLineNumbers::Off => "Off",
         EditorLineNumbers::Relative => "Relative",
         EditorLineNumbers::Interval => "Interval",
-    ]
-);
-
-editor_enum_combo!(
-    editor_scrollbar_visibility_combo,
-    editor_scrollbar_visibility_label,
-    EditorScrollbarVisibility,
-    [
-        EditorScrollbarVisibility::Auto => "Auto",
-        EditorScrollbarVisibility::Visible => "Visible",
-        EditorScrollbarVisibility::Hidden => "Hidden",
     ]
 );
 

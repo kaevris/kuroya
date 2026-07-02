@@ -21,9 +21,6 @@ mod display;
 const MIN_SETTINGS_PANEL_FONT_SIZE: f32 = 10.0;
 const MAX_SETTINGS_PANEL_FONT_SIZE: f32 = 28.0;
 const DEFAULT_SETTINGS_PANEL_FONT_SIZE: f32 = 13.0;
-const MIN_SETTINGS_PANEL_UI_FONT_SIZE: f32 = 10.0;
-const MAX_SETTINGS_PANEL_UI_FONT_SIZE: f32 = 24.0;
-const DEFAULT_SETTINGS_PANEL_UI_FONT_SIZE: f32 = 13.0;
 
 pub(super) fn render_text_layout_settings_with_highlight(
     ui: &mut egui::Ui,
@@ -47,16 +44,6 @@ pub(super) fn render_text_layout_settings_with_highlight(
                 0.25,
                 MIN_SETTINGS_PANEL_FONT_SIZE..=MAX_SETTINGS_PANEL_FONT_SIZE,
                 DEFAULT_SETTINGS_PANEL_FONT_SIZE,
-            );
-            ui.end_row();
-
-            ui.label("UI font size");
-            guarded_f32_drag_value(
-                ui,
-                &mut draft.ui_font_size,
-                0.25,
-                MIN_SETTINGS_PANEL_UI_FONT_SIZE..=MAX_SETTINGS_PANEL_UI_FONT_SIZE,
-                DEFAULT_SETTINGS_PANEL_UI_FONT_SIZE,
             );
             ui.end_row();
 
