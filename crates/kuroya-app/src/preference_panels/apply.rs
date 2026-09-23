@@ -120,9 +120,7 @@ impl KuroyaApp {
             self.status = settings_save_failed_status(error);
             return;
         }
-        // Mark the settings write as our own so the file watcher does not
-        // classify it as an external change and immediately reload (and
-        // overwrite the "Saved settings;…" status).
+
         note_app_write(&path);
 
         let lsp_server_configs_changed =

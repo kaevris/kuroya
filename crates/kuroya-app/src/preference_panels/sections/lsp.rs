@@ -650,9 +650,7 @@ mod tests {
         servers[enabled_index + 1].enabled = false;
         let total = servers.len();
         let disabled = servers.iter().filter(|server| !server.enabled).count();
-        // The enabled switch does not change a server's configuration, so
-        // every entry still counts as built-in; the summary reports how many
-        // are switched off.
+
         assert_eq!(
             lsp_servers_summary(&servers),
             format!("{total} servers, all built-in, {disabled} disabled")

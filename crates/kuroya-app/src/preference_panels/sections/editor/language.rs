@@ -227,9 +227,7 @@ pub(super) fn render_language_settings_with_highlight(
             ui.end_row();
 
             ui.label("Suggest item kinds");
-            // Bounded sub-grid instead of horizontal_wrapped rows: a wrapped row
-            // inside a grid cell has no known width on first layout, so the grid
-            // measures it fully unwrapped and the min width resizes the window.
+
             egui::Grid::new("settings_editor_suggest_item_kinds_grid")
                 .num_columns(4)
                 .spacing([14.0, 8.0])

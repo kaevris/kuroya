@@ -25,16 +25,11 @@ pub(super) struct PendingSettingsPanelActions {
 }
 
 impl KuroyaApp {
-    /// Whether the Settings panel currently holds unsaved draft edits. Used
-    /// outside the panel modules (for example by settings reloads) to decide
-    /// whether the draft may be replaced.
     pub(crate) fn settings_panel_has_pending_inputs(&self) -> bool {
         self.settings_panel_open && self.settings_panel_draft_validation().has_pending_inputs()
     }
 
     pub(super) fn apply_settings_panel_actions(&mut self, actions: PendingSettingsPanelActions) {
-        // Apply must win over close: when a single frame requests both, the
-        // user asked for the pending changes to be saved.
         if actions.apply {
             self.apply_settings_panel();
         } else if actions.close {
@@ -74,11 +69,7 @@ impl KuroyaApp {
         let validation = self.settings_panel_draft_validation();
         let had_pending_inputs = validation.has_pending_inputs();
         let mut default_candidate = self.settings_panel_default_candidate();
-        // The draft-apply fallback preserves the currently active custom theme
-        // path when the theme is unchanged, so Apply does not drop a picked
-        // theme while other fields change. Reset has no such obligation: a
-        // stale active-theme pointer must not survive it, so force the
-        // default value after building the candidate.
+
         default_candidate.active_custom_theme_path =
             EditorSettings::default().active_custom_theme_path;
         let already_default = !had_pending_inputs && default_candidate == self.settings;
@@ -156,9 +147,6 @@ impl KuroyaApp {
 
     pub(crate) fn apply_settings_font_picked(&mut self, target: SettingsFontTarget, path: String) {
         if !self.settings_panel_open {
-            // The picker ran asynchronously and the panel closed in the
-            // meantime: writing the input now would report success while the
-            // next open re-syncs and silently discards the pick.
             self.status = "Settings panel is closed; font selection discarded".to_owned();
             return;
         }
@@ -191,8 +179,6 @@ impl KuroyaApp {
 
     pub(crate) fn apply_settings_background_image_picked(&mut self, path: String) {
         if !self.settings_panel_open {
-            // Same async race as font picks: the draft would be overwritten on
-            // the next panel open, so discard instead of pretending success.
             self.status =
                 "Settings panel is closed; background image selection discarded".to_owned();
             return;

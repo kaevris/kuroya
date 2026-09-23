@@ -600,9 +600,7 @@ impl KuroyaApp {
             reset_settings_panel_memory(ctx);
             self.sync_settings_panel_inputs();
         }
-        // A discard confirmation only stays armed while the draft holds
-        // unsaved edits, so a freshly opened (or just applied) panel never
-        // discards on the first dismissal attempt.
+
         if !self.settings_panel_has_pending_inputs() {
             set_settings_panel_confirm_discard_armed(ctx, false);
         }
@@ -614,9 +612,6 @@ impl KuroyaApp {
         let vim_capture_active = vim_key_capture_active(ctx);
 
         let window_response = egui::Window::new("Settings")
-            // Pin the window to exactly the computed size: without min+max,
-            // egui re-fits non-resizable windows to each section's content,
-            // so switching sections visibly resizes the popup.
             .min_size(egui::Vec2::from(window_size))
             .max_size(egui::Vec2::from(window_size))
             .collapsible(false)
@@ -716,10 +711,7 @@ impl KuroyaApp {
                         } else {
                             ui.heading(SETTINGS_SECTIONS[self.settings_panel_section]);
                             ui.separator();
-                            // Scroll both axes: with a vertical-only area, any widget
-                            // wider than the window (e.g. an over-wide grid row)
-                            // propagates its min width up and resizes the window.
-                            // Horizontal overflow becomes a scrollbar instead.
+
                             egui::ScrollArea::both()
                                 .id_salt((
                                     "settings_panel_section_scroll",
@@ -946,11 +938,6 @@ impl KuroyaApp {
     }
 }
 
-/// Reset egui's memory when the settings panel opens, keeping the app theme and
-/// the focused widget (e.g. the terminal input) intact.
-///
-/// The active style lives in `Memory::options`, so it is saved across the wipe
-/// instead of being reset to egui's stock gray style.
 fn reset_settings_panel_memory(ctx: &Context) {
     let options = ctx.memory(|memory| memory.options.clone());
     let focused = ctx.memory(|memory| memory.focused());
@@ -963,9 +950,6 @@ fn reset_settings_panel_memory(ctx: &Context) {
     });
 }
 
-/// Remember the focused widget while the settings panel is open so focus can
-/// return to it when the panel closes instead of being orphaned (keystrokes
-/// would otherwise fall through to the editor).
 fn record_settings_panel_focus(ctx: &Context) {
     if let Some(id) = ctx.memory(|memory| memory.focused()) {
         ctx.data_mut(|data| {
@@ -1079,8 +1063,6 @@ fn apply_settings_panel_escape(
         return;
     }
     if has_pending_inputs && !*discard_confirmed {
-        // First Escape with unsaved edits: arm the discard confirmation so a
-        // single stray keystroke cannot throw the draft away.
         *discard_confirmed = true;
         return;
     }
@@ -1094,8 +1076,6 @@ fn apply_settings_panel_outside_click(
     has_pending_inputs: bool,
 ) {
     if has_pending_inputs && !*discard_confirmed {
-        // First click outside with unsaved edits: arm the discard
-        // confirmation and keep the panel (and the draft) open.
         *discard_confirmed = true;
         return;
     }
@@ -1350,9 +1330,6 @@ fn settings_search_results(query: &str) -> Vec<SettingsSearchEntry> {
     }
     let haystacks = settings_search_haystacks();
 
-    // AND semantics: every token must match somewhere in the entry. Each
-    // matching token contributes its best relevance score, so entries whose
-    // titles match rank above keyword-only matches.
     let mut matches: Vec<SettingsSearchMatch> = Vec::new();
     for (index, haystack) in haystacks.iter().enumerate() {
         let mut score = 0;
@@ -1383,9 +1360,6 @@ fn settings_search_results(query: &str) -> Vec<SettingsSearchEntry> {
         return matches.into_iter().map(|hit| hit.entry).collect();
     }
 
-    // Fuzzy fallback: no entry contains every token, so score the whole
-    // query as one case-insensitive subsequence instead ("srch" still finds
-    // entries mentioning "Search").
     settings_search_fuzzy_results(&tokens.join(" "))
 }
 
@@ -1407,15 +1381,9 @@ fn settings_search_fuzzy_results(query: &str) -> Vec<SettingsSearchEntry> {
         .collect()
 }
 
-/// Precomputed lowercase search fields for `SETTINGS_SEARCH_ENTRIES`.
-///
-/// The entry table is const, so its lowercase haystacks are built once and
-/// reused every frame instead of re-running `format!` + `to_lowercase` per
-/// entry on each repaint.
 struct SettingsSearchHaystack {
-    /// Lowercase "section group title keywords".
     haystack: String,
-    /// Lowercase entry title, kept separate for relevance scoring.
+
     title: String,
 }
 
@@ -1437,8 +1405,6 @@ fn settings_search_haystacks() -> &'static Vec<SettingsSearchHaystack> {
     })
 }
 
-/// Relevance tiers for one matched query token, highest first: exact
-/// full-title match > title prefix > title substring > group/keywords only.
 const SETTINGS_SEARCH_SCORE_EXACT_TITLE: u32 = 4;
 const SETTINGS_SEARCH_SCORE_TITLE_PREFIX: u32 = 3;
 const SETTINGS_SEARCH_SCORE_TITLE_CONTAINS: u32 = 2;
@@ -1460,11 +1426,11 @@ fn settings_search_token_score(haystack: &SettingsSearchHaystack, token: &str) -
 
 struct SettingsSearchMatch {
     entry: SettingsSearchEntry,
-    /// Sum of per-token relevance scores.
+
     score: u32,
-    /// How many query tokens matched (all of them under AND semantics).
+
     tokens_matched: usize,
-    /// Position in the entry table; lower index wins ties.
+
     index: usize,
 }
 
@@ -1478,8 +1444,6 @@ fn settings_search_tokens(query: &str) -> Vec<String> {
         .collect()
 }
 
-/// Selected result row for `query`: resets to the top whenever the query
-/// changes and stays clamped to the current result count.
 fn settings_search_selected_index(ctx: &Context, query: &str, results_len: usize) -> usize {
     let stored = ctx.data_mut(|data| {
         data.get_temp::<(String, usize)>(egui::Id::new(SETTINGS_SEARCH_SELECTION_ID))
@@ -1902,9 +1866,6 @@ mod tests {
         assert_eq!(minimap[0].title, "Minimap");
         assert_eq!(minimap[1].title, "Editor minimap");
 
-        // "Scroll beyond last line", "Scrollbars", and "Scrollback rows" all
-        // start with the token, so the table order breaks that tie before
-        // mere contains matches ("Smooth scrolling", "Sticky scroll", ...).
         let scroll = settings_search_results("scroll");
         assert_eq!(scroll[0].title, "Scroll beyond last line");
         assert_eq!(scroll[1].title, "Scrollbars");
@@ -1914,8 +1875,6 @@ mod tests {
 
     #[test]
     fn settings_search_fuzzy_fallback_finds_subsequence_matches() {
-        // No entry haystack contains "srch" literally, so only the fuzzy
-        // subsequence fallback can produce results for this query.
         let results = settings_search_results("srch");
 
         assert!(!results.is_empty());
@@ -1983,12 +1942,11 @@ mod tests {
         };
 
         frame(&mut app, &ctx, Vec::new());
-        // "minimap" ranks [Minimap (General), Editor minimap (Editor)].
+
         set_settings_panel_search_query(&ctx, "minimap".to_owned());
         frame(&mut app, &ctx, Vec::new());
         assert_eq!(app.settings_panel_section, SETTINGS_SECTION_GENERAL);
 
-        // ArrowDown moves the selection to the second row, Enter opens it.
         frame(&mut app, &ctx, vec![key(egui::Key::ArrowDown)]);
         frame(&mut app, &ctx, vec![key(egui::Key::Enter)]);
 
@@ -2009,18 +1967,14 @@ mod tests {
 
         settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
 
-        // The first click only arms the discard confirmation: the panel stays
-        // open and the draft survives.
         assert!(app.settings_panel_open);
         assert_eq!(app.settings_panel_draft.font_size, 22.0);
         assert!(settings_panel_confirm_discard_armed(&ctx));
 
-        // Later frames keep showing the armed confirmation.
         settings_frame(&mut app, &ctx, screen, Vec::new());
         assert!(app.settings_panel_open);
         assert!(settings_panel_confirm_discard_armed(&ctx));
 
-        // The second click discards the draft and closes the panel.
         settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
 
         assert!(!app.settings_panel_open);
@@ -2100,9 +2054,6 @@ mod tests {
         assert!(app.settings_panel_open);
         assert!(!app.settings_panel_has_pending_inputs());
 
-        // The frame after applying disarms the confirmation, so the next
-        // outside click closes cleanly instead of demanding another
-        // confirmation round.
         settings_frame(&mut app, &ctx, screen, Vec::new());
         assert!(!settings_panel_confirm_discard_armed(&ctx));
 
@@ -2125,8 +2076,6 @@ mod tests {
         let _ = ctx.run(input, |ctx| app.render_settings_panel(ctx));
     }
 
-    /// A primary press + release in the top-left corner, safely outside the
-    /// settings window anchored to the top-center of the 1600x850 test screen.
     fn settings_outside_click_events() -> Vec<egui::Event> {
         let button = |pressed| egui::Event::PointerButton {
             pos: egui::Pos2::new(40.0, 20.0),
@@ -2174,26 +2123,22 @@ mod tests {
         let mut actions = PendingSettingsPanelActions::default();
         let mut discard_confirmed = false;
 
-        // Escape with a search query clears it without closing or arming.
         apply_settings_panel_escape(&mut query, &mut actions, &mut discard_confirmed, true);
 
         assert!(query.is_empty());
         assert!(!actions.close);
         assert!(!discard_confirmed);
 
-        // First Escape with unsaved edits arms the discard confirmation.
         apply_settings_panel_escape(&mut query, &mut actions, &mut discard_confirmed, true);
 
         assert!(!actions.close);
         assert!(discard_confirmed);
 
-        // Second Escape discards the draft and closes.
         apply_settings_panel_escape(&mut query, &mut actions, &mut discard_confirmed, true);
 
         assert!(actions.close);
         assert!(!discard_confirmed);
 
-        // Without unsaved edits the first Escape closes right away.
         let mut actions = PendingSettingsPanelActions::default();
         let mut discard_confirmed = false;
 
@@ -2275,8 +2220,7 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             ctx.memory_mut(|memory| memory.request_focus(terminal_input_id));
             reset_settings_panel_memory(ctx);
-            // Asserted within the same frame: egui drops focus for widgets that
-            // were not rendered once the frame ends, which is unrelated to the reset.
+
             assert!(ctx.memory(|memory| memory.has_focus(terminal_input_id)));
         });
     }
@@ -2290,8 +2234,7 @@ mod tests {
             ctx.memory_mut(|memory| memory.request_focus(terminal_input_id));
             record_settings_panel_focus(ctx);
             restore_settings_panel_focus(ctx);
-            // Asserted within the same frame: egui drops focus for widgets that
-            // were not rendered once the frame ends, which is unrelated to the restore.
+
             assert!(ctx.memory(|memory| memory.has_focus(terminal_input_id)));
         });
     }

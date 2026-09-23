@@ -677,8 +677,6 @@ fn normalized_lsp_server_configs(servers: &[LspServerConfig]) -> Vec<LspServerCo
             enabled: server.enabled,
         };
 
-        // Multiple servers per language are allowed; only exact duplicates
-        // of an already-normalized entry collapse.
         if !normalized.contains(&config) {
             normalized.push(config);
         }

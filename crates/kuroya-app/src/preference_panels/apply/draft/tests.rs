@@ -358,7 +358,7 @@ fn draft_apply_copy_fixture() -> EditorSettings {
         format_on_paste: true,
         paste_as_enabled: false,
         paste_as_show_paste_selector: EditorPasteAsShowPasteSelector::Never,
-        // Non-default now that autosave ships off.
+
         autosave: true,
         autosave_mode: EditorAutoSaveMode::OnFocusChange,
         autosave_delay_ms: 1_500,
@@ -1711,8 +1711,6 @@ fn apply_settings_panel_draft_normalizes_lsp_server_configs() {
 
     apply_settings_panel_draft(&mut settings, &draft, "", "");
 
-    // Distinct same-language entries are all retained; only the invalid
-    // entry (blank language) is dropped.
     assert_eq!(settings.lsp_servers.len(), 3);
     let typescript = settings
         .lsp_servers
@@ -1896,12 +1894,10 @@ fn serialized_settings_fields(settings: &EditorSettings) -> Map<String, Value> {
 }
 
 fn draft_apply_intentionally_excluded_fields() -> BTreeSet<&'static str> {
-    // These settings are owned outside the settings panel draft apply flow.
     BTreeSet::from(["keymap", "schema_version", "updates_github_repository"])
 }
 
 fn draft_apply_intentionally_normalized_fields() -> BTreeSet<&'static str> {
-    // These fields are panel-applied through sanitizers, clamps, or list normalization.
     BTreeSet::from([
         "font_ligatures",
         "font_variations",
