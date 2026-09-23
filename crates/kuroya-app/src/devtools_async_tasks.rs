@@ -452,6 +452,14 @@ pub(crate) fn async_task_event_label(event: &UiEvent) -> Option<AsyncTaskEventLa
         UiEvent::PluginBufferTextApply { .. } => None,
         UiEvent::ExplorerDirectoryLoaded { .. } => None,
         UiEvent::StartupSessionLoaded { .. } => None,
+        UiEvent::LspInstallFinished {
+            display_name,
+            result,
+            ..
+        } => {
+            let label = if result.is_ok() { finished } else { failed };
+            Some(label("LSP Install", async_task_detail(display_name)))
+        }
         UiEvent::Lsp(_) => None,
     }
 }

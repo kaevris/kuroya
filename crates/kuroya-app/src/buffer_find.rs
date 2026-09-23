@@ -778,10 +778,10 @@ fn buffer_find_regex_query_is_line_local(query: &str) -> bool {
                     return false;
                 }
             }
-            '(' if chars.peek() == Some(&'?') => {
-                if buffer_find_regex_inline_flags_can_enable_dotall(&mut chars) {
-                    return false;
-                }
+            '(' if chars.peek() == Some(&'?')
+                && buffer_find_regex_inline_flags_can_enable_dotall(&mut chars) =>
+            {
+                return false;
             }
             _ => {}
         }

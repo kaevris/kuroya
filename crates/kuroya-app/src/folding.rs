@@ -618,10 +618,8 @@ fn scan_foldable_bracket_chars(
             '/' if chars.next_if(|(_, next)| *next == '*').is_some() => {
                 *state = BracketScanState::BlockComment;
             }
-            _ if matching_close(ch).is_some() || is_closing_bracket(ch) => {
-                if !visit(column, ch) {
-                    return false;
-                }
+            _ if (matching_close(ch).is_some() || is_closing_bracket(ch)) && !visit(column, ch) => {
+                return false;
             }
             _ => {}
         }

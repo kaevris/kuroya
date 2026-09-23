@@ -95,10 +95,8 @@ impl KuroyaApp {
                 query,
                 symbols,
                 error,
-            } => {
-                if workspace_symbol_request_source_matches(&self.buffers, id, &path) {
-                    handle_workspace_symbols_result(self, path, query, symbols, error);
-                }
+            } if workspace_symbol_request_source_matches(&self.buffers, id, &path) => {
+                handle_workspace_symbols_result(self, path, query, symbols, error);
             }
             _ => {}
         }

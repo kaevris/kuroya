@@ -1,0 +1,17 @@
+id = "rust"
+display_name = "rust-analyzer"
+languages = ["rust"]
+notes = "requires rustup"
+
+[verify]
+command = "rust-analyzer"
+args = ["--version"]
+
+[install.windows]
+shell = "rustup component add rust-analyzer"
+
+[install.linux]
+shell = "rustup component add rust-analyzer"
+
+[install.macos]
+shell = "rustup component add rust-analyzer"

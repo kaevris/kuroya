@@ -648,10 +648,10 @@ pub(crate) fn regex_query_is_line_local(query: &str) -> bool {
                     return false;
                 }
             }
-            '(' => {
-                if chars.peek() == Some(&'?') && regex_inline_flags_can_enable_dotall(&mut chars) {
-                    return false;
-                }
+            '(' if chars.peek() == Some(&'?')
+                && regex_inline_flags_can_enable_dotall(&mut chars) =>
+            {
+                return false;
             }
             _ => {}
         }

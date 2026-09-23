@@ -1,0 +1,17 @@
+id = "typescript"
+display_name = "typescript-language-server"
+languages = ["typescript"]
+notes = "requires Node.js and npm; installs the TypeScript compiler the server needs"
+
+[verify]
+command = "typescript-language-server"
+args = ["--version"]
+
+[install.windows]
+shell = "npm install -g typescript typescript-language-server"
+
+[install.linux]
+shell = "npm install -g typescript typescript-language-server"
+
+[install.macos]
+shell = "npm install -g typescript typescript-language-server"

@@ -12,7 +12,7 @@ pub(crate) fn session_fold_states(
         .iter()
         .filter(|(path, _)| has_session_path_identity(path))
         .collect::<Vec<_>>();
-    entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort_unstable_by_key(|(path, _)| *path);
 
     entries
         .into_iter()

@@ -1059,6 +1059,13 @@ impl KuroyaApp {
                 } => {
                     self.apply_startup_session_loaded(root, target, session, warning);
                 }
+                UiEvent::LspInstallFinished {
+                    language,
+                    display_name,
+                    result,
+                } => {
+                    self.apply_lsp_install_finished(&language, &display_name, result);
+                }
                 UiEvent::Lsp(_) => continue,
             }
         }

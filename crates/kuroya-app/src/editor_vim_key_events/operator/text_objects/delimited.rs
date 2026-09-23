@@ -231,8 +231,7 @@ fn vim_quote_pair_on_line(
     let straddling = quotes
         .iter()
         .copied()
-        .filter(|idx| *idx < cursor)
-        .next_back()
+        .rfind(|idx| *idx < cursor)
         .zip(quotes.iter().copied().find(|idx| *idx > cursor));
     straddling.filter(|(open, close)| open < &cursor && &cursor < close)
 }

@@ -56,18 +56,17 @@ fn vim_events_include_mutation_impl(
                 pressed: true,
                 modifiers,
                 ..
-            } => {
-                if vim_key_event_includes_mutation_for_scan(
-                    *key,
-                    *modifiers,
-                    &mut mode,
-                    &mut pending,
-                    &mut suppressed_text,
-                    vim_settings,
-                    true,
-                ) {
-                    return true;
-                }
+            } if vim_key_event_includes_mutation_for_scan(
+                *key,
+                *modifiers,
+                &mut mode,
+                &mut pending,
+                &mut suppressed_text,
+                vim_settings,
+                true,
+            ) =>
+            {
+                return true;
             }
             _ => {}
         }

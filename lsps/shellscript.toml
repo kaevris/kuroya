@@ -1,0 +1,17 @@
+id = "shellscript"
+display_name = "bash-language-server"
+languages = ["shellscript"]
+notes = "requires Node.js and npm"
+
+[verify]
+command = "bash-language-server"
+args = ["--version"]
+
+[install.windows]
+shell = "npm install -g bash-language-server"
+
+[install.linux]
+shell = "npm install -g bash-language-server"
+
+[install.macos]
+shell = "npm install -g bash-language-server"

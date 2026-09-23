@@ -1,0 +1,11 @@
+id = "c"
+display_name = "clangd"
+languages = ["c"]
+notes = "standalone clangd from the LLVM project via winget; Windows install only, other platforms need a manual toolchain install"
+
+[verify]
+command = "clangd"
+args = ["--version"]
+
+[install.windows]
+shell = "winget install -e --id LLVM.clangd --silent --accept-package-agreements --accept-source-agreements"
