@@ -637,7 +637,7 @@ fn normalize_diagnostics_for_path(path: &Path, diagnostics: &mut [Diagnostic]) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 fn normalize_diagnostic_path(path: &Path) -> PathBuf {
     normalize_diagnostic_path_cow(path).into_owned()
 }

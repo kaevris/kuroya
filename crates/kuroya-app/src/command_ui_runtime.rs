@@ -487,6 +487,7 @@ mod tests {
     #[test]
     fn editor_setting_toggle_commands_persist_and_sync_panel_draft() {
         let root = temp_root("editor-toggle-commands");
+        std::fs::create_dir_all(&root).expect("create temp workspace root");
         let settings = EditorSettings {
             minimap: true,
             sticky_scroll: true,
@@ -611,6 +612,7 @@ mod tests {
     #[test]
     fn toggle_vim_mode_survives_settings_reload() {
         let root = temp_root("vim-toggle-survives-reload");
+        std::fs::create_dir_all(&root).expect("create temp workspace root");
         let settings = EditorSettings {
             vim_keybindings: false,
             vim: EditorVimSettings {

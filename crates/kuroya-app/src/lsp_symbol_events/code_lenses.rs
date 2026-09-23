@@ -458,6 +458,10 @@ mod tests {
         let version = buffer.version();
         app.buffers.push(buffer);
         app.settings.code_lens = true;
+        app.lsp_clients.insert(
+            "rust".to_owned(),
+            crate::lsp_client::LspClientHandle::accepting_for_test(),
+        );
 
         handle_code_lenses_result(
             &mut app,

@@ -679,6 +679,14 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    fn platform_absolute_path(windows: &str, unix: &str) -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(windows)
+        } else {
+            PathBuf::from(unix)
+        }
+    }
+
     #[tokio::test]
     async fn local_history_snapshots_previous_file_content_before_save() {
         let workspace = temp_workspace("snapshot");
@@ -854,7 +862,7 @@ mod tests {
 
     #[test]
     fn local_history_paths_are_sanitized_inside_state_dir() {
-        let workspace = PathBuf::from("C:/repo");
+        let workspace = platform_absolute_path("C:/repo", "/repo");
         let path = workspace.join("src").join("bad:name.rs");
         let snapshot = local_history_snapshot_path(&workspace, &path, 42);
         let snapshot_name = snapshot.file_name().unwrap().to_str().unwrap();
@@ -882,7 +890,11 @@ mod tests {
                 .join("42.main.rs.bak")
         );
 
-        let external = local_history_snapshot_path(&workspace, Path::new("D:/other/file.rs"), 7);
+        let external = local_history_snapshot_path(
+            &workspace,
+            &platform_absolute_path("D:/other/file.rs", "/other/file.rs"),
+            7,
+        );
         assert!(external.starts_with(state_dir(&workspace).join("history").join("external")));
         assert_eq!(external.file_name().unwrap(), "7.file.rs.bak");
     }
@@ -1097,13 +1109,20 @@ mod tests {
 
     #[test]
     fn local_history_paths_are_lexically_normalized_before_bucket_selection() {
-        let workspace = PathBuf::from("C:/repo/root/./project");
-        let normalized_workspace = PathBuf::from("C:/repo/root/project");
-        let direct =
-            local_history_snapshot_path(&workspace, Path::new("C:/repo/root/project/main.rs"), 11);
+        let workspace = platform_absolute_path("C:/repo/root/./project", "/repo/root/./project");
+        let normalized_workspace =
+            platform_absolute_path("C:/repo/root/project", "/repo/root/project");
+        let direct = local_history_snapshot_path(
+            &workspace,
+            &platform_absolute_path("C:/repo/root/project/main.rs", "/repo/root/project/main.rs"),
+            11,
+        );
         let equivalent = local_history_snapshot_path(
             &workspace,
-            Path::new("C:/repo/root/project/src/../main.rs"),
+            &platform_absolute_path(
+                "C:/repo/root/project/src/../main.rs",
+                "/repo/root/project/src/../main.rs",
+            ),
             11,
         );
 
@@ -1117,7 +1136,10 @@ mod tests {
 
         let escaped = local_history_snapshot_path(
             &workspace,
-            Path::new("C:/repo/root/project/../outside/main.rs"),
+            &platform_absolute_path(
+                "C:/repo/root/project/../outside/main.rs",
+                "/repo/root/project/../outside/main.rs",
+            ),
             12,
         );
         assert!(

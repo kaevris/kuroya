@@ -2162,6 +2162,7 @@ mod tests {
                 std::process::id(),
             ));
             fs::create_dir_all(&root).expect("create temp plugin dir");
+            let root = fs::canonicalize(&root).unwrap_or(root);
             Self { root }
         }
 

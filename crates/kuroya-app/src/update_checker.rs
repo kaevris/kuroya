@@ -1434,7 +1434,7 @@ mod tests {
 
     #[test]
     fn inno_update_installer_args_use_silent_restart_mode_and_current_dir() {
-        let install_dir = Path::new(r"C:\Users\ESA\AppData\Local\Programs\Kuroya");
+        let install_dir = Path::new(r"C:\Program Files\Kuroya");
 
         assert_eq!(
             inno_update_installer_args(Some(install_dir)),
@@ -1446,29 +1446,50 @@ mod tests {
                 "/CLOSEAPPLICATIONS",
                 "/RESTARTAPPLICATIONS",
                 "/KuroyaRestart=1",
-                r"/DIR=C:\Users\ESA\AppData\Local\Programs\Kuroya",
+                r"/DIR=C:\Program Files\Kuroya",
             ]
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn update_install_dir_uses_installed_exe_but_skips_cargo_build_output() {
+        let install_dir = std::env::var_os("LOCALAPPDATA")
+            .map(|local_app_data| {
+                PathBuf::from(local_app_data)
+                    .join("Programs")
+                    .join("Kuroya")
+            })
+            .expect("LOCALAPPDATA should be set on windows");
+        let installed_exe = install_dir.join("kuroya.exe");
+
         assert_eq!(
-            update_install_dir_from_exe(Path::new(
-                r"C:\Users\ESA\AppData\Local\Programs\Kuroya\kuroya.exe"
-            )),
-            Some(PathBuf::from(r"C:\Users\ESA\AppData\Local\Programs\Kuroya"))
+            update_install_dir_from_exe(&installed_exe),
+            Some(install_dir)
         );
         assert_eq!(
-            update_install_dir_from_exe(Path::new(
-                r"C:\Users\ESA\Desktop\anime\test\target\release\kuroya.exe"
-            )),
+            update_install_dir_from_exe(Path::new(r"C:\repo\target\release\kuroya.exe")),
             None
         );
         assert_eq!(
-            update_install_dir_from_exe(Path::new(
-                r"C:\Users\ESA\AppData\Local\Programs\Kuroya\other.exe"
-            )),
+            update_install_dir_from_exe(Path::new(r"C:\Program Files\Kuroya\other.exe")),
+            None
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn update_install_dir_from_exe_still_requires_kuroya_exe_on_unix() {
+        assert_eq!(
+            update_install_dir_from_exe(Path::new("/opt/Kuroya/kuroya.exe")),
+            Some(PathBuf::from("/opt/Kuroya"))
+        );
+        assert_eq!(
+            update_install_dir_from_exe(Path::new("/home/user/target/release/kuroya.exe")),
+            None
+        );
+        assert_eq!(
+            update_install_dir_from_exe(Path::new("/opt/Kuroya/other.exe")),
             None
         );
     }

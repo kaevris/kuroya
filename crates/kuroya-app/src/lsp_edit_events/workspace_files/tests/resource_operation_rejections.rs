@@ -264,6 +264,8 @@ fn workspace_apply_edit_rejects_json_resource_escape_before_text_mutation() {
     for case in ["create", "rename-old", "rename-new", "delete"] {
         let root = temp_workspace(&format!("json-resource-escape-{case}"));
         fs::create_dir_all(root.join("src")).unwrap();
+        let root =
+            crate::native_paths::normalize_native_path(fs::canonicalize(&root).unwrap_or(root));
         let path = root.join("src/main.rs");
         fs::write(&path, "fn main() {}\n").unwrap();
         let outside_name = format!("{}-outside.rs", root.file_name().unwrap().to_string_lossy());

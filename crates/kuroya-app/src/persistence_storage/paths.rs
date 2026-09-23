@@ -350,7 +350,7 @@ mod tests {
 
         let workspace_with_normalization = workspace.join(".").join("src").join("..");
         let normalized = normalize_workspace_root_for_storage(&workspace_with_normalization);
-        let state = app_workspace_state_bucket(&normalized);
+        let state = state_dir(&workspace);
 
         assert_eq!(normalized, workspace);
         assert_eq!(state_dir(&workspace_with_normalization), state);

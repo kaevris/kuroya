@@ -14,11 +14,14 @@ pub fn path_to_file_uri(path: &Path) -> String {
         .as_deref()
         .unwrap_or(path)
         .to_string_lossy();
-    let mut path = if path.as_bytes().contains(&b'\\') {
+    let path = if path.as_bytes().contains(&b'\\') {
         Cow::Owned(path.replace('\\', "/"))
     } else {
         path
     };
+
+    #[cfg(windows)]
+    let mut path = path;
 
     #[cfg(windows)]
     if let Some(verbatim_unc_path) = path.strip_prefix("//?/UNC/") {

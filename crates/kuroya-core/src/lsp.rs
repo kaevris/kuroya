@@ -1556,7 +1556,7 @@ pub fn parse_semantic_tokens_response(value: &Value) -> Option<Vec<LspSemanticTo
     let mut tokens = Vec::with_capacity((data.len() / 5).min(MAX_LSP_SEMANTIC_TOKENS));
     let mut line = 0usize;
     let mut column = 0usize;
-    for chunk in data.chunks_exact(5).take(MAX_LSP_SEMANTIC_TOKENS) {
+    for chunk in data.as_chunks::<5>().0.iter().take(MAX_LSP_SEMANTIC_TOKENS) {
         let delta_line = value_as_usize(&chunk[0])?;
         let delta_start = value_as_usize(&chunk[1])?;
         let length = value_as_usize(&chunk[2])?;

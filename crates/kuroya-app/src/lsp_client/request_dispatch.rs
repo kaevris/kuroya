@@ -421,26 +421,59 @@ mod tests {
 
     async fn exited_child_stdin() -> ChildStdin {
         #[cfg(windows)]
-        let mut command = {
-            let mut command = Command::new("cmd");
-            command.args(["/C", "exit 0"]);
-            command
-        };
+        {
+            let mut command = {
+                let mut command = Command::new("cmd");
+                command.args(["/C", "exit 0"]);
+                command
+            };
+
+            let mut child = command
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("spawn child process with stdin");
+            let stdin = child.stdin.take().expect("child stdin is piped");
+            child.wait().await.expect("child exits cleanly");
+            stdin
+        }
 
         #[cfg(not(windows))]
-        let mut command = {
-            let mut command = Command::new("sh");
-            command.args(["-c", "true"]);
-            command
-        };
+        {
+            use tokio::io::AsyncWriteExt;
 
-        let mut child = command
-            .stdin(Stdio::piped())
-            .spawn()
-            .expect("spawn child process with stdin");
-        let stdin = child.stdin.take().expect("child stdin is piped");
-        child.wait().await.expect("child exits cleanly");
-        stdin
+            let mut command = {
+                let mut command = Command::new("sh");
+                command.args(["-c", "exec 0<&-; sleep 30"]);
+                command
+            };
+
+            let mut child = command
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("spawn child process with stdin");
+            let mut stdin = child.stdin.take().expect("child stdin is piped");
+
+            let mut pipe_broken = false;
+            for _ in 0..500 {
+                match stdin.write(b"\0").await {
+                    Err(_) => {
+                        pipe_broken = true;
+                        break;
+                    }
+                    Ok(_) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                    }
+                }
+            }
+
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            assert!(
+                pipe_broken,
+                "child stdin pipe should close before tests simulate write failures"
+            );
+            stdin
+        }
     }
 
     async fn stdin_sink_child() -> (Child, ChildStdin) {

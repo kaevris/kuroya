@@ -23,7 +23,7 @@ use std::{
     cell::Cell,
     collections::HashMap,
     env, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::runtime::Runtime;
@@ -73,7 +73,7 @@ fn restore_session_prunes_missing_pending_paths_and_active_wait() {
     assert!(app.pending_history_states.contains_key(&existing));
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -291,7 +291,7 @@ fn restore_session_rejects_direct_uncontained_opened_paths() {
     assert!(!app.pending_history_states.contains_key(&outside));
     assert!(!app.pending_history_states.contains_key(&reentry));
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
     let _ = fs::remove_file(outside);
 }
 
@@ -339,8 +339,8 @@ fn restore_session_rejects_mismatched_workspace_path_state() {
     assert_eq!(app.buffers[0].text(), "recover me\n");
     assert_eq!(app.status, "Restored 1 recovered buffers");
     drop(app);
-    fs::remove_dir_all(root).unwrap();
-    fs::remove_dir_all(other_root).unwrap();
+    remove_dir_all_retry(&root);
+    remove_dir_all_retry(&other_root);
 }
 
 #[test]
@@ -393,7 +393,7 @@ fn restore_session_reports_actual_recovery_skip_reasons() {
          2 per-buffer limit, 1 duplicate path, 1 total limit"
     );
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -428,7 +428,7 @@ fn restore_session_notifies_lsp_for_recovered_dirty_disk_buffers() {
     );
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -502,7 +502,7 @@ fn terminal_restore_visibility_requires_workspace_trust() {
 
     assert!(!session.terminal_visible);
     assert_eq!(session.terminal_sessions.len(), 1);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -534,7 +534,7 @@ fn restore_session_normalizes_explorer_revealed_path_and_expanded_ancestors() {
     assert!(!app.explorer_expanded.contains(&root.join("src").join("..")));
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -557,7 +557,7 @@ fn restore_session_drops_escaped_explorer_paths() {
     assert_eq!(app.explorer_revealed_path, None);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -597,7 +597,7 @@ fn restore_session_clears_stale_focus_when_active_file_is_pending() {
     assert_eq!(app.last_autosave_focused_pane, None);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -669,7 +669,7 @@ fn restore_session_clears_stale_buffer_runtime_state_before_recovery() {
     assert!(app.pending_language_sync.is_empty());
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -720,7 +720,7 @@ fn restore_session_normalizes_quick_open_recent_navigation_state() {
     assert_eq!(app.quick_open_query_memory[0].uses, 4);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -757,7 +757,7 @@ fn restore_session_collapses_only_missing_path_panes_to_default_pane() {
     assert!(app.pending_history_states.is_empty());
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -840,7 +840,7 @@ fn restore_session_restores_duplicate_file_pane_scrolls_independently() {
     );
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -881,7 +881,7 @@ fn restore_session_legacy_view_state_still_restores_path_scroll() {
     assert!(app.pending_pane_horizontal_scroll_offsets.is_empty());
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[cfg(windows)]
@@ -929,7 +929,7 @@ fn restore_session_applies_case_equivalent_recovered_path_state() {
     assert!(app.pending_history_states.is_empty());
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -990,7 +990,7 @@ fn restore_session_legacy_view_state_applies_to_duplicate_file_panes() {
     );
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1063,7 +1063,7 @@ fn pathless_recovered_buffer_restores_view_and_history() {
 
     drop(restored_app);
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1145,7 +1145,7 @@ fn pathless_recovery_state_indices_follow_deduped_recovery_entries() {
 
     drop(restored_app);
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1178,7 +1178,7 @@ fn restore_session_restores_project_search_toggles() {
     assert_eq!(app.project_search_exclude, "target/**");
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1194,7 +1194,7 @@ fn build_session_persists_project_search_toggles() {
     assert!(session.project_search_regex);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1233,7 +1233,7 @@ fn restore_session_orders_recovered_buffers_by_saved_open_file_order() {
     assert_eq!(restored_paths, vec![first, last]);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1297,7 +1297,7 @@ fn restore_session_restores_buffer_find_ui_state_and_resets_transients() {
     assert_eq!(app.buffer_find_replacement_history_draft, None);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1325,7 +1325,7 @@ fn build_session_persists_buffer_find_ui_state() {
     assert!(session.buffer_find_preserve_case);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1367,7 +1367,7 @@ fn restore_session_restores_persistent_ui_overlay_state_and_resets_transients() 
     assert!(app.keybinding_capture_command.is_none());
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1423,7 +1423,7 @@ fn restore_session_cancels_pending_escape_keybinding_capture_before_resetting_ov
         Some("Escape".to_owned())
     );
     assert!(!settings_path(&root).exists());
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1443,7 +1443,7 @@ fn build_session_persists_persistent_ui_overlay_state() {
     assert!(session.keybindings_open);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1496,7 +1496,7 @@ fn build_session_persists_normalized_command_palette_query_memory() {
     );
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1557,7 +1557,7 @@ fn restore_session_normalizes_workspace_symbol_query_memory() {
     );
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1616,7 +1616,7 @@ fn build_session_persists_normalized_workspace_symbol_query_memory() {
     );
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1655,7 +1655,7 @@ fn restore_session_restores_source_control_commit_history_and_resets_index() {
     assert_eq!(app.source_control_commit_history_index, None);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1685,7 +1685,7 @@ fn build_session_persists_normalized_source_control_commit_history() {
     );
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1708,7 +1708,7 @@ fn restore_session_restores_source_control_stash_draft() {
     assert_eq!(app.source_control_stash_query, "filter stashes");
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1744,7 +1744,7 @@ fn restore_session_restores_source_control_stash_panel_state_and_resets_transien
     assert!(app.pending_restored_git_stashes_load);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1762,7 +1762,7 @@ fn build_session_persists_source_control_stash_draft() {
     assert_eq!(session.source_control_stash_query, "filter stashes");
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1778,7 +1778,7 @@ fn build_session_persists_source_control_stash_panel_state() {
     assert!(session.source_control_stashes_open);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1801,7 +1801,7 @@ fn restored_git_stashes_load_preserves_restored_stash_draft() {
     assert!(!app.source_control_stashes_reload_queued);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1839,7 +1839,7 @@ fn restore_session_restores_source_control_history_panel_state_and_resets_transi
     assert!(app.pending_restored_git_history_load);
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 #[test]
@@ -1857,7 +1857,7 @@ fn build_session_persists_source_control_history_panel_state() {
     assert_eq!(session.source_control_history_query, "fix author");
 
     drop(app);
-    fs::remove_dir_all(root).unwrap();
+    remove_dir_all_retry(&root);
 }
 
 fn app_for_test(root: PathBuf) -> KuroyaApp {
@@ -1938,4 +1938,22 @@ fn temp_root(name: &str) -> PathBuf {
         "kuroya-restore-{name}-{}-{nanos}",
         std::process::id()
     ))
+}
+
+fn remove_dir_all_retry(path: &Path) {
+    let mut last_error = None;
+    for _ in 0..50 {
+        match fs::remove_dir_all(path) {
+            Ok(()) => return,
+            Err(error) => {
+                last_error = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+    panic!(
+        "temp dir should be removable after retries: {}: {}",
+        path.display(),
+        last_error.expect("remove error")
+    );
 }

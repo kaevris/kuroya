@@ -964,7 +964,14 @@ fn workspace_symlink_component(root: &Path, path: &Path) -> Result<Option<PathBu
         match std::fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => return Ok(Some(current)),
             Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(None);
+            }
             Err(error) => return Err(error.to_string()),
         }
     }
@@ -978,7 +985,12 @@ fn simulated_disk_path_state(path: &Path) -> Result<SimulatedWorkspacePath, Stri
         Ok(_) => Ok(SimulatedWorkspacePath::File(SimulatedWorkspaceFile::Disk(
             path.to_path_buf(),
         ))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
             Ok(SimulatedWorkspacePath::Missing)
         }
         Err(error) => Err(error.to_string()),

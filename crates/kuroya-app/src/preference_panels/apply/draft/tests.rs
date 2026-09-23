@@ -457,7 +457,7 @@ fn draft_apply_copy_fixture() -> EditorSettings {
         rounded_selection: false,
         stop_rendering_line_after: -1,
         render_whitespace: EditorRenderWhitespace::All,
-        render_final_newline: kuroya_core::EditorRenderFinalNewline::Dimmed,
+        render_final_newline: kuroya_core::EditorRenderFinalNewline::Off,
         render_control_characters: true,
         unicode_highlight_ambiguous_characters: false,
         unicode_highlight_invisible_characters: false,
@@ -1137,7 +1137,7 @@ fn draft_apply_copies_word_separators() {
     assert_eq!(settings.render_whitespace, EditorRenderWhitespace::All);
     assert_eq!(
         settings.render_final_newline,
-        kuroya_core::EditorRenderFinalNewline::Dimmed
+        kuroya_core::EditorRenderFinalNewline::Off
     );
     assert!(settings.render_control_characters);
     assert!(!settings.unicode_highlight_ambiguous_characters);

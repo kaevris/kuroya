@@ -562,6 +562,7 @@ mod tests {
     #[test]
     fn apply_settings_panel_persists_custom_vim_settings_to_settings_and_app_state() {
         let root = temp_root("vim-custom-settings-persist");
+        fs::create_dir_all(&root).unwrap();
         let mut app = app_for_test(root.clone(), EditorSettings::default());
         let app_state_path = root.join("app-state.json");
         app.app_state_path_override = Some(app_state_path.clone());

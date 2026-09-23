@@ -301,6 +301,15 @@ fn detected_unix_shell_profiles(
     shell_env: Option<&str>,
     is_file: impl FnMut(&str) -> bool,
 ) -> Vec<TerminalShellProfile> {
+    detected_unix_shell_profiles_in(shell_env, UNIX_SHELL_CANDIDATES, is_file)
+}
+
+#[cfg(not(windows))]
+fn detected_unix_shell_profiles_in(
+    shell_env: Option<&str>,
+    candidates: &[&str],
+    is_file: impl FnMut(&str) -> bool,
+) -> Vec<TerminalShellProfile> {
     let mut profiles = Vec::new();
     let mut probe_cache = UnixShellProbeCache::new(is_file);
     let mut seen_keys = BTreeSet::new();
@@ -312,7 +321,7 @@ fn detected_unix_shell_profiles(
         }
     }
 
-    for path in UNIX_SHELL_CANDIDATES {
+    for path in candidates {
         if !seen_probe_paths.insert((*path).to_owned()) {
             continue;
         }
@@ -665,9 +674,10 @@ mod tests {
             "/bin/bash"
         );
 
-        let profiles = detected_unix_shell_profiles(Some(" /bin/zsh\u{7} "), |path| {
-            matches!(path, "/bin/zsh" | "/bin/bash")
-        });
+        let profiles =
+            detected_unix_shell_profiles_in(Some(" /bin/zsh\u{7} "), &["/bin/bash"], |path| {
+                matches!(path, "/bin/zsh" | "/bin/bash")
+            });
 
         let paths = profiles
             .iter()
