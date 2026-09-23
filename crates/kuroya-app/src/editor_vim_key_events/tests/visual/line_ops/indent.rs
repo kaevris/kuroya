@@ -84,3 +84,68 @@ fn normal_mode_visual_character_shift_period_indents_selected_line_span_and_repe
         None,
     ));
 }
+
+#[test]
+fn normal_mode_visual_character_count_shift_period_indents_by_that_many_units() {
+    let mut buffer = TextBuffer::from_text(1, None, "one\ntwo\n".to_owned());
+    let mut mode = EditorVimMode::Normal;
+    let mut pending = None;
+    let mut last_char_find = None;
+    let mut unnamed_register = None;
+    let mut last_change = None;
+
+    for (key, modifiers) in [
+        (Key::V, Modifiers::NONE),
+        (Key::Num2, Modifiers::NONE),
+        (Key::Period, Modifiers::SHIFT),
+    ] {
+        let result = handle_vim_editor_key_event_with_state_and_indent(
+            &mut buffer,
+            key,
+            modifiers,
+            &mut mode,
+            &mut pending,
+            &mut last_char_find,
+            &mut unnamed_register,
+            &mut last_change,
+            "  ",
+        );
+        assert!(result.handled);
+    }
+
+    assert_eq!(buffer.text(), "    one\ntwo\n");
+    assert_eq!(buffer.cursor(), buffer.line_column_to_char(0, 4));
+    assert!(pending.is_none());
+}
+
+#[test]
+fn normal_mode_visual_line_count_shift_period_indents_by_that_many_units() {
+    let mut buffer = TextBuffer::from_text(8, None, "one\ntwo\n".to_owned());
+    let mut mode = EditorVimMode::Normal;
+    let mut pending = None;
+    let mut last_char_find = None;
+    let mut unnamed_register = None;
+    let mut last_change = None;
+
+    for (key, modifiers) in [
+        (Key::V, Modifiers::SHIFT),
+        (Key::Num2, Modifiers::NONE),
+        (Key::Period, Modifiers::SHIFT),
+    ] {
+        let result = handle_vim_editor_key_event_with_state_and_indent(
+            &mut buffer,
+            key,
+            modifiers,
+            &mut mode,
+            &mut pending,
+            &mut last_char_find,
+            &mut unnamed_register,
+            &mut last_change,
+            "  ",
+        );
+        assert!(result.handled);
+    }
+
+    assert_eq!(buffer.text(), "    one\ntwo\n");
+    assert!(pending.is_none());
+}

@@ -29,7 +29,7 @@ fn normal_mode_yank_motions_fill_characterwise_register_without_editing() {
         unnamed_register
             .as_ref()
             .map(|register| (register.text.as_str(), register.kind)),
-        Some(("alpha", EditorVimRegisterKind::Characterwise))
+        Some(("alpha ", EditorVimRegisterKind::Characterwise))
     );
     assert!(pending.is_none());
 
@@ -52,7 +52,7 @@ fn normal_mode_yank_motions_fill_characterwise_register_without_editing() {
         unnamed_register
             .as_ref()
             .map(|register| (register.text.as_str(), register.kind)),
-        Some(("alpha beta", EditorVimRegisterKind::Characterwise))
+        Some(("alpha beta ", EditorVimRegisterKind::Characterwise))
     );
     assert!(!vim_events_include_mutation(
         &[

@@ -1,10 +1,11 @@
 use kuroya_core::TextBuffer;
 
+use super::super::commands::vim_yank_line_span_into_registers;
 use super::super::{
     EditorVimNamedRegister, EditorVimOperatorMotion, EditorVimRegister, EditorVimRegisterKind,
     EditorVimTextObjectKind, EditorVimTextObjectScope, vim_combined_count,
 };
-use super::motions::vim_operator_motion_range;
+use super::motions::{vim_operator_motion_is_linewise, vim_operator_motion_range};
 use super::registers::vim_yank_range_into_register;
 use super::text_objects::vim_text_object_range;
 
@@ -55,6 +56,9 @@ fn vim_yank_operator_motion_into_registers(
     let Some(range) = vim_operator_motion_range(buffer, count, motion) else {
         return false;
     };
+    if vim_operator_motion_is_linewise(motion) {
+        return vim_yank_line_span_into_registers(buffer, range, unnamed_register, named_register);
+    }
     vim_yank_range_into_register(
         buffer,
         range,

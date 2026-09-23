@@ -31,7 +31,7 @@ fn normal_mode_black_hole_register_delete_discards_without_replacing_unnamed() {
         assert!(result.handled);
     }
 
-    assert_eq!(buffer.text(), "alpha  gamma");
+    assert_eq!(buffer.text(), "alpha gamma");
     assert_eq!(buffer.cursor(), buffer.line_column_to_char(0, 6));
     assert_eq!(
         unnamed_register

@@ -59,6 +59,9 @@ pub(crate) fn vim_pending_key_sequence_status_label(
 pub(crate) fn vim_pending_command_status_label(
     pending: Option<EditorVimPendingKey>,
 ) -> Option<String> {
+    if pending.is_none() {
+        return super::super::command_input::vim_command_status_message();
+    }
     let pending = pending?;
     if matches!(pending, EditorVimPendingKey::SearchInput { .. }) {
         return None;
@@ -152,13 +155,18 @@ pub(super) fn vim_pending_is_visual(pending: EditorVimPendingKey) -> bool {
             | EditorVimPendingKey::VisualCharacterTextObject { .. }
             | EditorVimPendingKey::VisualCharacterRegisterPrefix { .. }
             | EditorVimPendingKey::VisualCharacterRegisterCommand { .. }
+            | EditorVimPendingKey::VisualLine { .. }
+            | EditorVimPendingKey::VisualLineGo { .. }
+            | EditorVimPendingKey::VisualLineReplace { .. }
     )
 }
 
 pub(super) fn vim_pending_is_replace(pending: EditorVimPendingKey) -> bool {
     matches!(
         pending,
-        EditorVimPendingKey::ReplaceChar(_) | EditorVimPendingKey::VisualCharacterReplace { .. }
+        EditorVimPendingKey::ReplaceChar(_)
+            | EditorVimPendingKey::VisualCharacterReplace { .. }
+            | EditorVimPendingKey::VisualLineReplace { .. }
     )
 }
 

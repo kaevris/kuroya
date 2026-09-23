@@ -59,6 +59,7 @@ impl KuroyaApp {
         let contents = cached_bounded_hover_markdown(ctx, hover);
 
         egui::Window::new("LSP Hover")
+            .max_size(crate::layout::popup_window_max_size(ctx))
             .collapsible(false)
             .resizable(true)
             .anchor(anchor, offset)

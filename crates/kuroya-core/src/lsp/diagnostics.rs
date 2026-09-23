@@ -1,13 +1,15 @@
 use crate::{Diagnostic, DiagnosticSeverity};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use super::{
     LSP_DIAGNOSTIC_TAG_DEPRECATED, LSP_DIAGNOSTIC_TAG_UNNECESSARY, LspRange,
     MAX_LSP_DIAGNOSTIC_MESSAGE_CHARS, MAX_LSP_DIAGNOSTIC_SOURCE_CHARS,
-    MAX_LSP_DIAGNOSTICS_PER_FILE, bounded_lsp_text, file_uri_to_path, lsp_range_value,
-    one_based_lsp_position_component, parse_lsp_range_bounds, parse_lsp_struct_range_bounds,
+    MAX_LSP_DIAGNOSTICS_PER_FILE, ParsedLspPosition, bounded_lsp_text, file_uri_to_path,
+    lsp_range_value, one_based_lsp_position_component, parse_lsp_range_bounds,
+    parse_lsp_struct_range_bounds,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -43,7 +45,9 @@ pub fn diagnostics_from_lsp(
         .into_iter()
         .take(MAX_LSP_DIAGNOSTICS_PER_FILE)
     {
-        diagnostics.push(diagnostic_from_lsp_struct(diagnostic, &path)?);
+        if let Some(diagnostic) = diagnostic_from_lsp_struct(diagnostic, &path) {
+            diagnostics.push(diagnostic);
+        }
     }
 
     Some((path, version, diagnostics))
@@ -64,7 +68,9 @@ pub fn parse_publish_diagnostics(value: &Value) -> Option<(PathBuf, Option<u64>,
         Vec::with_capacity(lsp_diagnostics.len().min(MAX_LSP_DIAGNOSTICS_PER_FILE));
 
     for diagnostic in lsp_diagnostics.iter().take(MAX_LSP_DIAGNOSTICS_PER_FILE) {
-        diagnostics.push(diagnostic_from_lsp_value(diagnostic, &path)?);
+        if let Some(diagnostic) = diagnostic_from_lsp_value(diagnostic, &path) {
+            diagnostics.push(diagnostic);
+        }
     }
 
     Some((path, version, diagnostics))
@@ -91,6 +97,18 @@ pub(super) fn lsp_code_action_diagnostic(diagnostic: &Diagnostic) -> Value {
     })
 }
 
+fn lsp_diagnostic_char_range(
+    start: ParsedLspPosition,
+    end: ParsedLspPosition,
+    column: usize,
+) -> Range<usize> {
+    if end.line > start.line {
+        start.character..usize::MAX
+    } else {
+        start.character..end.character.max(column)
+    }
+}
+
 fn diagnostic_from_lsp_struct(diagnostic: LspDiagnostic, path: &Path) -> Option<Diagnostic> {
     let (start, end) = parse_lsp_struct_range_bounds(&diagnostic.range)?;
     let line = one_based_lsp_position_component(start.line)?;
@@ -99,7 +117,7 @@ fn diagnostic_from_lsp_struct(diagnostic: LspDiagnostic, path: &Path) -> Option<
         path: path.to_path_buf(),
         line,
         column,
-        char_range: start.character..end.character.max(column),
+        char_range: lsp_diagnostic_char_range(start, end, column),
         severity: lsp_severity(diagnostic.severity),
         source: diagnostic
             .source
@@ -146,7 +164,7 @@ fn diagnostic_from_lsp_value(value: &Value, path: &Path) -> Option<Diagnostic> {
         path: path.to_path_buf(),
         line,
         column,
-        char_range: start.character..end.character.max(column),
+        char_range: lsp_diagnostic_char_range(start, end, column),
         severity: lsp_severity(severity),
         source,
         unused,
@@ -165,7 +183,7 @@ fn lsp_diagnostic_severity(severity: DiagnosticSeverity) -> u8 {
 }
 
 fn lsp_severity(severity: Option<u8>) -> DiagnosticSeverity {
-    match severity.unwrap_or(3) {
+    match severity.unwrap_or(1) {
         1 => DiagnosticSeverity::Error,
         2 => DiagnosticSeverity::Warning,
         3 => DiagnosticSeverity::Info,

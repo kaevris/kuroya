@@ -31,9 +31,12 @@ impl KuroyaApp {
         self.pending_fold_line = None;
     }
 
-    pub(crate) fn reset_open_workspace_state(&mut self) {
+    pub(crate) fn reset_open_workspace_state(&mut self) -> Vec<String> {
+        let mut warnings = Vec::new();
         if self.has_keybinding_capture_in_progress() && !self.cancel_keybinding_capture() {
-            return;
+            self.keybinding_capture_command = None;
+            self.keybinding_escape_cancel = None;
+            warnings.push(keybinding_capture_force_cleared_warning());
         }
         self.pending_workspace_switch = None;
         self.pending_exit = None;
@@ -46,22 +49,26 @@ impl KuroyaApp {
         self.reset_workspace_lsp_only_ui_state();
         self.reset_workspace_trusted_feature_state();
         self.reset_workspace_layout_state();
+        warnings
     }
 
     fn reset_workspace_document_state(&mut self) {
         self.index = ProjectIndex::default();
         self.project_index_generation = 0;
         self.project_search_index_generation = 0;
+        self.project_search_metadata_cache.clear();
         self.invalidate_workspace_index_requests();
         self.invalidate_git_scan();
         self.pending_workspace_refresh = None;
         self.explorer_revealed_path = None;
-        self.explorer_directory_cache.clear();
+        self.clear_explorer_directory_cache();
         self.explorer_compare_path = None;
         self.editor_inertial_scrolls.clear();
         self.editor_selection_drag = None;
         self.editor_selection_clipboard = None;
         self.buffers.clear();
+
+        self.vim_reset_session_state();
         self.virtual_buffer_labels.clear();
         self.diff_buffer_sources.clear();
         self.diff_cache.clear();
@@ -109,6 +116,11 @@ impl KuroyaApp {
         self.workspace_symbol_submitted_path = None;
         self.workspace_symbols.clear();
         self.workspace_symbols_selected = 0;
+        self.local_history_browser_open = false;
+        self.local_history_browser_path = None;
+        self.local_history_browser_snapshots.clear();
+        self.local_history_browser_selected = 0;
+        self.local_history_browser_loading = false;
         self.completion_open = false;
         self.completion_items.clear();
         self.completion_buffer_id = None;
@@ -221,6 +233,7 @@ impl KuroyaApp {
         self.pending_restored_git_history_load = false;
         self.source_control_stashes_open = false;
         self.source_control_stash_message.clear();
+        self.source_control_stash_query.clear();
         self.source_control_stashes.clear();
         self.source_control_stash_selected = 0;
         self.pending_restored_git_stashes_load = false;
@@ -293,6 +306,10 @@ impl KuroyaApp {
     }
 }
 
+fn keybinding_capture_force_cleared_warning() -> String {
+    "Shortcut capture rollback failed during workspace switch; capture was discarded".to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +353,54 @@ mod tests {
         app.reset_open_workspace_state();
 
         assert!(app.workspace_symbol_query_memory.is_empty());
+    }
+
+    #[test]
+    fn reset_open_workspace_state_clears_vim_marks_registers_and_unnamed_register() {
+        use crate::editor_vim_key_events::{
+            EditorVimMode, EditorVimPendingKey, vim_marks_are_empty_for_test,
+        };
+        use eframe::egui::{Key, Modifiers};
+
+        let root = temp_root("workspace-reset-clears-vim-state");
+        let mut app = app_for_test(root.clone());
+        app.buffers
+            .push(TextBuffer::from_text(7, None, "alpha\nbeta\n".to_owned()));
+
+        let mut mode = EditorVimMode::Normal;
+        let mut pending: Option<EditorVimPendingKey> = None;
+        let mut last_char_find = None;
+        let mut unnamed_register = None;
+        let mut last_change = None;
+        let settings = EditorSettings::default();
+        for (key, modifiers) in [
+            (Key::M, Modifiers::NONE),
+            (Key::A, Modifiers::NONE),
+            (Key::Y, Modifiers::NONE),
+            (Key::I, Modifiers::NONE),
+            (Key::W, Modifiers::NONE),
+        ] {
+            let buffer = app.buffers.get_mut(0).expect("test buffer");
+            crate::editor_vim_key_events::handle_vim_editor_key_event_with_settings_and_indent(
+                buffer,
+                key,
+                modifiers,
+                &mut mode,
+                &mut pending,
+                &mut last_char_find,
+                &mut unnamed_register,
+                &mut last_change,
+                &settings.vim,
+                "    ",
+            );
+        }
+        assert!(!vim_marks_are_empty_for_test());
+        assert!(unnamed_register.is_some());
+
+        app.reset_open_workspace_state();
+
+        assert!(vim_marks_are_empty_for_test());
+        assert_eq!(app.editor_vim_unnamed_register, None);
     }
 
     #[test]
@@ -403,6 +468,59 @@ mod tests {
     }
 
     #[test]
+    fn reset_open_workspace_state_cancels_escape_armed_capture_without_force_clear() {
+        let root = temp_root("workspace-reset-capture-escape-armed");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        app.settings.keymap.bindings = vec![KeyBinding {
+            chord: "Ctrl+Z".to_owned(),
+            command: kuroya_core::Command::Undo,
+        }];
+        app.keybindings_open = true;
+        app.keybinding_capture_command = Some(kuroya_core::Command::Undo);
+
+        app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+            captured: Some(CapturedKeybinding::Escape),
+            ..PendingKeybindingsPanelActions::default()
+        });
+        let pending_escape_cancel = app
+            .keybinding_escape_cancel
+            .as_ref()
+            .cloned()
+            .expect("escape capture should be armed");
+        assert!(!pending_escape_cancel.saved_escape_binding);
+        assert_eq!(
+            keybinding_chord_for_command(
+                &app.settings.keymap.bindings,
+                &kuroya_core::Command::Undo
+            ),
+            Some("Ctrl+Z".to_owned())
+        );
+
+        assert!(!settings_path(&root).exists());
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(root.join("src/main.rs")),
+            "fn main() {}\n".to_owned(),
+        ));
+        let generation_before = app.workspace_event_generation;
+
+        let warnings = app.reset_open_workspace_state();
+
+        assert!(warnings.is_empty());
+        assert_eq!(
+            app.workspace_event_generation,
+            generation_before.wrapping_add(1)
+        );
+        assert!(app.buffers.is_empty());
+        assert!(!app.keybindings_open);
+        assert_eq!(app.keybinding_capture_command, None);
+        assert!(app.keybinding_escape_cancel.is_none());
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn reset_open_workspace_state_clears_save_as_dialog() {
         let root = temp_root("save-as-reset");
         let mut app = app_for_test(root.clone());
@@ -451,7 +569,7 @@ mod tests {
         app.workspace_plugins_active_request_id = 20;
         app.workspace_plugins_in_flight_request_id = Some(20);
         app.workspace_plugins_reload_queued = true;
-        app.pending_workspace_plugin_reload = Some(Instant::now());
+        app.schedule_workspace_plugin_reload();
 
         app.reset_open_workspace_state();
 

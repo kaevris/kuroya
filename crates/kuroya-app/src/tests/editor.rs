@@ -8,6 +8,7 @@ use crate::{
     },
     command_ui_runtime::find_query_seed_from_selection,
     editor_context_menu::{
+        buffer_history_context_action_labels, buffer_path_context_action_labels,
         diff_hunk_context_action_labels, diff_patch_context_action_labels,
         file_hunk_context_action_labels, file_source_context_action_labels,
         file_source_control_context_action_labels,
@@ -490,9 +491,7 @@ fn editor_context_actions_include_source_file_navigation() {
             "Select for Compare",
             "Compare with Selected",
             "Reveal in Explorer",
-            "Reveal in Source Control",
-            "Copy Path",
-            "Copy Relative Path"
+            "Reveal in Source Control"
         ]
     );
     assert_eq!(
@@ -506,9 +505,7 @@ fn editor_context_actions_include_source_file_navigation() {
             "Select for Compare",
             "Previous Git Change",
             "Next Git Change",
-            "Reveal in Explorer",
-            "Copy Path",
-            "Copy Relative Path"
+            "Reveal in Explorer"
         ]
     );
     assert!(
@@ -516,6 +513,15 @@ fn editor_context_actions_include_source_file_navigation() {
             false, false, false, false, false, false, false, false, false
         )
         .is_empty()
+    );
+}
+
+#[test]
+fn editor_context_menu_offers_history_and_path_rows_without_git_state() {
+    assert_eq!(buffer_history_context_action_labels(), vec!["Undo", "Redo"]);
+    assert_eq!(
+        buffer_path_context_action_labels(),
+        vec!["Copy Path", "Copy Relative Path"]
     );
 }
 

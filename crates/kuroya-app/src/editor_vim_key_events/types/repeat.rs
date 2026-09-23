@@ -10,7 +10,7 @@ pub(crate) struct EditorVimLastChange {
     pub(crate) insert_replay: Vec<EditorVimInsertReplayStep>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EditorVimRepeatAction {
     AppendAfterCursor,
     ChangeLines,
@@ -67,6 +67,12 @@ pub(crate) enum EditorVimRepeatAction {
     PutBefore,
     PutBeforeNamed(EditorVimNamedRegister),
     ReplaceForwardChars(char),
+
+    Substitute {
+        query: String,
+        replacement: String,
+        global: bool,
+    },
     SubstituteForwardChars,
     SubstituteForwardCharsIntoRegister(EditorVimNamedRegister),
     ConvertCaseForwardChars(EditorVimCaseConversion),

@@ -212,7 +212,6 @@ fn editor_visual_settings_parse_vs_code_style_values() {
              git_rebase_when_sync = true\n\
              git_remember_post_commit_command = true\n\
              git_replace_tags_when_pull = true\n\
-             git_scan_repositories = [\"../repo\", \"C:/repo\"]\n\
              git_support_cancellation = true\n\
              git_terminal_authentication = false\n\
              git_terminal_git_editor = true\n\
@@ -755,7 +754,6 @@ fn editor_visual_settings_parse_vs_code_style_values() {
     assert!(settings.git_rebase_when_sync);
     assert!(settings.git_remember_post_commit_command);
     assert!(settings.git_replace_tags_when_pull);
-    assert_eq!(settings.git_scan_repositories, ["../repo", "C:/repo"]);
     assert!(settings.git_support_cancellation);
     assert!(!settings.git_terminal_authentication);
     assert!(settings.git_terminal_git_editor);

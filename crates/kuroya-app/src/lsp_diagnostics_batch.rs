@@ -1,6 +1,5 @@
 use kuroya_core::{Diagnostic, TextBuffer};
 use std::{
-    cmp::Ordering,
     collections::{HashMap, VecDeque},
     ffi::OsStr,
     path::{Component, Path, PathBuf},
@@ -14,9 +13,18 @@ const PENDING_LSP_DIAGNOSTIC_PAYLOAD_CAPACITY: usize = 5_000;
 #[derive(Debug, Default)]
 pub(crate) struct PendingLspDiagnosticsBatch {
     first_queued_at: Option<Instant>,
-    diagnostics_by_path: HashMap<PathBuf, PendingLspDiagnostics>,
+
+    diagnostics_by_path: HashMap<PathBuf, HashMap<PendingServerSlot, PendingLspDiagnostics>>,
     path_keys: HashMap<PendingLspDiagnosticsPathKey, PathBuf>,
     path_order: VecDeque<PathBuf>,
+}
+
+type PendingServerSlot = Option<PendingLspDiagnosticsSource>;
+
+#[derive(Debug)]
+enum PendingSlotUpdate {
+    Insert,
+    Replace { previous_queued_at: Instant },
 }
 
 #[derive(Debug)]
@@ -34,7 +42,7 @@ struct PendingLspDiagnosticsPathKey {
     components: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct PendingLspDiagnosticsSource {
     pub(crate) language: String,
     pub(crate) root: PathBuf,
@@ -81,34 +89,12 @@ impl PendingLspDiagnosticsBatch {
         now: Instant,
     ) {
         limit_pending_lsp_diagnostics_payload(&mut diagnostics);
-        if self.diagnostics_by_path.contains_key(&path) {
-            self.replace_pending_lsp_diagnostics_for_path(&path, source, version, diagnostics, now);
+        if let Some(existing_path) = self.pending_path_for(&path) {
+            self.update_pending_lsp_diagnostics(&existing_path, source, version, diagnostics, now);
             return;
         }
 
         let path_key = PendingLspDiagnosticsPathKey::new(&path);
-        if let Some(key) = path_key.as_ref() {
-            let remove_stale_key = if let Some(existing_path) = self.path_keys.get(key).cloned() {
-                if self.diagnostics_by_path.contains_key(&existing_path) {
-                    self.replace_pending_lsp_diagnostics_for_path(
-                        &existing_path,
-                        source,
-                        version,
-                        diagnostics,
-                        now,
-                    );
-                    return;
-                }
-
-                true
-            } else {
-                false
-            };
-
-            if remove_stale_key {
-                self.path_keys.remove(key);
-            }
-        }
         let mut evicted = false;
         while self.diagnostics_by_path.len() >= PENDING_LSP_DIAGNOSTIC_PATH_CAPACITY {
             if self.evict_oldest_pending_path() {
@@ -124,19 +110,76 @@ impl PendingLspDiagnosticsBatch {
         if let Some(path_key) = path_key {
             self.path_keys.insert(path_key, path.clone());
         }
-        self.diagnostics_by_path.insert(
-            path,
-            PendingLspDiagnostics {
-                source,
-                queued_at: now,
-                version,
-                diagnostics,
-            },
-        );
-        self.first_queued_at = Some(
-            self.first_queued_at
-                .map_or(now, |queued_at| queued_at.min(now)),
-        );
+        self.diagnostics_by_path
+            .insert(path.clone(), HashMap::new());
+        self.update_pending_lsp_diagnostics(&path, source, version, diagnostics, now);
+    }
+
+    fn pending_path_for(&mut self, path: &Path) -> Option<PathBuf> {
+        if self.diagnostics_by_path.contains_key(path) {
+            return Some(path.to_path_buf());
+        }
+        let key = PendingLspDiagnosticsPathKey::new(path)?;
+        let existing_path = self.path_keys.get(&key).cloned()?;
+        if self.diagnostics_by_path.contains_key(&existing_path) {
+            Some(existing_path)
+        } else {
+            self.path_keys.remove(&key);
+            None
+        }
+    }
+
+    fn update_pending_lsp_diagnostics(
+        &mut self,
+        path: &Path,
+        source: Option<PendingLspDiagnosticsSource>,
+        version: Option<u64>,
+        diagnostics: Vec<Diagnostic>,
+        now: Instant,
+    ) {
+        let slot = match self
+            .diagnostics_by_path
+            .get(path)
+            .and_then(|slots| slots.get(&source))
+        {
+            Some(existing) => {
+                if !lsp_diagnostics_payload_should_replace(existing.version, version) {
+                    return;
+                }
+                PendingSlotUpdate::Replace {
+                    previous_queued_at: existing.queued_at,
+                }
+            }
+            None => PendingSlotUpdate::Insert,
+        };
+        match slot {
+            PendingSlotUpdate::Insert => {
+                let pending = PendingLspDiagnostics {
+                    source: source.clone(),
+                    queued_at: now,
+                    version,
+                    diagnostics,
+                };
+                if let Some(slots) = self.diagnostics_by_path.get_mut(path) {
+                    slots.insert(source, pending);
+                }
+                self.first_queued_at = Some(
+                    self.first_queued_at
+                        .map_or(now, |queued_at| queued_at.min(now)),
+                );
+            }
+            PendingSlotUpdate::Replace { previous_queued_at } => {
+                if let Some(existing) = self
+                    .diagnostics_by_path
+                    .get_mut(path)
+                    .and_then(|slots| slots.get_mut(&source))
+                {
+                    replace_pending_lsp_diagnostics(existing, source, version, diagnostics, now);
+                }
+                self.move_path_order_to_back(path);
+                self.refresh_first_queued_at_after_requeue(previous_queued_at, now);
+            }
+        }
     }
 
     pub(crate) fn take_due_entries(
@@ -178,24 +221,43 @@ impl PendingLspDiagnosticsBatch {
         let mut retained_order = None;
         let mut next_first_queued_at = None;
         while let Some(path) = path_order.pop_front() {
-            let queued_at = match self.diagnostics_by_path.get(&path) {
-                Some(pending) => pending.queued_at,
-                None => continue,
+            let Some(slots) = self.diagnostics_by_path.get(&path) else {
+                continue;
             };
+            let due_slots: Vec<PendingServerSlot> = slots
+                .iter()
+                .filter(|(_, pending)| now.saturating_duration_since(pending.queued_at) >= delay)
+                .map(|(slot, _)| slot.clone())
+                .collect();
+            if due_slots.is_empty() {
+                if let Some(queued_at) = slots.values().map(|pending| pending.queued_at).min() {
+                    next_first_queued_at = Some(
+                        next_first_queued_at
+                            .map_or(queued_at, |first: Instant| first.min(queued_at)),
+                    );
+                }
+                retained_order
+                    .get_or_insert_with(|| VecDeque::with_capacity(path_order.len() + 1))
+                    .push_back(path);
+                continue;
+            }
 
-            if now.saturating_duration_since(queued_at) >= delay {
-                if let Some(pending) = self.remove_path_entry(&path) {
+            for slot in due_slots {
+                if let Some(pending) = self.remove_pending_entry(&path, slot) {
                     entries.push(PendingLspDiagnosticsEntry {
                         source: pending.source,
-                        path,
+                        path: path.clone(),
                         version: pending.version,
                         diagnostics: pending.diagnostics,
                     });
                 }
-            } else {
-                next_first_queued_at = Some(
-                    next_first_queued_at.map_or(queued_at, |first: Instant| first.min(queued_at)),
-                );
+            }
+
+            if self
+                .diagnostics_by_path
+                .get(&path)
+                .is_some_and(|slots| !slots.is_empty())
+            {
                 retained_order
                     .get_or_insert_with(|| VecDeque::with_capacity(path_order.len() + 1))
                     .push_back(path);
@@ -230,16 +292,36 @@ impl PendingLspDiagnosticsBatch {
         self.path_order.clear();
     }
 
-    fn remove_path_entry(&mut self, path: &Path) -> Option<PendingLspDiagnostics> {
+    fn remove_pending_entry(
+        &mut self,
+        path: &Path,
+        slot: PendingServerSlot,
+    ) -> Option<PendingLspDiagnostics> {
+        let removed = self.diagnostics_by_path.get_mut(path)?.remove(&slot)?;
+        if self
+            .diagnostics_by_path
+            .get(path)
+            .is_none_or(|slots| slots.is_empty())
+        {
+            self.diagnostics_by_path.remove(path);
+            if let Some(key) = PendingLspDiagnosticsPathKey::new(path) {
+                self.path_keys.remove(&key);
+            }
+        }
+        Some(removed)
+    }
+
+    fn remove_path_entry(&mut self, path: &Path) -> bool {
+        let removed = self.diagnostics_by_path.remove(path);
         if let Some(key) = PendingLspDiagnosticsPathKey::new(path) {
             self.path_keys.remove(&key);
         }
-        self.diagnostics_by_path.remove(path)
+        removed.is_some_and(|slots| !slots.is_empty())
     }
 
     fn evict_oldest_pending_path(&mut self) -> bool {
         while let Some(oldest) = self.path_order.pop_front() {
-            if self.remove_path_entry(&oldest).is_some() {
+            if self.remove_path_entry(&oldest) {
                 return true;
             }
         }
@@ -247,43 +329,19 @@ impl PendingLspDiagnosticsBatch {
         let Some(oldest) = self
             .diagnostics_by_path
             .iter()
+            .filter(|(_, slots)| !slots.is_empty())
             .min_by(|(left_path, left), (right_path, right)| {
-                left.queued_at
-                    .cmp(&right.queued_at)
+                let left_queued_at = left.values().map(|pending| pending.queued_at).min();
+                let right_queued_at = right.values().map(|pending| pending.queued_at).min();
+                left_queued_at
+                    .cmp(&right_queued_at)
                     .then_with(|| left_path.cmp(right_path))
             })
             .map(|(path, _)| path.clone())
         else {
             return false;
         };
-        self.remove_path_entry(&oldest).is_some()
-    }
-
-    fn replace_pending_lsp_diagnostics_for_path(
-        &mut self,
-        path: &Path,
-        source: Option<PendingLspDiagnosticsSource>,
-        version: Option<u64>,
-        diagnostics: Vec<Diagnostic>,
-        now: Instant,
-    ) -> bool {
-        let Some(existing) = self.diagnostics_by_path.get(path) else {
-            return false;
-        };
-        if !pending_lsp_diagnostics_should_update(existing, &source, version) {
-            return true;
-        }
-
-        let previous_queued_at = {
-            let existing = self
-                .diagnostics_by_path
-                .get_mut(path)
-                .expect("pending diagnostics path checked above");
-            replace_pending_lsp_diagnostics(existing, source, version, diagnostics, now)
-        };
-        self.move_path_order_to_back(path);
-        self.refresh_first_queued_at_after_requeue(previous_queued_at, now);
-        true
+        self.remove_path_entry(&oldest)
     }
 
     fn move_path_order_to_back(&mut self, path: &Path) {
@@ -295,7 +353,7 @@ impl PendingLspDiagnosticsBatch {
         self.first_queued_at = self
             .diagnostics_by_path
             .values()
-            .map(|pending| pending.queued_at)
+            .filter_map(|slots| slots.values().map(|pending| pending.queued_at).min())
             .min();
     }
 
@@ -366,56 +424,6 @@ fn pending_lsp_diagnostics_component_key(component: &OsStr) -> String {
     #[cfg(not(windows))]
     {
         component.into_owned()
-    }
-}
-
-fn pending_lsp_diagnostics_should_update(
-    existing: &PendingLspDiagnostics,
-    source: &Option<PendingLspDiagnosticsSource>,
-    version: Option<u64>,
-) -> bool {
-    if let Some(generation_order) =
-        pending_lsp_diagnostics_source_generation_order(existing.source.as_ref(), source.as_ref())
-    {
-        return match generation_order {
-            Ordering::Less => false,
-            Ordering::Equal => lsp_diagnostics_payload_should_replace(existing.version, version),
-            Ordering::Greater => true,
-        };
-    }
-
-    existing.source.as_ref() != source.as_ref()
-        || lsp_diagnostics_payload_should_replace(existing.version, version)
-}
-
-fn pending_lsp_diagnostics_source_generation_order(
-    existing: Option<&PendingLspDiagnosticsSource>,
-    incoming: Option<&PendingLspDiagnosticsSource>,
-) -> Option<Ordering> {
-    let existing = existing?;
-    let incoming = incoming?;
-    pending_lsp_diagnostics_sources_same_server_identity(existing, incoming)
-        .then(|| incoming.generation.cmp(&existing.generation))
-}
-
-fn pending_lsp_diagnostics_sources_same_server_identity(
-    existing: &PendingLspDiagnosticsSource,
-    incoming: &PendingLspDiagnosticsSource,
-) -> bool {
-    existing.language == incoming.language
-        && pending_lsp_diagnostics_paths_equivalent(&existing.root, &incoming.root)
-}
-
-fn pending_lsp_diagnostics_paths_equivalent(left: &Path, right: &Path) -> bool {
-    if left == right {
-        return true;
-    }
-    match (
-        PendingLspDiagnosticsPathKey::new(left),
-        PendingLspDiagnosticsPathKey::new(right),
-    ) {
-        (Some(left), Some(right)) => left == right,
-        _ => false,
     }
 }
 
@@ -547,15 +555,14 @@ fn lsp_diagnostic_line_offsets(
             if start_utf16 == next_utf16_offset {
                 start = Some(next_char_offset);
             } else if start_utf16 > utf16_offset && start_utf16 < next_utf16_offset {
-                return None;
+                start = Some(char_offset);
             }
         }
         if end.is_none() && requested_end_utf16 <= next_utf16_offset {
-            if requested_end_utf16 == next_utf16_offset {
-                end = Some(next_char_offset);
-            } else if requested_end_utf16 > utf16_offset && requested_end_utf16 < next_utf16_offset
+            if requested_end_utf16 == next_utf16_offset
+                || (requested_end_utf16 > utf16_offset && requested_end_utf16 < next_utf16_offset)
             {
-                return None;
+                end = Some(next_char_offset);
             }
         }
 
@@ -797,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_lsp_diagnostics_replace_stale_server_generation_for_same_path() {
+    fn pending_lsp_diagnostics_keep_payloads_from_coattached_servers_for_same_path() {
         let mut batch = PendingLspDiagnosticsBatch::default();
         let now = Instant::now();
         let path = PathBuf::from("src/main.rs");
@@ -807,78 +814,53 @@ mod tests {
             PendingLspDiagnosticsSource {
                 language: "rust".to_owned(),
                 root: root.clone(),
-                generation: 1,
+                generation: 10,
             },
             path.clone(),
             Some(5),
-            vec![diagnostic(&path, "old server")],
+            vec![diagnostic(&path, "primary server")],
             now,
         );
+
         batch.queue_for_server(
             PendingLspDiagnosticsSource {
                 language: "rust".to_owned(),
                 root,
-                generation: 2,
-            },
-            path.clone(),
-            Some(1),
-            vec![diagnostic(&path, "new server")],
-            now,
-        );
-
-        let entries =
-            batch.take_due_entries(now + LSP_DIAGNOSTIC_BATCH_DELAY, LSP_DIAGNOSTIC_BATCH_DELAY);
-
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].source.as_ref().unwrap().generation, 2);
-        assert_eq!(entries[0].diagnostics[0].message, "new server");
-    }
-
-    #[test]
-    fn pending_lsp_diagnostics_ignore_older_server_generation_after_newer_payload() {
-        let mut batch = PendingLspDiagnosticsBatch::default();
-        let now = Instant::now();
-        let path = PathBuf::from("src/main.rs");
-        let root = PathBuf::from("workspace");
-
-        batch.queue_for_server(
-            PendingLspDiagnosticsSource {
-                language: "rust".to_owned(),
-                root: root.clone(),
-                generation: 2,
-            },
-            path.clone(),
-            Some(1),
-            vec![diagnostic(&path, "new server")],
-            now,
-        );
-        batch.queue_for_server(
-            PendingLspDiagnosticsSource {
-                language: "rust".to_owned(),
-                root,
-                generation: 1,
+                generation: 11,
             },
             path.clone(),
             Some(5),
-            vec![diagnostic(&path, "old server")],
+            vec![diagnostic(&path, "sibling server")],
             now + Duration::from_millis(10),
         );
 
-        let entries =
-            batch.take_due_entries(now + LSP_DIAGNOSTIC_BATCH_DELAY, LSP_DIAGNOSTIC_BATCH_DELAY);
+        let entries = batch.take_due_entries(
+            now + Duration::from_millis(10) + LSP_DIAGNOSTIC_BATCH_DELAY,
+            LSP_DIAGNOSTIC_BATCH_DELAY,
+        );
 
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].source.as_ref().unwrap().generation, 2);
-        assert_eq!(entries[0].version, Some(1));
-        assert_eq!(entries[0].diagnostics[0].message, "new server");
+        assert_eq!(entries.len(), 2);
+        let mut payloads = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.source.as_ref().unwrap().generation,
+                    entry.diagnostics[0].message.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        payloads.sort_unstable();
+        assert_eq!(
+            payloads,
+            vec![(10, "primary server"), (11, "sibling server")]
+        );
     }
 
     #[test]
-    fn pending_lsp_diagnostics_match_server_roots_lexically_for_generation_order() {
+    fn pending_lsp_diagnostics_keep_distinct_server_roots_independent_for_same_path() {
         let mut batch = PendingLspDiagnosticsBatch::default();
         let now = Instant::now();
-        let path = PathBuf::from("workspace/src/main.rs");
-        let equivalent_path = PathBuf::from("workspace/src/../src/main.rs");
+        let path = PathBuf::from("src/main.rs");
 
         batch.queue_for_server(
             PendingLspDiagnosticsSource {
@@ -888,27 +870,70 @@ mod tests {
             },
             path.clone(),
             Some(1),
-            vec![diagnostic(&path, "new root")],
+            vec![diagnostic(&path, "first root")],
             now,
         );
         batch.queue_for_server(
             PendingLspDiagnosticsSource {
                 language: "rust".to_owned(),
-                root: PathBuf::from("workspace/root/../root"),
-                generation: 2,
+                root: PathBuf::from("workspace/other"),
+                generation: 4,
             },
-            equivalent_path,
+            path.clone(),
             Some(9),
-            vec![diagnostic(&path, "old root")],
+            vec![diagnostic(&path, "second root")],
             now + Duration::from_millis(10),
         );
 
-        let entries =
-            batch.take_due_entries(now + LSP_DIAGNOSTIC_BATCH_DELAY, LSP_DIAGNOSTIC_BATCH_DELAY);
+        let entries = batch.take_due_entries(
+            now + Duration::from_millis(10) + LSP_DIAGNOSTIC_BATCH_DELAY,
+            LSP_DIAGNOSTIC_BATCH_DELAY,
+        );
+
+        assert_eq!(entries.len(), 2);
+        let mut messages = entries
+            .iter()
+            .map(|entry| entry.diagnostics[0].message.as_str())
+            .collect::<Vec<_>>();
+        messages.sort_unstable();
+        assert_eq!(messages, vec!["first root", "second root"]);
+    }
+
+    #[test]
+    fn pending_lsp_diagnostics_replace_payload_for_same_server_slot() {
+        let mut batch = PendingLspDiagnosticsBatch::default();
+        let now = Instant::now();
+        let path = PathBuf::from("src/main.rs");
+        let root = PathBuf::from("workspace");
+        let source = PendingLspDiagnosticsSource {
+            language: "rust".to_owned(),
+            root,
+            generation: 2,
+        };
+
+        batch.queue_for_server(
+            source.clone(),
+            path.clone(),
+            Some(1),
+            vec![diagnostic(&path, "old payload")],
+            now,
+        );
+        batch.queue_for_server(
+            source,
+            path.clone(),
+            Some(2),
+            vec![diagnostic(&path, "new payload")],
+            now + Duration::from_millis(10),
+        );
+
+        let entries = batch.take_due_entries(
+            now + Duration::from_millis(10) + LSP_DIAGNOSTIC_BATCH_DELAY,
+            LSP_DIAGNOSTIC_BATCH_DELAY,
+        );
 
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].source.as_ref().unwrap().generation, 3);
-        assert_eq!(entries[0].diagnostics[0].message, "new root");
+        assert_eq!(entries[0].version, Some(2));
+        assert_eq!(entries[0].diagnostics[0].message, "new payload");
     }
 
     #[test]
@@ -1413,8 +1438,54 @@ mod tests {
             ],
         );
 
-        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics.len(), 2);
         assert_eq!(diagnostics[0].column, 2);
         assert_eq!(diagnostics[0].char_range, 1..6);
+
+        assert_eq!(diagnostics[1].column, 1);
+        assert_eq!(diagnostics[1].char_range, 0..1);
+    }
+
+    #[test]
+    fn lsp_diagnostics_for_open_buffer_clamp_ends_inside_surrogates_upward() {
+        let buffer = TextBuffer::from_text(1, None, "a😀b".to_owned());
+        let path = PathBuf::from("src/main.rs");
+
+        let diagnostics = valid_lsp_diagnostics_for_buffer(
+            &buffer,
+            vec![positioned_diagnostic(
+                &path,
+                1,
+                1,
+                0..2,
+                "end-inside-surrogate",
+            )],
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+
+        assert_eq!(diagnostics[0].column, 1);
+        assert_eq!(diagnostics[0].char_range, 0..2);
+    }
+
+    #[test]
+    fn lsp_diagnostics_for_open_buffer_clamp_multi_line_sentinel_ranges_to_line_end() {
+        let buffer = TextBuffer::from_text(1, None, "alpha\nbeta".to_owned());
+        let path = PathBuf::from("src/main.rs");
+
+        let diagnostics = valid_lsp_diagnostics_for_buffer(
+            &buffer,
+            vec![positioned_diagnostic(
+                &path,
+                1,
+                3,
+                2..usize::MAX,
+                "multi line",
+            )],
+        );
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].column, 3);
+        assert_eq!(diagnostics[0].char_range, 2..5);
     }
 }

@@ -2,6 +2,7 @@ use crate::preference_panels::sections::{
     SETTINGS_TARGET_TERMINAL_INTERACTION, SettingsHighlightState,
     bounded_settings_singleline_input, bounded_settings_text_edit_width, settings_target_heading,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::{
     EditorSettings, TerminalConfirmOnExit, TerminalConfirmOnKill, TerminalHideOnStartup,
@@ -67,15 +68,13 @@ pub(super) fn render_interaction_settings_with_highlight(
             ui.end_row();
 
             ui.label("Last terminal closed");
-            ui.checkbox(
-                &mut draft.terminal_hide_on_last_closed,
-                "Hide terminal pane",
-            )
-            .on_hover_text("When off, closing the last terminal leaves an empty terminal pane with the new-terminal button.");
+            ui_switch(ui, &mut draft.terminal_hide_on_last_closed).on_hover_text(
+                "Hide terminal pane. When off, closing the last terminal leaves an empty terminal pane with the new-terminal button.",
+            );
             ui.end_row();
 
             ui.label("Terminal tabs");
-            ui.checkbox(&mut draft.terminal_tabs_enabled, "Use terminal tabs");
+            ui_switch(ui, &mut draft.terminal_tabs_enabled);
             ui.end_row();
 
             ui.label("Default tab icon");
@@ -93,12 +92,8 @@ pub(super) fn render_interaction_settings_with_highlight(
             ui.end_row();
 
             ui.label("CLI tab titles");
-            ui.checkbox(
-                &mut draft.terminal_tabs_allow_agent_cli_title,
-                "Allow escape-sequence titles",
-            )
-            .on_hover_text(
-                "Allows agent CLIs and other terminal apps to set the terminal tab title.",
+            ui_switch(ui, &mut draft.terminal_tabs_allow_agent_cli_title).on_hover_text(
+                "Allow escape-sequence titles. Allows agent CLIs and other terminal apps to set the terminal tab title.",
             );
             ui.end_row();
 
@@ -158,29 +153,18 @@ pub(super) fn render_interaction_settings_with_highlight(
             ui.end_row();
 
             ui.label("Alt-click");
-            ui.checkbox(
-                &mut draft.terminal_alt_click_moves_cursor,
-                "Move prompt cursor under mouse",
-            )
-            .on_hover_text(
+            ui_switch(ui, &mut draft.terminal_alt_click_moves_cursor).on_hover_text(
                 "Sends left/right cursor movement to the shell so Alt-click can reposition the prompt cursor.",
             );
             ui.end_row();
 
             ui.label("Copy on selection");
-            ui.checkbox(
-                &mut draft.terminal_copy_on_selection,
-                "Copy terminal text after selecting it",
-            );
+            ui_switch(ui, &mut draft.terminal_copy_on_selection);
             ui.end_row();
 
             ui.label("Bracketed paste");
-            ui.checkbox(
-                &mut draft.terminal_ignore_bracketed_paste_mode,
-                "Ignore shell bracketed paste mode",
-            )
-            .on_hover_text(
-                "When off, pasted text is wrapped if the terminal app requests bracketed paste.",
+            ui_switch(ui, &mut draft.terminal_ignore_bracketed_paste_mode).on_hover_text(
+                "Ignore shell bracketed paste mode. When off, pasted text is wrapped if the terminal app requests bracketed paste.",
             );
             ui.end_row();
 

@@ -33,6 +33,9 @@ impl KuroyaApp {
         clamp_selection(&mut self.call_hierarchy_selected, row_count);
 
         egui::Window::new("Call Hierarchy")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 168.0,
+            ))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 144.0])

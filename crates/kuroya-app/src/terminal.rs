@@ -34,7 +34,7 @@ use std::{
     borrow::Cow,
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use vt100::Callbacks;
 
@@ -68,6 +68,10 @@ const TERMINAL_SEARCH_BUFFER_MAX_BYTES: usize = 2 * 1024 * 1024;
 const TERMINAL_SEARCH_BUFFER_TRIM_TARGET_BYTES: usize = TERMINAL_SEARCH_BUFFER_MAX_BYTES * 3 / 4;
 const TERMINAL_WINDOW_TITLE_MAX_CHARS: usize = 120;
 const TERMINAL_DEFAULT_DISPLAY_LABEL: &str = "Terminal";
+const TERMINAL_PASTE_NOTICE_TTL: Duration = Duration::from_secs(5);
+pub(super) const TERMINAL_PASTE_TRUNCATED_NOTICE: &str = "Paste truncated to 1 MiB";
+pub(super) const TERMINAL_PASTE_BUSY_NOTICE: &str = "Terminal busy - paste not fully delivered";
+pub(super) const TERMINAL_PASTE_UNDELIVERED_NOTICE: &str = "Paste could not be delivered";
 pub(super) const TERMINAL_DRAIN_EVENT_BUDGET: usize = 512;
 pub(super) const TERMINAL_DRAIN_BYTE_BUDGET: usize = 512 * 1024;
 const TERMINAL_COMMAND_CHANNEL_BOUND: usize = TERMINAL_DRAIN_EVENT_BUDGET * 8;
@@ -136,6 +140,7 @@ pub struct TerminalPane {
     ignore_bracketed_paste_mode: bool,
     multi_line_paste_warning: TerminalMultiLinePasteWarning,
     pending_multiline_paste: Option<TerminalPendingPaste>,
+    paste_notice: Option<TerminalPasteNotice>,
     word_separators: String,
     mouse_wheel_scroll_sensitivity: f32,
     fast_scroll_sensitivity: f32,
@@ -179,6 +184,31 @@ struct TerminalSession {
 }
 
 impl TerminalPane {
+    pub(crate) fn active_terminal_search_screen_match(
+        &self,
+        screen: &vt100::Screen,
+    ) -> Option<(u16, (usize, usize))> {
+        if !self.search_open || self.search_cache.matches.is_empty() {
+            return None;
+        }
+        let selected = self.search_match.min(self.search_cache.matches.len() - 1);
+        let current = &self.search_cache.matches[selected];
+        let line_count = self
+            .sessions
+            .iter()
+            .find(|session| session.id == current.session_id)
+            .map(|session| session.search_line_count)?;
+        let (rows, _) = screen.size();
+        let rows = usize::from(rows);
+        let latest_top = line_count.saturating_sub(rows);
+        let top = latest_top.saturating_sub(screen.scrollback());
+        let row = current.line.checked_sub(top)?;
+        if row >= rows {
+            return None;
+        }
+        Some((u16::try_from(row).ok()?, (current.start, current.end)))
+    }
+
     pub(crate) fn diagnostics_stats(&self) -> TerminalDiagnosticsStats {
         TerminalDiagnosticsStats {
             sessions: self.sessions.len(),
@@ -256,6 +286,12 @@ struct TerminalTextSelection {
 struct TerminalPendingPaste {
     session_id: usize,
     text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalPasteNotice {
+    message: String,
+    created: Instant,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -692,6 +728,7 @@ impl TerminalPane {
             ignore_bracketed_paste_mode,
             multi_line_paste_warning,
             pending_multiline_paste: None,
+            paste_notice: None,
             word_separators,
             mouse_wheel_scroll_sensitivity,
             fast_scroll_sensitivity,

@@ -79,6 +79,17 @@ impl KuroyaApp {
         column: usize,
         column_encoding: FileJumpColumnEncoding,
     ) {
+        self.apply_file_jump_with_encoding_and_selection(id, line, column, column_encoding, None);
+    }
+
+    pub(crate) fn apply_file_jump_with_encoding_and_selection(
+        &mut self,
+        id: BufferId,
+        line: usize,
+        column: usize,
+        column_encoding: FileJumpColumnEncoding,
+        selection_length: Option<usize>,
+    ) {
         let Some(target) = self
             .buffer(id)
             .map(|buffer| file_jump_target(buffer, line, column, column_encoding))
@@ -88,7 +99,19 @@ impl KuroyaApp {
 
         self.reveal_buffer_line(id, target.line);
         if let Some(buffer) = self.buffer_mut(id) {
-            buffer.set_single_cursor(target.cursor);
+            let selection_end = selection_length
+                .filter(|length| *length > 0)
+                .map(|length| {
+                    let line_end =
+                        buffer.line_column_to_char(target.line.saturating_sub(1), usize::MAX);
+                    target.cursor.saturating_add(length).min(line_end)
+                })
+                .filter(|end| *end > target.cursor);
+            if let Some(selection_end) = selection_end {
+                buffer.set_selection(target.cursor, selection_end);
+            } else {
+                buffer.set_single_cursor(target.cursor);
+            }
             self.pending_scroll_lines
                 .insert(id, target.line.saturating_sub(1));
         }

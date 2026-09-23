@@ -3,7 +3,7 @@ mod error;
 mod navigation;
 mod symbols;
 
-use super::pending::PendingLspRequest;
+use super::pending::{PendingLspRequest, PendingLspRequests};
 use crate::lsp_ui_events::{LspServerResultTarget, LspUiEvent};
 use crate::ui_event_channel::{
     Sender, send_critical_ui_event, send_critical_ui_event_with_timeout, send_ui_event,
@@ -14,7 +14,6 @@ use serde_json::Value;
 use serde_json::json;
 use std::{
     cell::RefCell,
-    collections::HashMap,
     time::{Duration, Instant},
 };
 
@@ -22,6 +21,8 @@ pub(super) use error::response_error;
 
 pub(super) const LSP_SERVER_STOPPED_PENDING_REQUEST_ERROR: &str =
     "LSP server stopped before responding";
+pub(super) const LSP_REQUEST_TIMED_OUT_ERROR: &str = "request timed out after 20s";
+pub(super) const LSP_REQUEST_CANCELLED_ON_STOP_ERROR: &str = "cancelled: language server stopped";
 const PENDING_LSP_FAILURE_BATCH_TIMEOUT_MS: u64 = 100;
 
 thread_local! {
@@ -103,6 +104,7 @@ pub(super) fn handle_lsp_response(
         | PendingLspRequest::TypeHierarchySupertypes { .. }
         | PendingLspRequest::TypeHierarchySubtypes { .. }
         | PendingLspRequest::References { .. }
+        | PendingLspRequest::PrepareRename { .. }
         | PendingLspRequest::Rename { .. }) => {
             navigation::handle_navigation_response(pending, value, ui_tx);
         }
@@ -139,7 +141,7 @@ pub(super) fn handle_lsp_response_for_server(
 
 #[cfg(test)]
 pub(super) fn emit_pending_lsp_request_failures(
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
     ui_tx: &Sender<UiEvent>,
 ) -> usize {
     let deadline = Instant::now() + Duration::from_millis(PENDING_LSP_FAILURE_BATCH_TIMEOUT_MS);
@@ -148,7 +150,7 @@ pub(super) fn emit_pending_lsp_request_failures(
 
 pub(super) fn emit_pending_lsp_request_failures_for_server(
     target: LspServerResultTarget,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
     ui_tx: &Sender<UiEvent>,
 ) -> usize {
     let deadline = Instant::now() + Duration::from_millis(PENDING_LSP_FAILURE_BATCH_TIMEOUT_MS);
@@ -161,18 +163,66 @@ pub(super) fn emit_pending_lsp_request_failures_for_server(
 }
 
 fn emit_pending_lsp_request_failures_with_deadline(
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
     ui_tx: &Sender<UiEvent>,
     deadline: Instant,
     target: Option<&LspServerResultTarget>,
 ) -> usize {
     let mut pending = pending_requests.drain().collect::<Vec<_>>();
     pending.sort_by_key(|(request_id, _)| *request_id);
+    emit_drained_lsp_request_failures(
+        pending,
+        ui_tx,
+        deadline,
+        target,
+        LSP_SERVER_STOPPED_PENDING_REQUEST_ERROR,
+    )
+}
+
+pub(super) fn emit_pending_lsp_request_cancellations_for_server(
+    target: LspServerResultTarget,
+    pending_requests: &mut PendingLspRequests,
+    ui_tx: &Sender<UiEvent>,
+) -> usize {
+    let deadline = Instant::now() + Duration::from_millis(PENDING_LSP_FAILURE_BATCH_TIMEOUT_MS);
+    let mut pending = pending_requests.drain().collect::<Vec<_>>();
+    pending.sort_by_key(|(request_id, _)| *request_id);
+    emit_drained_lsp_request_failures(
+        pending,
+        ui_tx,
+        deadline,
+        Some(&target),
+        LSP_REQUEST_CANCELLED_ON_STOP_ERROR,
+    )
+}
+
+fn emit_drained_lsp_request_failures(
+    pending: Vec<(u64, PendingLspRequest)>,
+    ui_tx: &Sender<UiEvent>,
+    deadline: Instant,
+    target: Option<&LspServerResultTarget>,
+    error: &str,
+) -> usize {
     let count = pending.len();
     for (_, pending) in pending {
-        handle_lsp_failure_response(pending, ui_tx, deadline, target);
+        handle_lsp_failure_response(pending, ui_tx, deadline, target, error);
     }
     count
+}
+
+pub(super) fn emit_expired_lsp_request_timeouts(
+    target: LspServerResultTarget,
+    expired: Vec<(u64, PendingLspRequest)>,
+    ui_tx: &Sender<UiEvent>,
+) -> usize {
+    let deadline = Instant::now() + Duration::from_millis(PENDING_LSP_FAILURE_BATCH_TIMEOUT_MS);
+    emit_drained_lsp_request_failures(
+        expired,
+        ui_tx,
+        deadline,
+        Some(&target),
+        LSP_REQUEST_TIMED_OUT_ERROR,
+    )
 }
 
 fn handle_lsp_failure_response(
@@ -180,9 +230,10 @@ fn handle_lsp_failure_response(
     ui_tx: &Sender<UiEvent>,
     deadline: Instant,
     target: Option<&LspServerResultTarget>,
+    error: &str,
 ) {
     let timeout = deadline.saturating_duration_since(Instant::now());
-    let event = pending_lsp_failure_event(pending);
+    let event = pending_lsp_failure_event(pending, error);
     let event = match target {
         Some(target) => wrap_lsp_server_result_ui_event(target.clone(), event),
         None => event,
@@ -190,8 +241,8 @@ fn handle_lsp_failure_response(
     let _ = send_critical_ui_event_with_timeout(ui_tx, event, timeout);
 }
 
-fn pending_lsp_failure_event(pending: PendingLspRequest) -> UiEvent {
-    let error = Some(LSP_SERVER_STOPPED_PENDING_REQUEST_ERROR.to_owned());
+fn pending_lsp_failure_event(pending: PendingLspRequest, error: &str) -> UiEvent {
+    let error = Some(error.to_owned());
     UiEvent::Lsp(match pending {
         PendingLspRequest::Hover {
             id,
@@ -332,6 +383,22 @@ fn pending_lsp_failure_event(pending: PendingLspRequest) -> UiEvent {
             line,
             column: lsp_failure_one_based_column(character),
             references: None,
+            error,
+        },
+        PendingLspRequest::PrepareRename {
+            id,
+            path,
+            version,
+            line,
+            character,
+        } => LspUiEvent::PrepareRenameResult {
+            id,
+            path,
+            version,
+            line,
+
+            column: character,
+            range: None,
             error,
         },
         PendingLspRequest::Rename {
@@ -538,13 +605,14 @@ fn pending_request_failure_response(request_id: u64) -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        LSP_SERVER_STOPPED_PENDING_REQUEST_ERROR, emit_pending_lsp_request_failures,
+        LSP_REQUEST_CANCELLED_ON_STOP_ERROR, LSP_SERVER_STOPPED_PENDING_REQUEST_ERROR,
+        emit_pending_lsp_request_cancellations_for_server, emit_pending_lsp_request_failures,
         emit_pending_lsp_request_failures_for_server,
         emit_pending_lsp_request_failures_with_deadline, handle_lsp_response,
         pending_request_failure_response, response_error,
     };
     use crate::{
-        lsp_client::pending::PendingLspRequest,
+        lsp_client::pending::{PendingLspRequest, PendingLspRequests},
         lsp_completion_resolve::CompletionResolveIntent,
         lsp_ui_events::{LspServerResultTarget, LspUiEvent},
         ui_event_channel::UI_EVENT_CHANNEL_BOUND,
@@ -553,7 +621,6 @@ mod tests {
     use kuroya_core::LspCompletionItem;
     use serde_json::{Value, json};
     use std::{
-        collections::HashMap,
         path::PathBuf,
         thread,
         time::{Duration, Instant},
@@ -573,7 +640,7 @@ mod tests {
     #[test]
     fn pending_lsp_request_failures_emit_completion_errors_and_drain() {
         let (tx, rx) = crate::ui_event_channel::ui_event_channel();
-        let mut pending_requests = HashMap::from([(
+        let mut pending_requests = PendingLspRequests::from([(
             11,
             PendingLspRequest::Completion {
                 id: 7,
@@ -616,9 +683,56 @@ mod tests {
     }
 
     #[test]
+    fn pending_lsp_request_cancellations_use_distinct_stopped_wording_and_drain() {
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let target = LspServerResultTarget {
+            language: "rust".to_owned(),
+            root: PathBuf::from("workspace"),
+            generation: 9,
+        };
+        let mut pending_requests = PendingLspRequests::from([(
+            11,
+            PendingLspRequest::Completion {
+                id: 7,
+                path: PathBuf::from("src/main.rs"),
+                version: 3,
+                line: 2,
+                character: 4,
+            },
+        )]);
+
+        assert_eq!(
+            emit_pending_lsp_request_cancellations_for_server(
+                target.clone(),
+                &mut pending_requests,
+                &tx
+            ),
+            1
+        );
+
+        assert!(pending_requests.is_empty());
+        match rx.recv().expect("completion cancellation event") {
+            UiEvent::Lsp(LspUiEvent::ServerResult {
+                target: event_target,
+                event,
+            }) => {
+                assert_eq!(event_target, target);
+                match *event {
+                    LspUiEvent::CompletionResult { id, error, .. } => {
+                        assert_eq!(id, 7);
+                        assert_eq!(error.as_deref(), Some(LSP_REQUEST_CANCELLED_ON_STOP_ERROR));
+                    }
+                    other => panic!("expected completion result, got {other:?}"),
+                }
+            }
+            other => panic!("expected wrapped cancellation, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn pending_lsp_request_failures_emit_symbol_and_formatting_errors_in_order() {
         let (tx, rx) = crate::ui_event_channel::ui_event_channel();
-        let mut pending_requests = HashMap::from([
+        let mut pending_requests = PendingLspRequests::from([
             (
                 12,
                 PendingLspRequest::Formatting {
@@ -694,7 +808,7 @@ mod tests {
             root: PathBuf::from("workspace"),
             generation: 7,
         };
-        let mut pending_requests = HashMap::from([(
+        let mut pending_requests = PendingLspRequests::from([(
             12,
             PendingLspRequest::Formatting {
                 request_id: 12,
@@ -1074,7 +1188,7 @@ mod tests {
             .expect("event should fit within channel bound");
         }
 
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
         for request_id in 0..32 {
             pending_requests.insert(
                 request_id,
@@ -1109,7 +1223,7 @@ mod tests {
         is_expected: impl Fn(UiEvent) -> bool,
     ) {
         let (tx, rx) = crate::ui_event_channel::ui_event_channel();
-        let mut pending_requests = HashMap::from([(10, pending)]);
+        let mut pending_requests = PendingLspRequests::from([(10, pending)]);
 
         assert_eq!(
             emit_pending_lsp_request_failures(&mut pending_requests, &tx),
@@ -1135,7 +1249,7 @@ mod tests {
 
         let failure_tx = tx.clone();
         let sender = thread::spawn(move || {
-            let mut pending_requests = HashMap::from([(10, pending)]);
+            let mut pending_requests = PendingLspRequests::from([(10, pending)]);
             emit_pending_lsp_request_failures(&mut pending_requests, &failure_tx)
         });
 

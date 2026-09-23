@@ -51,49 +51,66 @@ pub struct GitStatusEntry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct GitStatusLookup {
-    status: GitFileStatus,
-    stages: u8,
+    staged: Option<GitFileStatus>,
+    unstaged: Option<GitFileStatus>,
 }
 
 impl GitStatusLookup {
-    const STAGED: u8 = 1;
-    const UNSTAGED: u8 = 1 << 1;
-
     pub(super) fn new(status: GitFileStatus, stage: GitChangeStage) -> Self {
-        Self {
-            status,
-            stages: Self::stage_bit(stage),
-        }
+        let mut lookup = Self {
+            staged: None,
+            unstaged: None,
+        };
+        lookup.record(status, stage);
+        lookup
     }
 
     pub(super) fn record(&mut self, status: GitFileStatus, stage: GitChangeStage) {
-        if stage == GitChangeStage::Unstaged {
-            self.status = status;
+        match stage {
+            GitChangeStage::Staged => self.staged = Some(status),
+            GitChangeStage::Unstaged => self.unstaged = Some(status),
         }
-        self.stages |= Self::stage_bit(stage);
     }
 
     pub(super) fn merge(&mut self, other: Self) {
-        if other.has_stage(GitChangeStage::Unstaged) {
-            self.status = other.status;
+        if other.unstaged.is_some() {
+            self.unstaged = other.unstaged;
         }
-        self.stages |= other.stages;
+        if self.staged.is_none() {
+            self.staged = other.staged;
+        }
     }
 
-    pub(super) fn status(self) -> GitFileStatus {
-        self.status
+    pub(super) fn status(&self) -> GitFileStatus {
+        match (self.unstaged, self.staged) {
+            (Some(unstaged), _) => unstaged,
+            (None, Some(staged)) => staged,
+            (None, None) => GitFileStatus::Modified,
+        }
     }
 
-    pub(super) fn has_stage(self, stage: GitChangeStage) -> bool {
-        self.stages & Self::stage_bit(stage) != 0
-    }
-
-    fn stage_bit(stage: GitChangeStage) -> u8 {
+    pub(super) fn has_stage(&self, stage: GitChangeStage) -> bool {
         match stage {
-            GitChangeStage::Staged => Self::STAGED,
-            GitChangeStage::Unstaged => Self::UNSTAGED,
+            GitChangeStage::Staged => self.staged.is_some(),
+            GitChangeStage::Unstaged => self.unstaged.is_some(),
         }
     }
+
+    pub(super) fn kinds(&self) -> impl Iterator<Item = GitFileStatus> {
+        [self.staged, self.unstaged].into_iter().flatten()
+    }
+}
+
+pub(super) fn counts_from_status_lookups<'a>(
+    lookups: impl Iterator<Item = &'a GitStatusLookup>,
+) -> GitStatusCounts {
+    let mut counts = GitStatusCounts::default();
+    for lookup in lookups {
+        for kind in lookup.kinds() {
+            counts.record(kind);
+        }
+    }
+    counts
 }
 
 pub(super) fn status_entries(

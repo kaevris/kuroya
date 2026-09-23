@@ -2,9 +2,10 @@ use crate::{
     KuroyaApp,
     completion_preview::{CompletionInlinePreview, completion_inline_preview_for_item},
     editor_pane_support::{
-        DiagnosticTagSpan, DocumentHighlightSpan, SemanticTokenSpan, diagnostic_line_maps,
+        DiagnosticTagSpan, DocumentHighlightSpan, SemanticTokenSpan, cached_renderable_code_lenses,
+        cached_renderable_git_blame_lines, cached_renderable_inlay_hints,
+        cached_semantic_token_spans_for_buffer, diagnostic_line_maps,
         diagnostic_tag_spans_for_buffer, document_highlight_spans_for_buffer,
-        semantic_token_spans_for_buffer,
     },
     editor_vim_key_events::{vim_effective_cursor_style, vim_search_highlight_ranges_for_buffer},
     file_runtime::file_path_open_buffer_or_known_openable,
@@ -47,6 +48,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     ops::Range,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 const DIFF_PATCH_OVERLAY_SCAN_MAX_LINES: usize = 20_000;
@@ -96,7 +98,7 @@ pub(crate) struct EditorPaneData {
     pub(crate) minimap_scale: usize,
     pub(crate) minimap_render_characters: bool,
     pub(crate) minimap_max_column: usize,
-    pub(crate) minimap_section_headers: BTreeMap<usize, String>,
+    pub(crate) minimap_section_headers: Arc<BTreeMap<usize, String>>,
     pub(crate) minimap_section_header_font_size: f32,
     pub(crate) minimap_section_header_letter_spacing: f32,
     pub(crate) multi_cursor_modifier: EditorMultiCursorModifier,
@@ -137,7 +139,7 @@ pub(crate) struct EditorPaneData {
     pub(crate) find_matches: Vec<Range<usize>>,
     pub(crate) selection_bg_fill: Color32,
     pub(crate) document_highlight_ranges: Vec<DocumentHighlightSpan>,
-    pub(crate) semantic_token_ranges: Vec<SemanticTokenSpan>,
+    pub(crate) semantic_token_ranges: Arc<Vec<SemanticTokenSpan>>,
     pub(crate) syntax_injections: Vec<TreeSitterInjection>,
     pub(crate) diagnostics_by_line: HashMap<usize, DiagnosticSeverity>,
     pub(crate) diagnostic_messages: HashMap<usize, String>,
@@ -145,15 +147,15 @@ pub(crate) struct EditorPaneData {
     pub(crate) git_blame_editor_decoration_enabled: bool,
     pub(crate) git_blame_editor_decoration_disable_hover: bool,
     pub(crate) git_blame_editor_decoration_template: String,
-    pub(crate) git_blame_lines: Vec<GitBlameLine>,
+    pub(crate) git_blame_lines: Arc<Vec<GitBlameLine>>,
     pub(crate) active_path: Option<PathBuf>,
     pub(crate) folding_ranges: Vec<LspFoldingRange>,
-    pub(crate) inlay_hints: Vec<LspInlayHint>,
+    pub(crate) inlay_hints: Arc<Vec<LspInlayHint>>,
     pub(crate) inlay_hints_font_family: String,
     pub(crate) inlay_hints_font_size: usize,
     pub(crate) inlay_hints_padding: bool,
     pub(crate) inlay_hints_maximum_length: usize,
-    pub(crate) code_lenses: Vec<LspCodeLens>,
+    pub(crate) code_lenses: Arc<Vec<LspCodeLens>>,
     pub(crate) code_lens_font_family: String,
     pub(crate) code_lens_font_size: usize,
     pub(crate) completion_preview: Option<CompletionInlinePreview>,
@@ -341,6 +343,7 @@ impl KuroyaApp {
         } else {
             diagnostic_line_maps(&[])
         };
+
         let diagnostic_tag_spans = if large_file_mode {
             Vec::new()
         } else {
@@ -352,14 +355,16 @@ impl KuroyaApp {
             )
         };
         let active_path = buffer.path().cloned();
-        let git_blame_lines = if git_blame_editor_decoration_enabled {
+        let git_blame_lines: Arc<Vec<GitBlameLine>> = if git_blame_editor_decoration_enabled {
             active_path
-                .as_ref()
+                .as_deref()
                 .and_then(|path| self.source_control_blame_lines_for_path(path))
-                .map(|lines| renderable_git_blame_lines(lines, line_count))
+                .map(|lines| {
+                    cached_renderable_git_blame_lines(active_path.as_deref(), lines, line_count)
+                })
                 .unwrap_or_default()
         } else {
-            Vec::new()
+            Arc::default()
         };
         let sticky_scroll = self.settings.sticky_scroll && folding;
         let sticky_scroll_max_line_count = editor_sticky_scroll_max_line_count(
@@ -379,25 +384,27 @@ impl KuroyaApp {
         } else {
             Vec::new()
         };
-        let inlay_hints = active_path
-            .as_ref()
+        let inlay_hints: Arc<Vec<LspInlayHint>> = active_path
+            .as_deref()
             .filter(|_| editor_inlay_hints_enabled(self.settings.inlay_hints, large_file_mode))
             .and_then(|path| self.inlay_hints.get(path))
-            .map(|hints| renderable_inlay_hints(hints, line_count))
+            .map(|hints| cached_renderable_inlay_hints(active_path.as_deref(), hints, line_count))
             .unwrap_or_default();
         let diff_source = self.diff_buffer_sources.get(&active_id);
         let diff_stage = diff_source.and_then(|source| source.hunk_stage);
-        let mut code_lenses = active_path
-            .as_ref()
+        let mut code_lenses: Arc<Vec<LspCodeLens>> = active_path
+            .as_deref()
             .filter(|_| editor_code_lens_enabled(self.settings.code_lens, large_file_mode))
             .and_then(|path| self.code_lenses.get(path))
-            .map(|lenses| renderable_code_lenses(lenses, line_count))
+            .map(|lenses| cached_renderable_code_lenses(active_path.as_deref(), lenses, line_count))
             .unwrap_or_default();
         if editor_diff_code_lenses_enabled(self.settings.diff_code_lens, large_file_mode)
             && buffer.language() == LanguageId::Diff
         {
-            code_lenses.extend(diff_code_lenses_for_patch_buffer(buffer, diff_stage));
-            sort_code_lenses_by_position(&mut code_lenses);
+            let mut diff_code_lenses = code_lenses.as_ref().clone();
+            diff_code_lenses.extend(diff_code_lenses_for_patch_buffer(buffer, diff_stage));
+            sort_code_lenses_by_position(&mut diff_code_lenses);
+            code_lenses = Arc::new(diff_code_lenses);
         }
         let completion_preview = active_path
             .as_ref()
@@ -418,14 +425,14 @@ impl KuroyaApp {
                     self.settings.suggest_preview_mode,
                 )
             });
-        let semantic_token_ranges = if large_file_mode {
-            Vec::new()
+        let semantic_token_ranges: Arc<Vec<SemanticTokenSpan>> = if large_file_mode {
+            Arc::default()
         } else {
-            active_path
-                .as_ref()
+            let tokens = active_path
+                .as_deref()
                 .and_then(|path| self.semantic_tokens.get(path))
-                .map(|tokens| semantic_token_spans_for_buffer(buffer, tokens))
-                .unwrap_or_default()
+                .map(Vec::as_slice);
+            cached_semantic_token_spans_for_buffer(buffer, active_path.as_deref(), tokens)
         };
         let syntax_injections = if large_file_mode {
             Vec::new()
@@ -535,7 +542,7 @@ impl KuroyaApp {
                 &self.settings.minimap_mark_section_header_regex,
             )
         } else {
-            BTreeMap::new()
+            Arc::default()
         };
 
         EditorPaneData {
@@ -1094,7 +1101,10 @@ fn sort_code_lenses_by_position(lenses: &mut [LspCodeLens]) {
     });
 }
 
-fn renderable_inlay_hints(hints: &[LspInlayHint], line_count: usize) -> Vec<LspInlayHint> {
+pub(crate) fn renderable_inlay_hints(
+    hints: &[LspInlayHint],
+    line_count: usize,
+) -> Vec<LspInlayHint> {
     let line_count = line_count.max(1);
     let mut renderable = Vec::with_capacity(hints.len().min(line_count));
     for hint in hints {
@@ -1105,7 +1115,10 @@ fn renderable_inlay_hints(hints: &[LspInlayHint], line_count: usize) -> Vec<LspI
     renderable
 }
 
-fn renderable_code_lenses(lenses: &[LspCodeLens], line_count: usize) -> Vec<LspCodeLens> {
+pub(crate) fn renderable_code_lenses(
+    lenses: &[LspCodeLens],
+    line_count: usize,
+) -> Vec<LspCodeLens> {
     let line_count = line_count.max(1);
     let mut renderable = Vec::with_capacity(lenses.len().min(line_count));
     for lens in lenses {
@@ -1116,7 +1129,10 @@ fn renderable_code_lenses(lenses: &[LspCodeLens], line_count: usize) -> Vec<LspC
     renderable
 }
 
-fn renderable_git_blame_lines(lines: &[GitBlameLine], line_count: usize) -> Vec<GitBlameLine> {
+pub(crate) fn renderable_git_blame_lines(
+    lines: &[GitBlameLine],
+    line_count: usize,
+) -> Vec<GitBlameLine> {
     let line_count = line_count.max(1);
     let mut renderable = Vec::with_capacity(lines.len().min(line_count));
     for line in lines {

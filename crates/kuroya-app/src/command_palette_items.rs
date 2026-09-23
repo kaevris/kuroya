@@ -9,7 +9,7 @@ use crate::{
     workspace_tasks_runtime::{workspace_task_fingerprint, workspace_task_name_label},
     workspace_trust::trusted_workspace_paths_match,
 };
-use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
+use fuzzy_matcher::skim::SkimMatcherV2;
 use kuroya_core::{Command, PluginCommandRegistry, WorkspaceTask, keymap::KeyBinding};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -34,6 +34,8 @@ const COMMAND_PALETTE_QUERY_MEMORY_USE_BONUS: i64 = 8;
 const COMMAND_PALETTE_QUERY_MEMORY_MIN_EXACT_TOTAL: i64 =
     COMMAND_PALETTE_QUERY_MEMORY_BONUS + COMMAND_PALETTE_QUERY_MEMORY_USE_BONUS;
 const COMMAND_PALETTE_ALIAS_MATCH_PENALTY: i64 = 3;
+const COMMAND_PALETTE_LABEL_PREFIX_BONUS: i64 = 25;
+const COMMAND_PALETTE_LABEL_WORD_START_BONUS: i64 = 16;
 const COMMAND_PALETTE_MEMORY_QUERY_MAX_CHARS: usize = 128;
 const COMMAND_PALETTE_QUERY_SCAN_CHARS: usize = 4096;
 const COMMAND_PALETTE_PLUGIN_LABEL_MAX_CHARS: usize = 120;
@@ -383,6 +385,7 @@ pub(crate) fn command_palette_item_section(label: &str, command: &Command) -> &'
         | Command::SaveAll
         | Command::ReloadActiveFromDisk
         | Command::OpenActiveFileLatestLocalHistory
+        | Command::OpenLocalHistoryBrowser
         | Command::ToggleReadOnly
         | Command::CloseActive
         | Command::ReopenClosedFile
@@ -449,7 +452,6 @@ pub(crate) fn command_palette_item_section(label: &str, command: &Command) -> &'
         | Command::FindNext
         | Command::FindPrevious
         | Command::ToggleProjectSearch
-        | Command::CycleProjectSearchPlacement
         | Command::NextProjectSearchResult
         | Command::PreviousProjectSearchResult => "Search",
         Command::ToggleLineComment
@@ -708,16 +710,19 @@ fn command_palette_match_score_with_aliases_non_empty(
     aliases: &[&str],
     query: &str,
 ) -> Option<i64> {
-    let label_score = matcher.fuzzy_match(label, query);
+    let label_score = crate::fuzzy::fuzzy_match_with_case_fallback(matcher, label, query)
+        .map(|score| score + command_palette_label_bonus(label, query));
     let chord_score = (!chord.is_empty())
-        .then(|| matcher.fuzzy_match(chord, query).map(|score| score - 5))
+        .then(|| {
+            crate::fuzzy::fuzzy_match_with_case_fallback(matcher, chord, query)
+                .map(|score| score - 5)
+        })
         .flatten();
     let chord_words_score = command_palette_shortcut_words_match_score(matcher, chord, query);
     let alias_score = aliases
         .iter()
         .filter_map(|alias| {
-            matcher
-                .fuzzy_match(alias, query)
+            crate::fuzzy::fuzzy_match_with_case_fallback(matcher, alias, query)
                 .map(|score| score - COMMAND_PALETTE_ALIAS_MATCH_PENALTY)
         })
         .max();
@@ -725,6 +730,24 @@ fn command_palette_match_score_with_aliases_non_empty(
         .max(chord_score)
         .max(chord_words_score)
         .max(alias_score)
+}
+
+fn command_palette_label_bonus(label: &str, query: &str) -> i64 {
+    if label.len() >= query.len() {
+        let prefix = &label[..query.len()];
+        if prefix.eq_ignore_ascii_case(query) {
+            return COMMAND_PALETTE_LABEL_PREFIX_BONUS;
+        }
+    }
+    let query_lowercase = query.to_ascii_lowercase();
+    if crate::quick_open::ranking::quick_open_lowercase_word_start_match(
+        label,
+        query_lowercase.as_str(),
+    ) {
+        COMMAND_PALETTE_LABEL_WORD_START_BONUS
+    } else {
+        0
+    }
 }
 
 fn command_palette_shortcut_words_match_score(
@@ -752,8 +775,7 @@ fn command_palette_shortcut_words_match_score(
 
     let normalized_query =
         normalize_command_palette_shortcut_query(query).unwrap_or(Cow::Borrowed(query));
-    matcher
-        .fuzzy_match(&words, normalized_query.as_ref())
+    crate::fuzzy::fuzzy_match_with_case_fallback(matcher, &words, normalized_query.as_ref())
         .map(|score| score - 5)
 }
 
@@ -1250,13 +1272,54 @@ fn is_command_palette_query_format_control(ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn label_prefix_bonus_prefers_command_names_starting_with_the_query() {
+        let matcher = SkimMatcherV2::default();
+        let save_all = command_palette_match_score_with_aliases_non_empty(
+            &matcher,
+            "Save All Files",
+            "",
+            &[],
+            "save",
+        )
+        .expect("save should match Save All Files");
+        let autosave = command_palette_match_score_with_aliases_non_empty(
+            &matcher,
+            "Autosave Interval",
+            "",
+            &[],
+            "save",
+        )
+        .expect("save should match Autosave Interval");
+
+        assert!(
+            save_all > autosave,
+            "prefix match {save_all} must outrank inner match {autosave}"
+        );
+    }
+
+    #[test]
+    fn uppercase_queries_still_match_via_case_fallback() {
+        let matcher = SkimMatcherV2::default();
+
+        let score = command_palette_match_score_with_aliases_non_empty(
+            &matcher,
+            "Source Control",
+            "",
+            &["scm"],
+            "SCM",
+        );
+        assert!(score.is_some(), "SCM must match through the case fallback");
+    }
+
     use super::{
         COMMAND_PALETTE_DEFAULT_SECTION, COMMAND_PALETTE_QUERY_SCAN_CHARS,
         COMMAND_PALETTE_RECENT_PROJECT_SCAN_LIMIT, CommandPaletteQueryMemoryEntry,
         CommandPaletteRanker, command_palette_command_match_score, command_palette_item_section,
-        recent_navigation_palette_items, recent_workspace_palette_items,
-        recent_workspace_palette_items_with_dir_probe, record_command_palette_query_memory,
-        sanitize_command_palette_query_input,
+        command_palette_match_score_with_aliases_non_empty, recent_navigation_palette_items,
+        recent_workspace_palette_items, recent_workspace_palette_items_with_dir_probe,
+        record_command_palette_query_memory, sanitize_command_palette_query_input,
     };
     use crate::{
         command_catalog::command_catalog_slice, commands::command_label,

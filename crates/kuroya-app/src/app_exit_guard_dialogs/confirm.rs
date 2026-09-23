@@ -37,6 +37,9 @@ pub(super) fn render_exit_confirm_guard(app: &mut KuroyaApp, ctx: &Context) {
     let exit_label = exit_discard_button_label(dirty.len(), terminal_count, restart);
 
     egui::Window::new(exit_guard_window_title(restart))
+        .max_size(crate::layout::popup_window_max_size_with_top_margin(
+            ctx, 24.0,
+        ))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

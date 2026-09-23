@@ -1,9 +1,9 @@
 use crate::{
-    lsp_client::pending::{PendingLspRequest, register_pending_request},
+    lsp_client::pending::{PendingLspRequest, PendingLspRequests, register_pending_request},
     lsp_completion_resolve::CompletionResolveIntent,
 };
 use kuroya_core::{BufferId, LspCompletionItem};
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 pub(super) fn register_completion_request(
     request_id: u64,
@@ -12,7 +12,7 @@ pub(super) fn register_completion_request(
     version: u64,
     line: usize,
     character: usize,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) {
     register_pending_request(
         pending_requests,
@@ -36,7 +36,7 @@ pub(super) fn register_completion_item_resolve_request(
     character: usize,
     item: Box<LspCompletionItem>,
     intent: CompletionResolveIntent,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) {
     register_pending_request(
         pending_requests,
@@ -57,16 +57,17 @@ pub(super) fn register_completion_item_resolve_request(
 mod tests {
     use super::register_completion_item_resolve_request;
     use crate::{
-        lsp_client::pending::PendingLspRequest, lsp_completion_resolve::CompletionResolveIntent,
+        lsp_client::pending::{PendingLspRequest, PendingLspRequests},
+        lsp_completion_resolve::CompletionResolveIntent,
     };
     use kuroya_core::LspCompletionItem;
     use serde_json::json;
-    use std::{collections::HashMap, path::PathBuf, sync::Arc};
+    use std::{path::PathBuf, sync::Arc};
 
     #[test]
     fn completion_item_resolve_pending_request_keeps_origin_and_commit_text() {
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
 
         register_completion_item_resolve_request(
             8,
@@ -112,7 +113,7 @@ mod tests {
     #[test]
     fn completion_item_resolve_pending_request_preserves_raw_item_payload() {
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
         let mut raw_item = completion_item();
         raw_item.label = "Raw\nHashMap\u{202e}".to_owned();
         raw_item.detail = Some("raw detail".to_owned());

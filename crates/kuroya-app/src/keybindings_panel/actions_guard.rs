@@ -22,6 +22,14 @@ pub(in crate::keybindings_panel) fn guard_keybindings_panel_actions(
     {
         actions.remove_binding = None;
     }
+
+    if actions
+        .reset_binding
+        .as_ref()
+        .is_some_and(|command| !items_contain_command(items, command))
+    {
+        actions.reset_binding = None;
+    }
 }
 
 fn items_contain_command(items: &[KeybindingPanelItem], command: &Command) -> bool {

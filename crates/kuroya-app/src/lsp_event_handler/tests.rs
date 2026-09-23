@@ -5,18 +5,240 @@ use crate::{
     lsp_client::LspClientHandle,
     lsp_diagnostics_batch::{LSP_DIAGNOSTIC_BATCH_DELAY, PendingLspDiagnosticsSource},
     lsp_progress::LspProgressKey,
-    lsp_runtime::{LSP_LANGUAGE_LABEL_MAX_CHARS, LSP_STATUS_MESSAGE_MAX_CHARS},
+    lsp_runtime::{LSP_LANGUAGE_LABEL_MAX_CHARS, LSP_STATUS_MESSAGE_MAX_CHARS, lsp_client_key},
     lsp_ui_events::LspServerResultTarget,
     path_display::DISPLAY_PATH_LABEL_MAX_CHARS,
     terminal::TerminalPane,
 };
 use kuroya_core::{
     Diagnostic, DiagnosticSeverity, EditorSettings, LspCodeLens, LspDocumentHighlight,
-    LspInlayHint, LspSemanticToken, LspTextEdit, LspWorkDoneProgress, LspWorkDoneProgressKind,
-    TextBuffer, TextEdit, Workspace,
+    LspInlayHint, LspSemanticToken, LspServerConfig, LspTextEdit, LspWorkDoneProgress,
+    LspWorkDoneProgressKind, TextBuffer, TextEdit, Workspace,
 };
 use std::path::PathBuf;
 use tokio::runtime::Runtime;
+
+#[test]
+fn stopped_server_restarts_by_client_key_without_touching_sibling_servers() {
+    let root = std::env::temp_dir().join("kuroya-lsp-multi-server-restart");
+    let source_dir = root.join("src");
+    std::fs::create_dir_all(&source_dir).expect("create source dir");
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"lsp-test\"\n")
+        .expect("write cargo manifest");
+    let source = source_dir.join("main.rs");
+    std::fs::write(&source, "fn main() {}\n").expect("write source");
+    let settings = EditorSettings {
+        lsp_servers: vec![
+            LspServerConfig {
+                language: "rust".to_owned(),
+                command: "rust-analyzer".to_owned(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: vec!["Cargo.toml".to_owned()],
+                enabled: true,
+            },
+            LspServerConfig {
+                language: "rust".to_owned(),
+                command: "rust-analyzer-obsidian".to_owned(),
+                args: vec!["--stdio".to_owned()],
+                extensions: Vec::new(),
+                root_markers: vec!["Cargo.toml".to_owned()],
+                enabled: true,
+            },
+        ],
+        ..EditorSettings::default()
+    };
+    let mut app = app_for_test_with_settings(root.clone(), settings.clone());
+    app.buffers.push(TextBuffer::from_text(
+        7,
+        Some(source),
+        "fn main() {}\n".to_owned(),
+    ));
+
+    let configs = settings.lsp_server_configs();
+    let primary_config = configs
+        .iter()
+        .find(|config| config.command == "rust-analyzer")
+        .expect("primary rust config")
+        .clone();
+    let secondary_config = configs
+        .iter()
+        .find(|config| config.command == "rust-analyzer-obsidian")
+        .expect("secondary rust config")
+        .clone();
+    let primary_key = lsp_client_key(&primary_config, &configs);
+    let secondary_key = lsp_client_key(&secondary_config, &configs);
+    app.lsp_clients.insert(
+        primary_key.clone(),
+        LspClientHandle::disconnected_with_generation_for_test(10),
+    );
+    app.lsp_clients.insert(
+        secondary_key.clone(),
+        LspClientHandle::disconnected_with_generation_for_test(11),
+    );
+
+    assert!(
+        app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::ServerStopped {
+            language: "rust".to_owned(),
+            root: root.clone(),
+            generation: 10,
+        }))
+        .is_none()
+    );
+
+    assert!(!app.lsp_clients.contains_key(&primary_key));
+    assert!(app.lsp_clients.contains_key(&secondary_key));
+    assert_eq!(app.lsp_restart_attempts.get(&primary_key), Some(&1));
+    assert!(app.pending_lsp_restarts.contains_key(&primary_key));
+    assert!(!app.lsp_restart_attempts.contains_key(&secondary_key));
+    assert!(!app.pending_lsp_restarts.contains_key(&secondary_key));
+    assert!(
+        app.status.starts_with("rust (rust-analyzer) LSP stopped"),
+        "{}",
+        app.status
+    );
+
+    assert!(
+        app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::ServerStopped {
+            language: "rust".to_owned(),
+            root,
+            generation: 11,
+        }))
+        .is_none()
+    );
+
+    assert!(!app.lsp_clients.contains_key(&secondary_key));
+    assert_eq!(app.lsp_restart_attempts.get(&primary_key), Some(&1));
+    assert_eq!(app.lsp_restart_attempts.get(&secondary_key), Some(&1));
+    assert!(app.pending_lsp_restarts.contains_key(&primary_key));
+    assert!(app.pending_lsp_restarts.contains_key(&secondary_key));
+    assert!(
+        app.status
+            .starts_with("rust (rust-analyzer-obsidian) LSP stopped"),
+        "{}",
+        app.status
+    );
+}
+
+#[test]
+fn server_stopped_purges_only_stopped_server_diagnostics() {
+    let root = std::env::temp_dir().join("kuroya-lsp-stop-purges-its-bucket");
+    let source_dir = root.join("src");
+    std::fs::create_dir_all(&source_dir).expect("create source dir");
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"lsp-test\"\n")
+        .expect("write cargo manifest");
+    let source = source_dir.join("main.rs");
+    std::fs::write(&source, "fn main() {}\n").expect("write source");
+    let settings = EditorSettings {
+        lsp_servers: vec![
+            LspServerConfig {
+                language: "rust".to_owned(),
+                command: "rust-analyzer".to_owned(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: vec!["Cargo.toml".to_owned()],
+                enabled: true,
+            },
+            LspServerConfig {
+                language: "rust".to_owned(),
+                command: "rust-analyzer-obsidian".to_owned(),
+                args: vec!["--stdio".to_owned()],
+                extensions: Vec::new(),
+                root_markers: vec!["Cargo.toml".to_owned()],
+                enabled: true,
+            },
+        ],
+        ..EditorSettings::default()
+    };
+    let mut app = app_for_test_with_settings(root.clone(), settings.clone());
+    let configs = settings.lsp_server_configs();
+    let primary_key = lsp_client_key(
+        configs
+            .iter()
+            .find(|config| config.command == "rust-analyzer")
+            .expect("primary rust config"),
+        &configs,
+    );
+    let secondary_key = lsp_client_key(
+        configs
+            .iter()
+            .find(|config| config.command == "rust-analyzer-obsidian")
+            .expect("secondary rust config"),
+        &configs,
+    );
+    app.lsp_clients.insert(
+        primary_key,
+        LspClientHandle::disconnected_with_generation_for_test(10),
+    );
+    app.lsp_clients.insert(
+        secondary_key,
+        LspClientHandle::disconnected_with_generation_for_test(11),
+    );
+
+    let mut static_diagnostic = test_diagnostic(&source, "static marker");
+    static_diagnostic.source = "kuroya-static".to_owned();
+    app.diagnostics
+        .replace_static(source.clone(), vec![static_diagnostic]);
+    let queued_at = Instant::now() - LSP_DIAGNOSTIC_BATCH_DELAY;
+    app.pending_lsp_diagnostics.queue_for_server(
+        PendingLspDiagnosticsSource {
+            language: "rust".to_owned(),
+            root: root.clone(),
+            generation: 10,
+        },
+        source.clone(),
+        None,
+        vec![test_diagnostic(&source, "from primary")],
+        queued_at,
+    );
+    app.pending_lsp_diagnostics.queue_for_server(
+        PendingLspDiagnosticsSource {
+            language: "rust".to_owned(),
+            root: root.clone(),
+            generation: 11,
+        },
+        source.clone(),
+        None,
+        vec![test_diagnostic(&source, "from secondary")],
+        queued_at,
+    );
+
+    assert_eq!(app.flush_pending_lsp_diagnostics(), 2);
+    assert_eq!(app.diagnostics.for_path(&source).len(), 3);
+
+    assert!(
+        app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::ServerStopped {
+            language: "rust".to_owned(),
+            root: root.clone(),
+            generation: 10,
+        }))
+        .is_none()
+    );
+
+    let remaining = app
+        .diagnostics
+        .for_path(&source)
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(remaining.len(), 2, "{remaining:?}");
+    assert!(remaining.contains(&"from secondary"), "{remaining:?}");
+    assert!(remaining.contains(&"static marker"), "{remaining:?}");
+
+    assert!(
+        app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::ServerUnavailable {
+            language: "rust".to_owned(),
+            root,
+            generation: 11,
+        }))
+        .is_none()
+    );
+
+    let remaining = app.diagnostics.for_path(&source);
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].message, "static marker");
+    assert_eq!(remaining[0].source, "kuroya-static");
+}
 
 #[test]
 fn unavailable_lsp_status_clears_dead_client_and_restart_state() {
@@ -32,9 +254,17 @@ fn unavailable_lsp_status_clears_dead_client_and_restart_state() {
     assert!(
         app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::Status {
             language: "rust".to_owned(),
-            root,
+            root: root.clone(),
             generation: 1,
             message: "rust LSP unavailable: program not found".to_owned(),
+        }))
+        .is_none()
+    );
+    assert!(
+        app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::ServerUnavailable {
+            language: "rust".to_owned(),
+            root,
+            generation: 1,
         }))
         .is_none()
     );
@@ -70,11 +300,10 @@ fn unavailable_lsp_status_continues_pending_format_on_save() {
     );
 
     assert!(
-        app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::Status {
+        app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::ServerUnavailable {
             language: "rust".to_owned(),
             root,
             generation: 1,
-            message: "rust LSP unavailable: program not found".to_owned(),
         }))
         .is_none()
     );
@@ -644,11 +873,10 @@ fn stale_unavailable_status_does_not_mark_current_server_unavailable() {
     app.status = "current status".to_owned();
 
     assert!(
-        app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::Status {
+        app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::ServerUnavailable {
             language: "rust".to_owned(),
             root,
             generation: 1,
-            message: "rust LSP unavailable: program not found".to_owned(),
         }))
         .is_none()
     );
@@ -664,14 +892,33 @@ fn stale_unavailable_status_does_not_mark_current_server_unavailable() {
 }
 
 #[test]
-fn status_event_sanitizes_message_after_raw_unavailable_match() {
+fn unavailable_status_text_alone_no_longer_marks_server_unavailable() {
+    let root = std::env::temp_dir().join("kuroya-lsp-status-text-no-unavailable");
+    let mut app = app_for_test(root.clone());
+    app.lsp_clients
+        .insert("rust".to_owned(), LspClientHandle::disconnected_for_test());
+
+    assert!(
+        app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::Status {
+            language: "rust".to_owned(),
+            root,
+            generation: 1,
+            message: "rust LSP unavailable: program not found".to_owned(),
+        }))
+        .is_none()
+    );
+
+    assert!(app.lsp_clients.contains_key("rust"));
+    assert!(!app.lsp_unavailable.contains("rust"));
+    assert_eq!(app.status, "rust LSP unavailable: program not found");
+}
+
+#[test]
+fn status_event_sanitizes_dirty_messages() {
     let root = std::env::temp_dir().join("kuroya-lsp-status-message-display-safe");
     let mut app = app_for_test(root.clone());
     app.lsp_clients
         .insert("rust".to_owned(), LspClientHandle::disconnected_for_test());
-    app.lsp_restart_attempts.insert("rust".to_owned(), 2);
-    app.pending_lsp_restarts
-        .insert("rust".to_owned(), Instant::now());
     let message = format!(
         "rust LSP unavailable: first line\nsecond line \u{202e}{}",
         "message-fragment-".repeat(LSP_STATUS_MESSAGE_MAX_CHARS)
@@ -687,10 +934,6 @@ fn status_event_sanitizes_message_after_raw_unavailable_match() {
         .is_none()
     );
 
-    assert!(!app.lsp_clients.contains_key("rust"));
-    assert!(!app.lsp_restart_attempts.contains_key("rust"));
-    assert!(!app.pending_lsp_restarts.contains_key("rust"));
-    assert!(app.lsp_unavailable.contains("rust"));
     assert_display_safe(&app.status);
     assert!(app.status.contains("..."));
     assert!(app.status.chars().count() <= LSP_STATUS_MESSAGE_MAX_CHARS);
@@ -1322,8 +1565,12 @@ fn progress(
 }
 
 fn app_for_test(root: PathBuf) -> KuroyaApp {
-    let (tx, rx) = crate::ui_event_channel::ui_event_channel();
     let settings = EditorSettings::default();
+    app_for_test_with_settings(root, settings)
+}
+
+fn app_for_test_with_settings(root: PathBuf, settings: EditorSettings) -> KuroyaApp {
+    let (tx, rx) = crate::ui_event_channel::ui_event_channel();
     KuroyaApp::from_startup_context(AppStartupContext {
         runtime: Runtime::new().expect("test runtime"),
         tx,

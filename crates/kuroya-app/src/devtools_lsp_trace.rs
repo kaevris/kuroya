@@ -142,6 +142,32 @@ pub(crate) fn lsp_trace_stats(entries: &VecDeque<LspTraceEntry>) -> Option<LspTr
 
 pub(crate) fn lsp_ui_event_trace_label(event: &LspUiEvent) -> (&'static str, String) {
     let (method, detail) = match event {
+        LspUiEvent::PrepareRenameResult {
+            path,
+            line,
+            column,
+            range,
+            error,
+            ..
+        } => (
+            "textDocument/prepareRename",
+            error
+                .as_deref()
+                .map(|error| display_error_label_cow(error).into_owned())
+                .unwrap_or_else(|| {
+                    format!(
+                        "{}:{}:{} ({})",
+                        display_path_label_cow(path),
+                        line + 1,
+                        column + 1,
+                        if range.is_some() {
+                            "renamable"
+                        } else {
+                            "empty"
+                        }
+                    )
+                }),
+        ),
         LspUiEvent::ServerResult { target, event } => {
             let (method, detail) = lsp_ui_event_trace_label(event);
             (
@@ -591,6 +617,18 @@ pub(crate) fn lsp_ui_event_trace_label(event: &LspUiEvent) -> (&'static str, Str
             generation,
         } => (
             "$/serverStopped",
+            format!(
+                "{} #{generation} at {}",
+                lsp_trace_field_label(language, MAX_LSP_TRACE_LANGUAGE_CHARS, "LSP"),
+                display_path_label_cow(root)
+            ),
+        ),
+        LspUiEvent::ServerUnavailable {
+            language,
+            root,
+            generation,
+        } => (
+            "$/serverUnavailable",
             format!(
                 "{} #{generation} at {}",
                 lsp_trace_field_label(language, MAX_LSP_TRACE_LANGUAGE_CHARS, "LSP"),

@@ -2,6 +2,7 @@ use crate::preference_panels::sections::{
     SETTINGS_TARGET_FILES_SAVE_ACTIONS, SETTINGS_TARGET_FILES_SAVE_CLEANUP, SettingsHighlightState,
     settings_target_heading,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::{
     EditorAutoSaveMode, EditorSettings, MAX_AUTOSAVE_DELAY_MS, MIN_AUTOSAVE_DELAY_MS,
@@ -23,7 +24,7 @@ pub(super) fn render_files_settings_with_highlight(
         .spacing([18.0, 10.0])
         .show(ui, |ui| {
             ui.label("Format on save");
-            ui.checkbox(&mut draft.format_on_save, "Format before writing files");
+            ui_switch(ui, &mut draft.format_on_save).on_hover_text("Format before writing files");
             ui.end_row();
 
             ui.label("Autosave");
@@ -58,21 +59,18 @@ pub(super) fn render_files_settings_with_highlight(
         .spacing([18.0, 10.0])
         .show(ui, |ui| {
             ui.label("Trim trailing whitespace");
-            ui.checkbox(
-                &mut draft.trim_trailing_whitespace,
-                "Remove trailing spaces and tabs on save",
-            );
+            ui_switch(ui, &mut draft.trim_trailing_whitespace)
+                .on_hover_text("Remove trailing spaces and tabs on save");
             ui.end_row();
 
             ui.label("Insert final newline");
-            ui.checkbox(&mut draft.insert_final_newline, "End files with a newline");
+            ui_switch(ui, &mut draft.insert_final_newline)
+                .on_hover_text("End files with a newline");
             ui.end_row();
 
             ui.label("Trim final newlines");
-            ui.checkbox(
-                &mut draft.trim_final_newlines,
-                "Keep one final newline at most",
-            );
+            ui_switch(ui, &mut draft.trim_final_newlines)
+                .on_hover_text("Keep one final newline at most");
             ui.end_row();
         });
 }

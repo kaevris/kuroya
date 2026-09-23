@@ -9,7 +9,7 @@ use crate::{
         BackgroundLanguageBlockReason, background_language_block_reason,
         buffer_allows_background_language, due_language_sync_ids, lsp_lifecycle_target_for_buffer,
         lsp_lifecycle_targets_for_buffers, lsp_server_config_for_buffer,
-        open_lsp_workspace_edit_block_reason,
+        lsp_server_configs_for_buffer, open_lsp_workspace_edit_block_reason,
     },
     lsp_runtime::{
         LSP_RESTART_BASE_DELAY, LspRestartDecision, clear_pending_lsp_restart_for_started_client,
@@ -66,6 +66,7 @@ fn lsp_lifecycle_target_uses_custom_extension_server_for_plain_text_buffers() {
         args: vec!["lsp".to_owned()],
         extensions: vec!["gleam".to_owned()],
         root_markers: vec!["gleam.toml".to_owned()],
+        enabled: true,
     });
 
     let target = lsp_lifecycle_target_for_buffer(
@@ -112,6 +113,7 @@ fn lsp_lifecycle_custom_extension_server_can_override_builtin_extension() {
         args: Vec::new(),
         extensions: vec!["tsx".to_owned()],
         root_markers: Vec::new(),
+        enabled: true,
     });
     let plugin_languages = PluginLanguageRegistry::default();
 
@@ -120,6 +122,63 @@ fn lsp_lifecycle_custom_extension_server_can_override_builtin_extension() {
 
     assert_eq!(config.language, "custom-tsx");
     assert_eq!(language.as_ref(), "custom-tsx");
+}
+
+#[test]
+fn lsp_server_configs_for_buffer_returns_every_matching_config_in_order() {
+    let buffer = TextBuffer::from_text(
+        21,
+        Some(PathBuf::from("workspace/src/main.rs")),
+        "fn main() {}".to_owned(),
+    );
+    let rust_a = LspServerConfig {
+        language: "rust".to_owned(),
+        command: "rust-analyzer".to_owned(),
+        args: Vec::new(),
+        extensions: Vec::new(),
+        root_markers: vec!["Cargo.toml".to_owned()],
+        enabled: true,
+    };
+    let rust_a_duplicate = rust_a.clone();
+    let rust_b = LspServerConfig {
+        language: "rust".to_owned(),
+        command: "rust-analyzer-obsidian".to_owned(),
+        args: vec!["--stdio".to_owned()],
+        extensions: Vec::new(),
+        root_markers: Vec::new(),
+        enabled: true,
+    };
+    let python = LspServerConfig {
+        language: "python".to_owned(),
+        command: "pyright-langserver".to_owned(),
+        args: vec!["--stdio".to_owned()],
+        extensions: Vec::new(),
+        root_markers: Vec::new(),
+        enabled: true,
+    };
+    let configs = vec![rust_a, python, rust_b, rust_a_duplicate];
+    let plugin_languages = PluginLanguageRegistry::default();
+
+    let matches = lsp_server_configs_for_buffer(&configs, &plugin_languages, &buffer);
+
+    assert_eq!(
+        matches
+            .iter()
+            .map(|(config, _)| (config.language.as_str(), config.command.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("rust", "rust-analyzer"),
+            ("rust", "rust-analyzer-obsidian")
+        ]
+    );
+    for (config, language) in &matches {
+        assert_eq!(config.language, "rust");
+        assert_eq!(language.as_ref(), "rust");
+    }
+
+    let (primary, _) = lsp_server_config_for_buffer(&configs, &plugin_languages, &buffer)
+        .expect("rust config should be present");
+    assert_eq!(primary.command, "rust-analyzer");
 }
 
 #[test]

@@ -76,7 +76,7 @@ pub struct AppState {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct PersistedSession {
-    #[serde(deserialize_with = "deserialize_session_path")]
+    #[serde(default, deserialize_with = "deserialize_session_path")]
     pub workspace_root: PathBuf,
     #[serde(default, deserialize_with = "deserialize_session_paths")]
     pub open_files: Vec<PathBuf>,
@@ -111,16 +111,14 @@ pub struct PersistedSession {
     pub explorer_revealed_path: Option<PathBuf>,
     #[serde(default)]
     pub project_search_open: bool,
-    #[serde(default)]
-    pub project_search_placement: PanelPlacement,
-    #[serde(default = "default_project_search_width")]
-    pub project_search_width: f32,
     #[serde(default, deserialize_with = "deserialize_session_text")]
     pub project_search_query: String,
     #[serde(default)]
     pub project_search_case_sensitive: bool,
     #[serde(default)]
     pub project_search_whole_word: bool,
+    #[serde(default)]
+    pub project_search_regex: bool,
     #[serde(default, deserialize_with = "deserialize_session_text")]
     pub project_search_include: String,
     #[serde(default, deserialize_with = "deserialize_session_text")]
@@ -184,6 +182,8 @@ pub struct PersistedSession {
     pub source_control_commit_history: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_session_text")]
     pub source_control_stash_message: String,
+    #[serde(default, deserialize_with = "deserialize_session_text")]
+    pub source_control_stash_query: String,
     #[serde(default)]
     pub source_control_stashes_open: bool,
     #[serde(default)]
@@ -422,10 +422,6 @@ pub struct SkippedRecoveredBuffer {
 
 fn default_explorer_width() -> f32 {
     260.0
-}
-
-fn default_project_search_width() -> f32 {
-    330.0
 }
 
 fn default_symbols_panel_width() -> f32 {
@@ -678,14 +674,18 @@ fn deserialize_session_path<'de, D>(deserializer: D) -> Result<PathBuf, D::Error
 where
     D: Deserializer<'de>,
 {
-    Ok(BoundedPath::deserialize(deserializer)?.0)
+    Ok(BoundedPath::deserialize(deserializer)?
+        .into_restored_entry()
+        .unwrap_or_default())
 }
 
 fn deserialize_optional_session_path<'de, D>(deserializer: D) -> Result<Option<PathBuf>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    Ok(BoundedOptionalPath::deserialize(deserializer)?.0)
+    Ok(BoundedOptionalPath::deserialize(deserializer)?
+        .into_restored_entry()
+        .flatten())
 }
 
 fn deserialize_bounded_vec<'de, D, T, const LIMIT: usize>(
@@ -705,7 +705,7 @@ fn deserialize_bounded_mapped_vec<'de, D, Raw, T, const LIMIT: usize>(
 ) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
-    Raw: Deserialize<'de> + Into<T>,
+    Raw: Deserialize<'de> + RestoredEntry<T>,
 {
     deserializer.deserialize_seq(BoundedMappedVecVisitor::<Raw, T, LIMIT> {
         marker: PhantomData,
@@ -749,7 +749,7 @@ struct BoundedMappedVecVisitor<Raw, T, const LIMIT: usize> {
 
 impl<'de, Raw, T, const LIMIT: usize> Visitor<'de> for BoundedMappedVecVisitor<Raw, T, LIMIT>
 where
-    Raw: Deserialize<'de> + Into<T>,
+    Raw: Deserialize<'de> + RestoredEntry<T>,
 {
     type Value = Vec<T>;
 
@@ -767,11 +767,18 @@ where
             let Some(value) = seq.next_element::<Raw>()? else {
                 return Ok(values);
             };
-            values.push(value.into());
+
+            if let Some(mapped) = value.into_restored_entry() {
+                values.push(mapped);
+            }
         }
         while seq.next_element::<IgnoredAny>()?.is_some() {}
         Ok(values)
     }
+}
+
+trait RestoredEntry<T> {
+    fn into_restored_entry(self) -> Option<T>;
 }
 
 fn deserialize_bounded_string_vec<'de, D, const LIMIT: usize, const CHARS: usize>(
@@ -843,7 +850,7 @@ impl<'de, const CHARS: usize> Deserialize<'de> for BoundedString<CHARS> {
     }
 }
 
-struct BoundedPath(PathBuf);
+struct BoundedPath(Option<PathBuf>);
 
 impl<'de> Deserialize<'de> for BoundedPath {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -854,9 +861,9 @@ impl<'de> Deserialize<'de> for BoundedPath {
     }
 }
 
-impl From<BoundedPath> for PathBuf {
-    fn from(value: BoundedPath) -> Self {
-        value.0
+impl RestoredEntry<PathBuf> for BoundedPath {
+    fn into_restored_entry(self) -> Option<PathBuf> {
+        self.0
     }
 }
 
@@ -887,30 +894,58 @@ impl<'de> Visitor<'de> for BoundedPathVisitor {
     }
 }
 
-fn bounded_path(value: &str) -> PathBuf {
+fn bounded_path(value: &str) -> Option<PathBuf> {
     if value.chars().count() > PERSISTED_SESSION_PATH_TEXT_MAX_CHARS {
-        PathBuf::new()
-    } else {
-        PathBuf::from(value)
+        return None;
     }
+    if path_text_contains_control(value) {
+        return None;
+    }
+    Some(PathBuf::from(value))
 }
 
-struct BoundedOptionalPath(Option<PathBuf>);
+fn path_text_contains_control(value: &str) -> bool {
+    value.chars().any(is_unsafe_path_char)
+}
+
+fn is_unsafe_path_char(ch: char) -> bool {
+    ch.is_control()
+        || matches!(
+            ch,
+            '\u{061c}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}'
+                | '\u{feff}'
+        )
+}
+
+enum BoundedOptionalPath {
+    Kept(Option<PathBuf>),
+    Rejected,
+}
 
 impl<'de> Deserialize<'de> for BoundedOptionalPath {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        Ok(Self(
-            Option::<BoundedPath>::deserialize(deserializer)?.map(PathBuf::from),
-        ))
+        Ok(match Option::<BoundedPath>::deserialize(deserializer)? {
+            None => Self::Kept(None),
+            Some(bounded) => match bounded.0 {
+                Some(path) => Self::Kept(Some(path)),
+                None => Self::Rejected,
+            },
+        })
     }
 }
 
-impl From<BoundedOptionalPath> for Option<PathBuf> {
-    fn from(value: BoundedOptionalPath) -> Self {
-        value.0
+impl RestoredEntry<Option<PathBuf>> for BoundedOptionalPath {
+    fn into_restored_entry(self) -> Option<Option<PathBuf>> {
+        match self {
+            Self::Kept(path) => Some(path),
+            Self::Rejected => None,
+        }
     }
 }
 
@@ -922,6 +957,8 @@ struct RestoredProjectSearchQuery {
     case_sensitive: bool,
     #[serde(default)]
     whole_word: bool,
+    #[serde(default)]
+    regex: bool,
     #[serde(default, deserialize_with = "deserialize_session_text")]
     include: String,
     #[serde(default, deserialize_with = "deserialize_session_text")]
@@ -934,9 +971,16 @@ impl From<RestoredProjectSearchQuery> for ProjectSearchQuery {
             query: value.query,
             case_sensitive: value.case_sensitive,
             whole_word: value.whole_word,
+            regex: value.regex,
             include: value.include,
             exclude: value.exclude,
         }
+    }
+}
+
+impl RestoredEntry<ProjectSearchQuery> for RestoredProjectSearchQuery {
+    fn into_restored_entry(self) -> Option<ProjectSearchQuery> {
+        Some(self.into())
     }
 }
 
@@ -957,6 +1001,12 @@ impl From<RestoredQuickOpenQueryMemoryEntry> for QuickOpenQueryMemoryEntry {
             path: value.path,
             uses: value.uses,
         }
+    }
+}
+
+impl RestoredEntry<QuickOpenQueryMemoryEntry> for RestoredQuickOpenQueryMemoryEntry {
+    fn into_restored_entry(self) -> Option<QuickOpenQueryMemoryEntry> {
+        Some(self.into())
     }
 }
 
@@ -990,6 +1040,12 @@ impl From<RestoredWorkspaceSymbolQueryMemoryEntry> for WorkspaceSymbolQueryMemor
     }
 }
 
+impl RestoredEntry<WorkspaceSymbolQueryMemoryEntry> for RestoredWorkspaceSymbolQueryMemoryEntry {
+    fn into_restored_entry(self) -> Option<WorkspaceSymbolQueryMemoryEntry> {
+        Some(self.into())
+    }
+}
+
 #[derive(Deserialize)]
 struct RestoredCommandPaletteQueryMemoryEntry {
     #[serde(default, deserialize_with = "deserialize_session_text")]
@@ -1006,6 +1062,12 @@ impl From<RestoredCommandPaletteQueryMemoryEntry> for CommandPaletteQueryMemoryE
             command: value.command,
             uses: value.uses,
         }
+    }
+}
+
+impl RestoredEntry<CommandPaletteQueryMemoryEntry> for RestoredCommandPaletteQueryMemoryEntry {
+    fn into_restored_entry(self) -> Option<CommandPaletteQueryMemoryEntry> {
+        Some(self.into())
     }
 }
 
@@ -1051,5 +1113,103 @@ fn truncate_string_chars(value: &mut String, max_chars: usize) {
     }
     if let Some((byte_index, _)) = value.char_indices().nth(max_chars) {
         value.truncate(byte_index);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_parses_when_workspace_root_is_missing() {
+        let value = serde_json::json!({
+            "open_files": ["src/main.rs"],
+            "recovery": [{
+                "path": "src/main.rs",
+                "display_name": "main.rs",
+                "text": "unsaved",
+            }],
+        });
+
+        let session = serde_json::from_value::<PersistedSession>(value).unwrap();
+
+        assert!(session.workspace_root.as_os_str().is_empty());
+        assert_eq!(session.recovery.len(), 1);
+        assert_eq!(session.recovery[0].display_name, "main.rs");
+    }
+
+    #[test]
+    fn restore_normalizes_placeholder_session_with_missing_workspace_root() {
+        let value = serde_json::json!({
+            "open_files": ["src/main.rs"],
+            "recovery": [{
+                "path": "src/main.rs",
+                "display_name": "main.rs",
+                "text": "unsaved",
+            }],
+        });
+        let mut session = serde_json::from_value::<PersistedSession>(value).unwrap();
+        let root = PathBuf::from("workspace").join("current");
+
+        crate::persistence_session::normalize_persisted_session_paths_for_restore(
+            &root,
+            &mut session,
+        );
+
+        assert_eq!(session.open_files, vec![root.join("src/main.rs")]);
+        assert_eq!(session.recovery[0].path, Some(root.join("src/main.rs")));
+    }
+
+    #[test]
+    fn bounded_paths_prune_oversized_and_control_char_entries() {
+        let over_long = "a".repeat(PERSISTED_SESSION_PATH_TEXT_MAX_CHARS + 1);
+        let value = serde_json::json!({
+            "open_files": [
+                "src/kept.rs",
+                over_long,
+                "src/\u{0000}null.rs",
+                "src/\u{202e}reverse.rs",
+                "src/kept-too.rs",
+            ],
+        });
+
+        let session = serde_json::from_value::<PersistedSession>(value).unwrap();
+
+        assert_eq!(
+            session.open_files,
+            vec![
+                PathBuf::from("src/kept.rs"),
+                PathBuf::from("src/kept-too.rs"),
+            ]
+        );
+    }
+
+    #[test]
+    fn bounded_pane_paths_keep_null_slots_and_prune_rejected_paths() {
+        let over_long = "a".repeat(PERSISTED_SESSION_PATH_TEXT_MAX_CHARS + 1);
+        let value = serde_json::json!({
+            "pane_paths": [null, "src/main.rs", over_long],
+        });
+
+        let session = serde_json::from_value::<PersistedSession>(value).unwrap();
+
+        assert_eq!(
+            session.pane_paths,
+            vec![None, Some(PathBuf::from("src/main.rs"))]
+        );
+    }
+
+    #[test]
+    fn bounded_paths_accept_paths_at_the_char_budget() {
+        let at_budget = "b".repeat(PERSISTED_SESSION_PATH_TEXT_MAX_CHARS);
+        let value = serde_json::json!({ "open_files": [at_budget] });
+
+        let session = serde_json::from_value::<PersistedSession>(value).unwrap();
+
+        assert_eq!(session.open_files.len(), 1);
+        assert_eq!(
+            session.open_files[0].as_os_str().to_string_lossy().len(),
+            PERSISTED_SESSION_PATH_TEXT_MAX_CHARS
+        );
     }
 }

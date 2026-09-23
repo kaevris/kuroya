@@ -271,12 +271,13 @@ pub(in crate::terminal) fn terminal_visible_search_spans(
     let Some(query) = normalize_terminal_search_query(query) else {
         return Vec::new();
     };
-    terminal_visible_search_spans_with_normalized_query(screen, query.as_ref())
+    terminal_visible_search_spans_with_normalized_query(screen, query.as_ref(), None)
 }
 
 pub(in crate::terminal) fn terminal_visible_search_spans_with_normalized_query(
     screen: &vt100::Screen,
     query: &str,
+    active: Option<(u16, (usize, usize))>,
 ) -> Vec<TerminalVisibleSearchSpan> {
     let Some(query) = PreparedTerminalSearchQuery::new(query) else {
         return Vec::new();
@@ -300,10 +301,14 @@ pub(in crate::terminal) fn terminal_visible_search_spans_with_normalized_query(
             if let Some((start_col, end_col)) =
                 terminal_visible_match_cols(match_start, match_end, &cell_spans, cols)
             {
+                let is_active = active.is_some_and(|(active_row, (active_start, active_end))| {
+                    row == active_row && match_start == active_start && match_end == active_end
+                });
                 spans.push(TerminalVisibleSearchSpan {
                     row,
                     start_col,
                     end_col,
+                    active: is_active,
                 });
             }
 

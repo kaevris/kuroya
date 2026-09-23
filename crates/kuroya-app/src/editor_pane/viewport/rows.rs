@@ -4,6 +4,7 @@ use crate::{
     editor_pane_data::EditorPaneData,
     editor_pane_rows::{EditorRowContext, render_editor_row},
     editor_row_paint::active_indent_guide_column_for_buffer,
+    editor_row_render_cache::GpuRowRenderScope,
     syntax::SyntaxHighlighter,
 };
 use eframe::egui;
@@ -26,7 +27,9 @@ pub(super) fn render_visible_editor_rows(
     buffer: &TextBuffer,
     highlighter: &mut SyntaxHighlighter,
     bracket_overlay_cache: &mut EditorBracketOverlayCache,
+    mut gpu_row_render: Option<&mut GpuRowRenderScope<'_>>,
     data: &EditorPaneData,
+    background_image_active: bool,
     active_find_match: usize,
     pending_actions: &mut PendingEditorPaneActions,
 ) {
@@ -45,7 +48,11 @@ pub(super) fn render_visible_editor_rows(
         font_size: data.font_size,
         text_color: visuals.text_color(),
         weak_text_color: visuals.weak_text_color(),
-        selection_bg_fill: data.selection_bg_fill,
+        background_image_active,
+        selection_bg_fill: crate::editor_row_paint::editor_selection_fill(
+            data.selection_bg_fill,
+            background_image_active,
+        ),
         warn_fg_color: visuals.warn_fg_color,
         line_numbers: data.line_numbers,
         select_on_line_numbers: data.select_on_line_numbers,
@@ -202,6 +209,7 @@ pub(super) fn render_visible_editor_rows(
                     line_idx,
                     highlighted_job,
                     &bracket_colors,
+                    gpu_row_render.as_deref_mut(),
                     &row_context,
                     pending_actions,
                 );

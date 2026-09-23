@@ -399,14 +399,31 @@ fn replace_hunk_lines_rejects_range_expected_length_mismatch() {
 
 #[test]
 fn unified_diff_between_texts_uses_distinct_file_labels() {
-    let diff = unified_diff_between_texts("src/old.rs", "src/new.rs", "one\ntwo\n", "one\ndos\n");
+    let diff = try_unified_diff_between_texts_with_options(
+        "src/old.rs",
+        "src/new.rs",
+        "one\ntwo\n",
+        "one\ndos\n",
+        DiffOptions::default(),
+    )
+    .expect("small diff inputs should be within the size limit");
 
     assert!(diff.starts_with("diff --git a/src/old.rs b/src/new.rs\n"));
     assert!(diff.contains("--- a/src/old.rs\n"));
     assert!(diff.contains("+++ b/src/new.rs\n"));
     assert!(diff.contains("-two\n"));
     assert!(diff.contains("+dos\n"));
-    assert!(unified_diff_between_texts("a.txt", "b.txt", "same\n", "same\n").is_empty());
+    assert!(
+        try_unified_diff_between_texts_with_options(
+            "a.txt",
+            "b.txt",
+            "same\n",
+            "same\n",
+            DiffOptions::default(),
+        )
+        .expect("small diff inputs should be within the size limit")
+        .is_empty()
+    );
 }
 
 #[test]
@@ -417,13 +434,14 @@ fn unified_diff_between_texts_respects_context_lines_option() {
         hide_unchanged_regions_reveal_line_count: 0,
         ..DiffOptions::default()
     };
-    let diff = unified_diff_between_texts_with_options(
+    let diff = try_unified_diff_between_texts_with_options(
         "a.txt",
         "b.txt",
         "one\ntwo\nthree\nfour\nfive\n",
         "one\ntwo\nTHREE\nfour\nfive\n",
         options,
-    );
+    )
+    .unwrap();
 
     assert!(diff.contains("@@ -3,1 +3,1 @@"));
     assert!(diff.contains("-three\n"));
@@ -440,13 +458,14 @@ fn unified_diff_between_texts_keeps_small_unchanged_regions_visible() {
         hide_unchanged_regions_reveal_line_count: 0,
         ..DiffOptions::default()
     };
-    let diff = unified_diff_between_texts_with_options(
+    let diff = try_unified_diff_between_texts_with_options(
         "a.txt",
         "b.txt",
         "one\ntwo\nthree\nfour\n",
         "ONE\ntwo\nTHREE\nfour\n",
         options,
-    );
+    )
+    .unwrap();
 
     assert_eq!(diff.matches("@@").count(), 2);
     assert!(diff.contains("@@ -1,3 +1,3 @@"));
@@ -462,13 +481,14 @@ fn unified_diff_between_texts_keeps_reveal_lines_out_of_initial_grouping() {
         hide_unchanged_regions_reveal_line_count: 1,
         ..DiffOptions::default()
     };
-    let diff = unified_diff_between_texts_with_options(
+    let diff = try_unified_diff_between_texts_with_options(
         "a.txt",
         "b.txt",
         "one\ntwo\nthree\nfour\n",
         "ONE\ntwo\nTHREE\nfour\n",
         options,
-    );
+    )
+    .unwrap();
 
     assert_eq!(diff.matches("@@").count(), 4);
     assert!(!diff.contains(" two\n"));
@@ -482,13 +502,14 @@ fn unified_diff_between_texts_can_show_unchanged_regions() {
         context_lines: 0,
         ..DiffOptions::default()
     };
-    let diff = unified_diff_between_texts_with_options(
+    let diff = try_unified_diff_between_texts_with_options(
         "a.txt",
         "b.txt",
         "one\ntwo\nthree\nfour\nfive\n",
         "one\ntwo\nTHREE\nfour\nfive\n",
         options,
-    );
+    )
+    .unwrap();
 
     assert!(diff.contains("@@ -1,5 +1,5 @@"));
     assert!(diff.contains(" one\n"));
@@ -506,13 +527,14 @@ fn unified_diff_between_texts_legacy_algorithm_uses_positional_changes() {
         context_lines: 0,
         ..DiffOptions::default()
     };
-    let diff = unified_diff_between_texts_with_options(
+    let diff = try_unified_diff_between_texts_with_options(
         "a.txt",
         "b.txt",
         "a\nb\nc\n",
         "b\na\nc\n",
         options,
-    );
+    )
+    .unwrap();
 
     assert!(diff.contains("-a\n+b\n-b\n+a\n"));
 }
@@ -533,7 +555,8 @@ fn unified_diff_between_texts_respects_max_computation_time_option() {
         max_computation_time_ms: 1,
         ..DiffOptions::default()
     };
-    let diff = unified_diff_between_texts_with_options("a.txt", "b.txt", &old, &new, options);
+    let diff =
+        try_unified_diff_between_texts_with_options("a.txt", "b.txt", &old, &new, options).unwrap();
 
     assert!(diff.contains("-line-0\n+line-1\n-line-1\n+line-2\n"));
 }
@@ -546,23 +569,25 @@ fn unified_diff_between_texts_can_ignore_trim_whitespace() {
     };
 
     assert!(
-        unified_diff_between_texts_with_options(
+        try_unified_diff_between_texts_with_options(
             "a.txt",
             "b.txt",
             "one\n  two\t\n",
             "one \n two\n",
             options,
         )
+        .unwrap()
         .is_empty()
     );
 
-    let diff = unified_diff_between_texts_with_options(
+    let diff = try_unified_diff_between_texts_with_options(
         "a.txt",
         "b.txt",
         "one\n  two\n",
         "one\n  three\n",
         options,
-    );
+    )
+    .unwrap();
     assert!(diff.contains("-  two\n"));
     assert!(diff.contains("+  three\n"));
 }
@@ -986,10 +1011,7 @@ fn stage_worktree_hunk_rejects_shifted_stale_hunk_index() {
         .to_string();
 
     assert!(error.contains("no longer matches the selected hunk"));
-    assert_eq!(
-        fs::read_to_string(&path).unwrap().replace("\r\n", "\n"),
-        shifted
-    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), shifted);
     assert!(
         !unified_diff_against_index(&root, &path)
             .unwrap()
@@ -1102,13 +1124,7 @@ fn unstage_staged_hunk_rejects_shifted_stale_hunk_index() {
         .to_string();
 
     assert!(error.contains("no longer matches the selected hunk"));
-    assert_eq!(
-        file_text_at_index(&root, &path)
-            .unwrap()
-            .unwrap()
-            .replace("\r\n", "\n"),
-        shifted
-    );
+    assert_eq!(file_text_at_index(&root, &path).unwrap().unwrap(), shifted);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1139,13 +1155,10 @@ fn discard_worktree_hunk_reverts_only_selected_hunk() {
         super::super::discard_worktree_hunk(&root, &path, current, 0, hunk_fingerprint).unwrap();
 
     assert_eq!(
-        updated.replace("\r\n", "\n"),
+        updated,
         "one\ntwo\nthree\nfour\nfive\nsix\nseven\nchanged again\nnine\n"
     );
-    assert_eq!(
-        fs::read_to_string(&path).unwrap().replace("\r\n", "\n"),
-        updated.replace("\r\n", "\n")
-    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), updated);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1177,10 +1190,7 @@ fn discard_worktree_hunk_rejects_stale_hunk_fingerprint() {
         .to_string();
 
     assert!(error.contains("no longer matches the selected hunk"));
-    assert_eq!(
-        fs::read_to_string(&path).unwrap().replace("\r\n", "\n"),
-        stale
-    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), stale);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1232,10 +1242,7 @@ fn discard_worktree_hunk_rejects_shifted_stale_hunk_index() {
         .to_string();
 
     assert!(error.contains("no longer matches the selected hunk"));
-    assert_eq!(
-        fs::read_to_string(&path).unwrap().replace("\r\n", "\n"),
-        shifted
-    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), shifted);
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1262,6 +1269,156 @@ fn discard_worktree_hunk_removes_untracked_file_when_hunk_clears_file() {
     assert_eq!(updated, "");
     assert!(!path.exists());
     assert!(GitSnapshot::scan(&root).entries().is_empty());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn discard_worktree_hunk_preserves_crlf_line_endings() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-discard-crlf-hunk-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    repo.config()
+        .unwrap()
+        .set_bool("core.autocrlf", false)
+        .unwrap();
+    let path = root.join("tracked.txt");
+    let base = "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight\r\nnine\r\n";
+    fs::write(&path, base).unwrap();
+    commit_all(&repo, "initial");
+    let current =
+        "one\r\nchanged\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\nchanged again\r\nnine\r\n";
+    fs::write(&path, current).unwrap();
+
+    let hunks = worktree_diff_hunks(&root, &path, current).unwrap();
+    assert_eq!(hunks.len(), 2);
+    let updated = discard_worktree_hunk(&root, &path, current, 0, hunks[0].fingerprint).unwrap();
+
+    let expected =
+        "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\nchanged again\r\nnine\r\n";
+    assert_eq!(updated, expected);
+    assert_eq!(fs::read(&path).unwrap(), expected.as_bytes());
+    assert_eq!(
+        updated.matches("\r\n").count(),
+        updated.matches('\n').count()
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn stage_worktree_hunk_preserves_crlf_line_endings() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-stage-crlf-hunk-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    repo.config()
+        .unwrap()
+        .set_bool("core.autocrlf", false)
+        .unwrap();
+    let path = root.join("tracked.txt");
+    let base = "one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight\r\nnine\r\n";
+    fs::write(&path, base).unwrap();
+    commit_all(&repo, "initial");
+    let current =
+        "one\r\nchanged\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\nchanged again\r\nnine\r\n";
+    fs::write(&path, current).unwrap();
+
+    let hunks = worktree_diff_hunks(&root, &path, current).unwrap();
+    assert_eq!(hunks.len(), 2);
+    stage_worktree_hunk(&root, &path, current, 0, hunks[0].fingerprint).unwrap();
+
+    let staged = file_text_at_index(&root, &path).unwrap().unwrap();
+    let expected = "one\r\nchanged\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\neight\r\nnine\r\n";
+    assert_eq!(staged, expected);
+    assert_eq!(staged.matches("\r\n").count(), staged.matches('\n').count());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn hunk_operations_preserve_each_lines_own_line_ending() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-hunk-mixed-endings-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    repo.config()
+        .unwrap()
+        .set_bool("core.autocrlf", false)
+        .unwrap();
+    let path = root.join("tracked.txt");
+    let base = "alpha\nbeta\r\ngamma\ndelta\r\n";
+    fs::write(&path, base).unwrap();
+    commit_all(&repo, "initial");
+
+    let changed_lf = "alpha\nbeta\r\nGAMMA\ndelta\r\n";
+    fs::write(&path, changed_lf).unwrap();
+    let hunks = worktree_diff_hunks(&root, &path, changed_lf).unwrap();
+    assert_eq!(hunks.len(), 1);
+    let updated = discard_worktree_hunk(&root, &path, changed_lf, 0, hunks[0].fingerprint).unwrap();
+    assert_eq!(updated, base);
+    assert_eq!(fs::read(&path).unwrap(), base.as_bytes());
+
+    let changed_crlf = "alpha\nBETA\r\ngamma\ndelta\r\n";
+    fs::write(&path, changed_crlf).unwrap();
+    let hunks = worktree_diff_hunks(&root, &path, changed_crlf).unwrap();
+    assert_eq!(hunks.len(), 1);
+    stage_worktree_hunk(&root, &path, changed_crlf, 0, hunks[0].fingerprint).unwrap();
+    assert_eq!(
+        file_text_at_index(&root, &path).unwrap().unwrap(),
+        changed_crlf
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn discard_worktree_hunk_preserves_remainder_eof_newline_state() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-hunk-eof-newline-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    repo.config()
+        .unwrap()
+        .set_bool("core.autocrlf", false)
+        .unwrap();
+
+    let path = root.join("with_newline.txt");
+    let base = "alpha\r\nbeta\r\n";
+    fs::write(&path, base).unwrap();
+    commit_all(&repo, "initial");
+    let extended = "alpha\r\nbeta\r\ngamma\r\n";
+    fs::write(&path, extended).unwrap();
+    let hunks = worktree_diff_hunks(&root, &path, extended).unwrap();
+    assert_eq!(hunks.len(), 1);
+    let updated = discard_worktree_hunk(&root, &path, extended, 0, hunks[0].fingerprint).unwrap();
+    assert_eq!(updated, base);
+    assert_eq!(fs::read(&path).unwrap(), base.as_bytes());
+
+    let path = root.join("without_newline.txt");
+    let base = "alpha\r\nbeta";
+    fs::write(&path, base).unwrap();
+    commit_all_with_head_parent(&repo, "second");
+    let extended = "alpha\r\nbeta\r\ngamma";
+    fs::write(&path, extended).unwrap();
+    let hunks = worktree_diff_hunks(&root, &path, extended).unwrap();
+    assert_eq!(hunks.len(), 1);
+    let updated = discard_worktree_hunk(&root, &path, extended, 0, hunks[0].fingerprint).unwrap();
+    assert_eq!(updated, base);
+    assert_eq!(fs::read(&path).unwrap(), base.as_bytes());
 
     fs::remove_dir_all(root).unwrap();
 }

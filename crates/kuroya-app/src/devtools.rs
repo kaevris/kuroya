@@ -95,6 +95,7 @@ impl KuroyaApp {
     pub(crate) fn render_devtools_overlay(&mut self, ctx: &Context) {
         let mut open = self.devtools_open;
         egui::Window::new("Internal Devtools")
+            .max_size(crate::layout::popup_window_max_size(ctx))
             .open(&mut open)
             .default_width(360.0)
             .resizable(true)
@@ -105,6 +106,14 @@ impl KuroyaApp {
                         render_startup_timing_panel(ui, &self.startup_timings);
                         ui.separator();
                         render_frame_timing_panel(ui, &self.frame_timings);
+                        ui.separator();
+                        render_row_render_cache_panel(
+                            ui,
+                            crate::editor_row_render_cache::editor_row_render_cache_stats(
+                                self.settings.experimental_gpu_acceleration,
+                                Some(&self.editor_row_render_cache),
+                            ),
+                        );
                         ui.separator();
                         render_repaint_diagnostics_panel(ui, &self.repaint_diagnostics);
                         ui.separator();
@@ -136,6 +145,42 @@ impl KuroyaApp {
             });
         self.devtools_open = open;
     }
+}
+
+fn render_row_render_cache_panel(
+    ui: &mut egui::Ui,
+    stats: crate::editor_row_render_cache::EditorRowRenderCacheStats,
+) {
+    ui.label(RichText::new("Editor Row Render Cache").strong());
+    if !stats.enabled {
+        ui.label(
+            RichText::new("Disabled — enable experimental GPU acceleration to turn it on.").small(),
+        );
+        return;
+    }
+    let total = stats.hits.saturating_add(stats.misses);
+    let hit_rate = if total == 0 {
+        0.0
+    } else {
+        stats.hits as f32 / total as f32 * 100.0
+    };
+    egui::Grid::new("devtools_row_render_cache")
+        .num_columns(2)
+        .spacing([16.0, 2.0])
+        .show(ui, |ui| {
+            ui.label("Hits");
+            ui.label(RichText::new(stats.hits.to_string()).monospace());
+            ui.end_row();
+            ui.label("Misses");
+            ui.label(RichText::new(stats.misses.to_string()).monospace());
+            ui.end_row();
+            ui.label("Hit rate");
+            ui.label(RichText::new(format!("{hit_rate:.1}%")).monospace());
+            ui.end_row();
+            ui.label("Cached rows");
+            ui.label(RichText::new(format!("{} / {}", stats.entries, stats.capacity)).monospace());
+            ui.end_row();
+        });
 }
 
 pub(crate) fn record_frame_timing_sample(

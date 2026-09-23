@@ -1,7 +1,10 @@
+use crate::lsp_client::handle::{LspServerCapabilities, LspServerCapabilitiesState};
+use crate::lsp_client::stderr_log::LspStderrLog;
+use crate::lsp_client::watched_files::LspWatchedFilesState;
 use crate::ui_event_channel::Sender;
 use crate::{
     lsp_client::{
-        pending::PendingLspRequest,
+        pending::PendingLspRequests,
         runtime::messages::handle_lsp_server_message,
         wire::{LspMessageReadBuffer, read_message, write_message},
     },
@@ -12,9 +15,11 @@ use crate::{
     path_display::display_error_label_cow,
     ui_events::UiEvent,
 };
-use kuroya_core::{LspServerConfig, LspWireMessage};
+use kuroya_core::{
+    LspServerConfig, LspWireMessage, TextDocumentSyncKindSetting, parse_text_document_sync_kind,
+};
 use serde_json::Value;
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 use tokio::{
     io::BufReader,
     process::{ChildStdin, ChildStdout},
@@ -28,15 +33,21 @@ const LSP_INITIALIZE_REQUEST_ID: u64 = 1;
 pub(super) const LSP_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct LspServerHandshake {
+    sync_kind: TextDocumentSyncKindSetting,
+    capabilities: LspServerCapabilities,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum InitializeResponseState {
     Waiting,
-    Ready,
+    Ready(LspServerHandshake),
     Failed(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LspStartupHandshakeResult {
-    Ready,
+    Ready(TextDocumentSyncKindSetting),
     Failed,
     ShutdownRequested,
 }
@@ -55,6 +66,9 @@ pub(super) async fn complete_lsp_startup_handshake(
     generation: u64,
     shutdown_rx: &mut watch::Receiver<bool>,
     ui_tx: &Sender<UiEvent>,
+    stderr_log: &LspStderrLog,
+    watched_files: &LspWatchedFilesState,
+    capabilities: &LspServerCapabilitiesState,
 ) -> LspStartupHandshakeResult {
     if shutdown_signal_requested(shutdown_rx) {
         return LspStartupHandshakeResult::ShutdownRequested;
@@ -76,7 +90,7 @@ pub(super) async fn complete_lsp_startup_handshake(
         return LspStartupHandshakeResult::Failed;
     }
 
-    match wait_for_initialize_response(
+    let handshake = match wait_for_initialize_response(
         writer,
         reader,
         &config.language,
@@ -84,10 +98,12 @@ pub(super) async fn complete_lsp_startup_handshake(
         generation,
         shutdown_rx,
         ui_tx,
+        stderr_log,
+        watched_files,
     )
     .await
     {
-        Ok(()) => {}
+        Ok(handshake) => handshake,
         Err(StartupHandshakeError::ShutdownRequested) => {
             return LspStartupHandshakeResult::ShutdownRequested;
         }
@@ -101,7 +117,9 @@ pub(super) async fn complete_lsp_startup_handshake(
             );
             return LspStartupHandshakeResult::Failed;
         }
-    }
+    };
+
+    capabilities.set(handshake.capabilities);
 
     if shutdown_signal_requested(shutdown_rx) {
         return LspStartupHandshakeResult::ShutdownRequested;
@@ -133,7 +151,7 @@ pub(super) async fn complete_lsp_startup_handshake(
         ui_tx,
     );
     send_lsp_server_ready(&config.language, root, generation, ui_tx);
-    LspStartupHandshakeResult::Ready
+    LspStartupHandshakeResult::Ready(handshake.sync_kind)
 }
 
 async fn wait_for_initialize_response(
@@ -144,12 +162,14 @@ async fn wait_for_initialize_response(
     generation: u64,
     shutdown_rx: &mut watch::Receiver<bool>,
     ui_tx: &Sender<UiEvent>,
-) -> Result<(), StartupHandshakeError> {
+    stderr_log: &LspStderrLog,
+    watched_files: &LspWatchedFilesState,
+) -> Result<LspServerHandshake, StartupHandshakeError> {
     if shutdown_signal_requested(shutdown_rx) {
         return Err(StartupHandshakeError::ShutdownRequested);
     }
 
-    let mut startup_pending_requests = HashMap::<u64, PendingLspRequest>::new();
+    let mut startup_pending_requests = PendingLspRequests::default();
     let mut read_buffer = LspMessageReadBuffer::default();
     let deadline = Instant::now() + LSP_INITIALIZE_TIMEOUT;
     loop {
@@ -186,7 +206,7 @@ async fn wait_for_initialize_response(
         };
 
         match initialize_response_state(&value, LSP_INITIALIZE_REQUEST_ID) {
-            InitializeResponseState::Ready => return Ok(()),
+            InitializeResponseState::Ready(handshake) => return Ok(handshake),
             InitializeResponseState::Failed(error) => {
                 return Err(StartupHandshakeError::Failed(error));
             }
@@ -199,6 +219,8 @@ async fn wait_for_initialize_response(
                     &mut startup_pending_requests,
                     ui_tx,
                     writer,
+                    stderr_log,
+                    watched_files,
                 )
                 .await;
             }
@@ -215,11 +237,52 @@ fn initialize_response_state(value: &Value, request_id: u64) -> InitializeRespon
         return InitializeResponseState::Failed(initialize_error_summary(error));
     }
 
-    if value.get("result").is_some() {
-        InitializeResponseState::Ready
+    if let Some(result) = value.get("result") {
+        InitializeResponseState::Ready(LspServerHandshake {
+            sync_kind: initialize_result_sync_kind(result),
+            capabilities: initialize_result_capabilities(result),
+        })
     } else {
         InitializeResponseState::Failed("initialize response missing result".to_owned())
     }
+}
+
+fn initialize_result_sync_kind(result: &Value) -> TextDocumentSyncKindSetting {
+    result
+        .get("capabilities")
+        .and_then(|capabilities| capabilities.get("textDocumentSync"))
+        .map(parse_text_document_sync_kind)
+        .unwrap_or_default()
+}
+
+fn initialize_result_capabilities(result: &Value) -> LspServerCapabilities {
+    let capabilities = result.get("capabilities");
+    let (rename_provider, prepare_rename_supported) =
+        match capabilities.and_then(|capabilities| capabilities.get("renameProvider")) {
+            Some(Value::Bool(true)) => (true, false),
+            Some(rename_provider @ Value::Object(_)) => (
+                true,
+                rename_provider
+                    .get("prepareProvider")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            ),
+            _ => (false, false),
+        };
+    LspServerCapabilities {
+        rename_provider,
+        prepare_rename_supported,
+        semantic_tokens_provider: provider_advertised(capabilities, "semanticTokensProvider"),
+        inlay_hint_provider: provider_advertised(capabilities, "inlayHintProvider"),
+        code_lens_provider: provider_advertised(capabilities, "codeLensProvider"),
+    }
+}
+
+fn provider_advertised(capabilities: Option<&Value>, key: &str) -> bool {
+    matches!(
+        capabilities.and_then(|capabilities| capabilities.get(key)),
+        Some(Value::Bool(true)) | Some(Value::Object(_))
+    )
 }
 
 fn initialize_error_summary(error: &Value) -> String {
@@ -284,21 +347,31 @@ fn send_lsp_server_ready(language: &str, root: &Path, generation: u64, ui_tx: &S
 mod tests {
     use super::{
         InitializeResponseState, StartupHandshakeError, initialize_response_state,
+        initialize_result_capabilities, initialize_result_sync_kind,
         lsp_initialize_failed_status_message, lsp_initialized_notification_failed_status_message,
         lsp_startup_ready_status_message, send_lsp_server_ready, send_lsp_startup_status,
         wait_for_initialize_response,
     };
     use crate::{
+        lsp_client::handle::LspServerCapabilities, lsp_client::stderr_log::LspStderrLog,
         lsp_runtime::LSP_STATUS_MESSAGE_MAX_CHARS, lsp_ui_events::LspUiEvent,
         ui_event_channel::ui_event_channel, ui_events::UiEvent,
     };
-    use serde_json::json;
+    use kuroya_core::TextDocumentSyncKindSetting;
+    use serde_json::{Value, json};
     use std::{path::PathBuf, process::Stdio};
     use tokio::{
         io::BufReader,
         process::{Child, ChildStdin, ChildStdout, Command},
         sync::watch,
     };
+
+    fn ready_handshake(sync_kind: TextDocumentSyncKindSetting) -> InitializeResponseState {
+        InitializeResponseState::Ready(super::LspServerHandshake {
+            sync_kind,
+            capabilities: LspServerCapabilities::default(),
+        })
+    }
 
     #[test]
     fn initialize_response_state_waits_for_matching_id() {
@@ -316,7 +389,38 @@ mod tests {
     fn initialize_response_state_accepts_result_for_matching_id() {
         assert_eq!(
             initialize_response_state(&json!({"jsonrpc": "2.0", "id": 1, "result": {}}), 1),
-            InitializeResponseState::Ready
+            ready_handshake(TextDocumentSyncKindSetting::Full)
+        );
+    }
+
+    #[test]
+    fn initialize_result_sync_kind_reads_numbers_and_options_objects() {
+        let sync = |text_document_sync: Value| {
+            initialize_result_sync_kind(&json!({
+                "capabilities": { "textDocumentSync": text_document_sync }
+            }))
+        };
+
+        assert_eq!(sync(json!(2)), TextDocumentSyncKindSetting::Incremental);
+        assert_eq!(sync(json!(0)), TextDocumentSyncKindSetting::None);
+        assert_eq!(
+            sync(json!({"openClose": true, "change": 2})),
+            TextDocumentSyncKindSetting::Incremental
+        );
+
+        assert_eq!(sync(json!(1)), TextDocumentSyncKindSetting::Full);
+        assert_eq!(sync(json!(9)), TextDocumentSyncKindSetting::Full);
+        assert_eq!(
+            sync(json!({"openClose": true})),
+            TextDocumentSyncKindSetting::Full
+        );
+        assert_eq!(
+            initialize_result_sync_kind(&json!({"capabilities": {}})),
+            TextDocumentSyncKindSetting::Full
+        );
+        assert_eq!(
+            initialize_result_sync_kind(&json!({})),
+            TextDocumentSyncKindSetting::Full
         );
     }
 
@@ -360,6 +464,70 @@ mod tests {
         assert_eq!(
             initialize_response_state(&json!({"jsonrpc": "2.0", "id": 1}), 1),
             InitializeResponseState::Failed("initialize response missing result".to_owned())
+        );
+    }
+
+    #[test]
+    fn initialize_result_capabilities_reads_every_provider_shape() {
+        let capabilities = |capabilities_json: Value| {
+            initialize_result_capabilities(&json!({ "capabilities": capabilities_json }))
+        };
+
+        assert_eq!(
+            capabilities(json!({
+                "semanticTokensProvider": true,
+                "inlayHintProvider": true,
+                "codeLensProvider": true,
+                "renameProvider": true
+            })),
+            LspServerCapabilities {
+                rename_provider: true,
+                prepare_rename_supported: false,
+                semantic_tokens_provider: true,
+                inlay_hint_provider: true,
+                code_lens_provider: true,
+            }
+        );
+
+        assert_eq!(
+            capabilities(json!({
+                "semanticTokensProvider": { "workDoneProgress": true },
+                "inlayHintProvider": {},
+                "codeLensProvider": { "resolveProvider": true },
+                "renameProvider": { "prepareProvider": true }
+            })),
+            LspServerCapabilities {
+                rename_provider: true,
+                prepare_rename_supported: true,
+                semantic_tokens_provider: true,
+                inlay_hint_provider: true,
+                code_lens_provider: true,
+            }
+        );
+
+        assert_eq!(
+            capabilities(json!({
+                "semanticTokensProvider": false,
+                "inlayHintProvider": null,
+                "renameProvider": false
+            })),
+            LspServerCapabilities::default()
+        );
+        assert_eq!(
+            capabilities(json!({})),
+            LspServerCapabilities::default(),
+            "a server advertising nothing gets no provider capabilities"
+        );
+
+        assert_eq!(
+            capabilities(json!({ "renameProvider": { "prepareProvider": false } })),
+            LspServerCapabilities {
+                rename_provider: true,
+                prepare_rename_supported: false,
+                semantic_tokens_provider: false,
+                inlay_hint_provider: false,
+                code_lens_provider: false,
+            }
         );
     }
 
@@ -485,6 +653,8 @@ mod tests {
             7,
             &mut shutdown_rx,
             &ui_tx,
+            &LspStderrLog::default(),
+            &crate::lsp_client::watched_files::LspWatchedFilesState::default(),
         )
         .await;
 
@@ -508,6 +678,8 @@ mod tests {
             8,
             &mut shutdown_rx,
             &ui_tx,
+            &LspStderrLog::default(),
+            &crate::lsp_client::watched_files::LspWatchedFilesState::default(),
         )
         .await;
 

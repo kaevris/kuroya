@@ -1,6 +1,6 @@
 [package]
 name = "kuroya-app"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -19,6 +19,7 @@ eframe = { version = "=0.33.3", default-features = false, features = ["default_f
 egui = "=0.33.3"
 kuroya-core = { path = "../kuroya-core" }
 fuzzy-matcher = "0.3"
+globset = "0.4"
 image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "tiff", "webp"] }
 notify = "8.2"
 portable-pty = "0.9"
@@ -26,6 +27,7 @@ rfd = { version = "0.17.2", features = ["common-controls-v6"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde.workspace = true
 serde_json = "1.0"
+sha2 = "0.10"
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 tokio = { version = "1.48", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }
 tree-sitter = "0.25"
@@ -36,6 +38,13 @@ wgpu = { version = "27.0.1", default-features = false, features = ["std", "wgsl"
 
 [build-dependencies]
 winresource = "0.1.31"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [package.metadata.cargo-machete]
 ignored = ["winresource"]

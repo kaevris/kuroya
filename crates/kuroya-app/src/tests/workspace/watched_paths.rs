@@ -30,6 +30,7 @@ fn watched_paths_ignore_internal_state_but_keep_settings_and_project_changes() {
             settings_changed: false,
             tasks_changed: true,
             plugins_changed: true,
+            git_metadata_changed: false,
             workspace_refresh_needed: true,
             project_paths: vec![src]
         }
@@ -57,6 +58,7 @@ fn watched_paths_normalize_duplicates_and_ignore_workspace_escapes() {
             settings_changed: false,
             tasks_changed: true,
             plugins_changed: false,
+            git_metadata_changed: false,
             workspace_refresh_needed: true,
             project_paths: vec![src, cargo],
         }
@@ -90,6 +92,7 @@ fn watched_paths_ignore_stacked_parent_reentry_and_current_dir_escapes() {
             settings_changed: false,
             tasks_changed: false,
             plugins_changed: false,
+            git_metadata_changed: false,
             workspace_refresh_needed: true,
             project_paths: vec![PathBuf::from("src/main.rs")],
         }
@@ -111,6 +114,7 @@ fn watched_paths_match_workspace_paths_case_insensitively() {
             settings_changed: false,
             tasks_changed: true,
             plugins_changed: true,
+            git_metadata_changed: false,
             workspace_refresh_needed: false,
             project_paths: Vec::new(),
         }
@@ -146,6 +150,7 @@ fn watched_paths_reload_global_settings_path() {
             settings_changed: true,
             tasks_changed: false,
             plugins_changed: false,
+            git_metadata_changed: false,
             workspace_refresh_needed: false,
             project_paths: Vec::new(),
         }
@@ -164,6 +169,7 @@ fn watched_paths_keep_project_tasks_and_plugins_under_workspace_kuroya() {
             settings_changed: false,
             tasks_changed: true,
             plugins_changed: true,
+            git_metadata_changed: false,
             workspace_refresh_needed: false,
             project_paths: Vec::new(),
         }
@@ -204,6 +210,7 @@ fn watched_paths_reload_tasks_for_inferred_task_sources() {
             settings_changed: false,
             tasks_changed: true,
             plugins_changed: false,
+            git_metadata_changed: false,
             workspace_refresh_needed: true,
             project_paths: vec![
                 cargo,
@@ -256,5 +263,24 @@ fn watched_paths_ignore_generated_changes() {
     assert_eq!(
         classify_watched_paths(&root, &[generated.clone(), dependency.clone()]),
         WatchedPathChanges::default()
+    );
+}
+
+#[test]
+fn watched_paths_classify_git_metadata_without_refreshing_workspace() {
+    let root = PathBuf::from("workspace");
+    let git_index = root.join(".git/index");
+    let nested_ref = root.join(".git/refs/heads/main");
+
+    assert_eq!(
+        classify_watched_paths(&root, &[git_index, nested_ref]),
+        WatchedPathChanges {
+            settings_changed: false,
+            tasks_changed: false,
+            plugins_changed: false,
+            git_metadata_changed: true,
+            workspace_refresh_needed: false,
+            project_paths: Vec::new(),
+        }
     );
 }

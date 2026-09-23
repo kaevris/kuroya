@@ -73,6 +73,7 @@ pub(super) fn handle_vim_direct_normal_key_event(
         mode,
         pending,
         last_change,
+        count_value,
         suppress_text,
     ) {
         return result;

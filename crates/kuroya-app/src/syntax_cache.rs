@@ -1,4 +1,4 @@
-use egui::text::LayoutJob;
+use egui::{Color32, text::LayoutJob};
 use kuroya_core::{LanguageId, TextBuffer};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -13,7 +13,7 @@ pub(crate) const CHECKPOINT_INTERVAL: usize = 96;
 pub(crate) const MAX_HIGHLIGHT_CACHES: usize = 8;
 pub(crate) const MAX_VISIBLE_LAYOUT_RANGES_PER_CACHE: usize = 8;
 pub(crate) const MAX_VISIBLE_LAYOUT_ROWS_PER_RANGE: usize = CHECKPOINT_INTERVAL * 2;
-// Keep the final usize tail reserved for overflow/sentinel row values from viewport math.
+
 const MAX_CACHEABLE_VISIBLE_LAYOUT_ROW: usize = usize::MAX - MAX_VISIBLE_LAYOUT_ROWS_PER_RANGE;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -28,17 +28,25 @@ pub(crate) struct HighlightCacheKey {
     font_bits: u32,
     tab_width: usize,
     line_char_limit: Option<usize>,
+
+    theme_text: Color32,
 }
 
 impl HighlightCacheKey {
     #[cfg(test)]
-    pub(crate) fn for_buffer(buffer: &TextBuffer, font_size: f32, tab_width: usize) -> Self {
+    pub(crate) fn for_buffer(
+        buffer: &TextBuffer,
+        font_size: f32,
+        tab_width: usize,
+        theme_text: Color32,
+    ) -> Self {
         Self::for_buffer_with_extension(
             buffer,
             font_size,
             tab_width,
             buffer.language().syntect_extension(),
             None,
+            theme_text,
         )
     }
 
@@ -48,6 +56,7 @@ impl HighlightCacheKey {
         tab_width: usize,
         syntax_extension: &str,
         line_char_limit: Option<usize>,
+        theme_text: Color32,
     ) -> Self {
         Self {
             buffer_id: buffer.id(),
@@ -60,6 +69,7 @@ impl HighlightCacheKey {
             font_bits: font_size.to_bits(),
             tab_width: tab_width.max(1),
             line_char_limit,
+            theme_text,
         }
     }
 
@@ -268,8 +278,9 @@ impl HighlightCache {
 
 #[cfg(test)]
 mod tests {
-    use super::{HighlightCache, MAX_VISIBLE_LAYOUT_ROWS_PER_RANGE};
-    use egui::text::LayoutJob;
+    use super::{HighlightCache, HighlightCacheKey, MAX_VISIBLE_LAYOUT_ROWS_PER_RANGE};
+    use egui::{Color32, text::LayoutJob};
+    use kuroya_core::TextBuffer;
     use syntect::{
         highlighting::{Highlighter, ThemeSet},
         parsing::SyntaxSet,
@@ -357,5 +368,17 @@ mod tests {
         assert_eq!(subrange, jobs[3..7]);
         assert_eq!(cache.visible_layout_count(), 1);
         assert_eq!(cache.visible_layout_hits(), 1);
+    }
+
+    #[test]
+    fn highlight_cache_key_distinguishes_theme_text_color() {
+        let buffer = TextBuffer::from_text(1, None, "let value = 1;\n".to_owned());
+        let dark_theme = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, Color32::WHITE);
+        let light_theme =
+            HighlightCacheKey::for_buffer(&buffer, 13.0, 4, Color32::from_rgb(36, 41, 49));
+        let dark_theme_again = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, Color32::WHITE);
+
+        assert_ne!(dark_theme, light_theme);
+        assert_eq!(dark_theme, dark_theme_again);
     }
 }

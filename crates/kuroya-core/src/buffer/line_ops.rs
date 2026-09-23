@@ -11,6 +11,7 @@ impl TextBuffer {
         let edits = self
             .selected_line_indices()
             .into_iter()
+            .filter(|line| !self.line_is_blank(*line))
             .map(|line| {
                 let line_start = self.rope.line_to_char(line);
                 TextEdit {
@@ -447,5 +448,40 @@ impl TextBuffer {
             remove_len += 1;
         }
         remove_len
+    }
+}
+
+const GRAPHEME_SNAP_CONTEXT_CHARS: usize = 32;
+
+impl TextBuffer {
+    pub fn snap_back_to_grapheme_boundary(&self, idx: usize) -> usize {
+        let mut idx = idx.min(self.len_chars());
+        while idx > 0 && !self.is_grapheme_boundary_index(idx) {
+            idx -= 1;
+        }
+        idx
+    }
+
+    pub fn snap_forward_to_grapheme_boundary(&self, idx: usize) -> usize {
+        let len = self.len_chars();
+        let mut idx = idx.min(len);
+        while idx < len && !self.is_grapheme_boundary_index(idx) {
+            idx += 1;
+        }
+        idx
+    }
+
+    fn is_grapheme_boundary_index(&self, char_index: usize) -> bool {
+        let len = self.len_chars();
+        if char_index == 0 || char_index >= len {
+            return true;
+        }
+        let context_start = char_index.saturating_sub(GRAPHEME_SNAP_CONTEXT_CHARS);
+        let mut context = String::with_capacity((char_index - context_start + 1) * 4);
+        for index in context_start..=char_index {
+            context.push(self.rope.char(index));
+        }
+        let byte_index = context.len() - self.rope.char(char_index).len_utf8();
+        super::movement::is_grapheme_boundary(&context, byte_index)
     }
 }

@@ -4,6 +4,7 @@ use crate::preference_panels::sections::{
     bounded_settings_text_edit_width, bounded_singleline_text_edit,
     bounded_singleline_text_edit_with_hint, guarded_f32_drag_value, settings_target_heading,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::{
     DEFAULT_DIFF_SPLIT_VIEW_DEFAULT_RATIO, DEFAULT_EDITOR_MINIMAP_SECTION_HEADER_FONT_SIZE,
@@ -77,7 +78,7 @@ pub(super) fn render_code_view_settings_with_highlight(
         .spacing([18.0, 10.0])
         .show(ui, |ui| {
             ui.label("Folding");
-            ui.checkbox(&mut draft.folding, "Show folding controls");
+            ui_switch(ui, &mut draft.folding).on_hover_text("Show folding controls");
             ui.end_row();
 
             ui.label("Folding controls");
@@ -89,14 +90,12 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Folding highlight");
-            ui.checkbox(&mut draft.folding_highlight, "Highlight folded regions");
+            ui_switch(ui, &mut draft.folding_highlight).on_hover_text("Highlight folded regions");
             ui.end_row();
 
             ui.label("Fold imports");
-            ui.checkbox(
-                &mut draft.folding_imports_by_default,
-                "Fold import regions when folding data loads",
-            );
+            ui_switch(ui, &mut draft.folding_imports_by_default)
+                .on_hover_text("Fold import regions when folding data loads");
             ui.end_row();
 
             ui.label("Folding strategy");
@@ -117,14 +116,12 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Unfold after line end");
-            ui.checkbox(
-                &mut draft.unfold_on_click_after_end_of_line,
-                "Unfold by clicking after a folded line",
-            );
+            ui_switch(ui, &mut draft.unfold_on_click_after_end_of_line)
+                .on_hover_text("Unfold by clicking after a folded line");
             ui.end_row();
 
             ui.label("Sticky scroll");
-            ui.checkbox(&mut draft.sticky_scroll, "Pin containing scope");
+            ui_switch(ui, &mut draft.sticky_scroll).on_hover_text("Pin containing scope");
             ui.end_row();
 
             ui.label("Sticky scroll lines");
@@ -147,18 +144,16 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Sticky scroll with editor");
-            ui.checkbox(
-                &mut draft.sticky_scroll_scroll_with_editor,
-                "Scroll sticky headers horizontally",
-            );
+            ui_switch(ui, &mut draft.sticky_scroll_scroll_with_editor)
+                .on_hover_text("Scroll sticky headers horizontally");
             ui.end_row();
 
             ui.label("Glyph margin");
-            ui.checkbox(&mut draft.glyph_margin, "Show gutter markers");
+            ui_switch(ui, &mut draft.glyph_margin).on_hover_text("Show gutter markers");
             ui.end_row();
 
             ui.label("Indent guides");
-            ui.checkbox(&mut draft.indent_guides, "Show indentation guides");
+            ui_switch(ui, &mut draft.indent_guides);
             ui.end_row();
 
             ui.label("Active indent guide");
@@ -181,11 +176,24 @@ pub(super) fn render_code_view_settings_with_highlight(
 
             ui.label("Bracket colorization");
             ui.vertical(|ui| {
-                ui.checkbox(&mut draft.bracket_pair_colorization, "Color bracket pairs");
-                ui.checkbox(
-                    &mut draft.bracket_pair_colorization_independent_color_pool_per_bracket_type,
-                    "Use independent color pools per bracket type",
-                );
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.bracket_pair_colorization);
+                    ui.label(egui::RichText::new("Color bracket pairs").small().weak());
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(
+                        ui,
+                        &mut draft
+                            .bracket_pair_colorization_independent_color_pool_per_bracket_type,
+                    );
+                    ui.label(
+                        egui::RichText::new("Use independent color pools per bracket type")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
             });
             ui.end_row();
 
@@ -206,10 +214,7 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Active bracket guide");
-            ui.checkbox(
-                &mut draft.highlight_active_bracket_pair,
-                "Highlight the active bracket pair guide",
-            );
+            ui_switch(ui, &mut draft.highlight_active_bracket_pair);
             ui.end_row();
 
             ui.label("Match brackets");
@@ -233,45 +238,33 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Find on type");
-            ui.checkbox(
-                &mut draft.find_on_type,
-                "Search while typing in the Find box",
-            );
+            ui_switch(ui, &mut draft.find_on_type)
+                .on_hover_text("Search while typing in the Find box");
             ui.end_row();
 
             ui.label("Cursor move on type");
-            ui.checkbox(
-                &mut draft.find_cursor_move_on_type,
-                "Move the editor cursor while typing in the Find box",
-            );
+            ui_switch(ui, &mut draft.find_cursor_move_on_type)
+                .on_hover_text("Move the editor cursor while typing in the Find box");
             ui.end_row();
 
             ui.label("Close on result");
-            ui.checkbox(
-                &mut draft.find_close_on_result,
-                "Close the Find panel after a result is selected",
-            );
+            ui_switch(ui, &mut draft.find_close_on_result)
+                .on_hover_text("Close the Find panel after a result is selected");
             ui.end_row();
 
             ui.label("Find loop");
-            ui.checkbox(
-                &mut draft.find_loop,
-                "Wrap find navigation at the first and last match",
-            );
+            ui_switch(ui, &mut draft.find_loop)
+                .on_hover_text("Wrap find navigation at the first and last match");
             ui.end_row();
 
             ui.label("Global find clipboard");
-            ui.checkbox(
-                &mut draft.find_global_find_clipboard,
-                "Use the shared macOS Find clipboard",
-            );
+            ui_switch(ui, &mut draft.find_global_find_clipboard)
+                .on_hover_text("Use the shared macOS Find clipboard");
             ui.end_row();
 
             ui.label("Find top space");
-            ui.checkbox(
-                &mut draft.find_add_extra_space_on_top,
-                "Add scroll space above the first line while finding",
-            );
+            ui_switch(ui, &mut draft.find_add_extra_space_on_top)
+                .on_hover_text("Add scroll space above the first line while finding");
             ui.end_row();
 
             ui.label("Find history");
@@ -328,7 +321,7 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Minimap characters");
-            ui.checkbox(&mut draft.minimap_render_characters, "Render characters");
+            ui_switch(ui, &mut draft.minimap_render_characters).on_hover_text("Render characters");
             ui.end_row();
 
             ui.label("Minimap max column");
@@ -340,17 +333,13 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Region section headers");
-            ui.checkbox(
-                &mut draft.minimap_show_region_section_headers,
-                "Show named regions in minimap",
-            );
+            ui_switch(ui, &mut draft.minimap_show_region_section_headers)
+                .on_hover_text("Show named regions in minimap");
             ui.end_row();
 
             ui.label("MARK section headers");
-            ui.checkbox(
-                &mut draft.minimap_show_mark_section_headers,
-                "Show MARK comments in minimap",
-            );
+            ui_switch(ui, &mut draft.minimap_show_mark_section_headers)
+                .on_hover_text("Show MARK comments in minimap");
             ui.end_row();
 
             ui.label("MARK regex");
@@ -380,17 +369,12 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Overview ruler border");
-            ui.checkbox(
-                &mut draft.overview_ruler_border,
-                "Draw a border around the overview strip",
-            );
+            ui_switch(ui, &mut draft.overview_ruler_border);
             ui.end_row();
 
             ui.label("Overview cursor marker");
-            ui.checkbox(
-                &mut draft.hide_cursor_in_overview_ruler,
-                "Hide the cursor marker in the overview strip",
-            );
+            ui_switch(ui, &mut draft.hide_cursor_in_overview_ruler)
+                .on_hover_text("Hide the cursor marker in the overview strip");
             ui.end_row();
         });
 
@@ -401,10 +385,8 @@ pub(super) fn render_code_view_settings_with_highlight(
         .spacing([18.0, 10.0])
         .show(ui, |ui| {
             ui.label("Ignore trim whitespace");
-            ui.checkbox(
-                &mut draft.diff_ignore_trim_whitespace,
-                "Hide leading and trailing whitespace-only changes",
-            );
+            ui_switch(ui, &mut draft.diff_ignore_trim_whitespace)
+                .on_hover_text("Hide leading and trailing whitespace-only changes");
             ui.end_row();
 
             ui.label("Algorithm");
@@ -412,17 +394,13 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Side by side");
-            ui.checkbox(
-                &mut draft.diff_render_side_by_side,
-                "Open supported diffs side by side",
-            );
+            ui_switch(ui, &mut draft.diff_render_side_by_side)
+                .on_hover_text("Open supported diffs side by side");
             ui.end_row();
 
             ui.label("Resizable split");
-            ui.checkbox(
-                &mut draft.diff_enable_split_view_resizing,
-                "Allow resizing side-by-side diff panes",
-            );
+            ui_switch(ui, &mut draft.diff_enable_split_view_resizing)
+                .on_hover_text("Allow resizing side-by-side diff panes");
             ui.end_row();
 
             ui.label("Split ratio");
@@ -437,10 +415,8 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Inline when narrow");
-            ui.checkbox(
-                &mut draft.diff_use_inline_view_when_space_is_limited,
-                "Use inline view below the breakpoint",
-            );
+            ui_switch(ui, &mut draft.diff_use_inline_view_when_space_is_limited)
+                .on_hover_text("Use inline view below the breakpoint");
             ui.end_row();
 
             ui.label("Inline breakpoint");
@@ -456,38 +432,28 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Compact mode");
-            ui.checkbox(
-                &mut draft.diff_compact_mode,
-                "Optimize diff controls for small panes",
-            );
+            ui_switch(ui, &mut draft.diff_compact_mode)
+                .on_hover_text("Optimize diff controls for small panes");
             ui.end_row();
 
             ui.label("Editable original");
-            ui.checkbox(
-                &mut draft.diff_original_editable,
-                "Allow editing the original side of supported diffs",
-            );
+            ui_switch(ui, &mut draft.diff_original_editable)
+                .on_hover_text("Allow editing the original side of supported diffs");
             ui.end_row();
 
             ui.label("Code lens");
-            ui.checkbox(
-                &mut draft.diff_code_lens,
-                "Show hunk actions on diff headers",
-            );
+            ui_switch(ui, &mut draft.diff_code_lens)
+                .on_hover_text("Show hunk actions on diff headers");
             ui.end_row();
 
             ui.label("Verbose accessibility");
-            ui.checkbox(
-                &mut draft.diff_accessibility_verbose,
-                "Use verbose accessibility labels in diffs",
-            );
+            ui_switch(ui, &mut draft.diff_accessibility_verbose)
+                .on_hover_text("Use verbose accessibility labels in diffs");
             ui.end_row();
 
             ui.label("Hide unchanged regions");
-            ui.checkbox(
-                &mut draft.diff_hide_unchanged_regions,
-                "Collapse unchanged lines outside diff hunks",
-            );
+            ui_switch(ui, &mut draft.diff_hide_unchanged_regions)
+                .on_hover_text("Collapse unchanged lines outside diff hunks");
             ui.end_row();
 
             ui.label("Word wrap");
@@ -495,10 +461,8 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Accessible viewer");
-            ui.checkbox(
-                &mut draft.diff_only_show_accessible_viewer,
-                "Open diffs in the accessible diff viewer",
-            );
+            ui_switch(ui, &mut draft.diff_only_show_accessible_viewer)
+                .on_hover_text("Open diffs in the accessible diff viewer");
             ui.end_row();
 
             ui.label("Context lines");
@@ -563,59 +527,43 @@ pub(super) fn render_code_view_settings_with_highlight(
             ui.end_row();
 
             ui.label("Gutter actions");
-            ui.checkbox(
-                &mut draft.diff_render_gutter_menu,
-                "Show stage and revert controls in diff gutters",
-            );
+            ui_switch(ui, &mut draft.diff_render_gutter_menu)
+                .on_hover_text("Show stage and revert controls in diff gutters");
             ui.end_row();
 
             ui.label("Revert icon");
-            ui.checkbox(
-                &mut draft.diff_render_margin_revert_icon,
-                "Show the discard/revert control in diff gutters",
-            );
+            ui_switch(ui, &mut draft.diff_render_margin_revert_icon)
+                .on_hover_text("Show the discard/revert control in diff gutters");
             ui.end_row();
 
             ui.label("Indicators");
-            ui.checkbox(
-                &mut draft.diff_render_indicators,
-                "Show +/- markers for added and removed lines",
-            );
+            ui_switch(ui, &mut draft.diff_render_indicators)
+                .on_hover_text("Show +/- markers for added and removed lines");
             ui.end_row();
 
             ui.label("Moved code");
-            ui.checkbox(
-                &mut draft.diff_experimental_show_moves,
-                "Mark moved lines in patch diffs",
-            );
+            ui_switch(ui, &mut draft.diff_experimental_show_moves)
+                .on_hover_text("Mark moved lines in patch diffs");
             ui.end_row();
 
             ui.label("Empty decorations");
-            ui.checkbox(
-                &mut draft.diff_experimental_show_empty_decorations,
-                "Mark empty added and removed diff lines",
-            );
+            ui_switch(ui, &mut draft.diff_experimental_show_empty_decorations)
+                .on_hover_text("Mark empty added and removed diff lines");
             ui.end_row();
 
             ui.label("True inline view");
-            ui.checkbox(
-                &mut draft.diff_experimental_use_true_inline_view,
-                "Use the experimental inline diff layout",
-            );
+            ui_switch(ui, &mut draft.diff_experimental_use_true_inline_view)
+                .on_hover_text("Use the experimental inline diff layout");
             ui.end_row();
 
             ui.label("Overview ruler");
-            ui.checkbox(
-                &mut draft.diff_render_overview_ruler,
-                "Show diff markers on the editor overview strip",
-            );
+            ui_switch(ui, &mut draft.diff_render_overview_ruler)
+                .on_hover_text("Show diff markers on the editor overview strip");
             ui.end_row();
 
             ui.label("Embedded editor");
-            ui.checkbox(
-                &mut draft.diff_is_in_embedded_editor,
-                "Use embedded-editor diff behavior",
-            );
+            ui_switch(ui, &mut draft.diff_is_in_embedded_editor)
+                .on_hover_text("Use embedded-editor diff behavior");
             ui.end_row();
         });
 }
@@ -636,7 +584,7 @@ pub(super) fn render_source_control_settings_with_highlight(
         .spacing([18.0, 10.0])
         .show(ui, |ui| {
             ui.label("Git enabled");
-            ui.checkbox(&mut draft.git_enabled, "Enable Git source control features");
+            ui_switch(ui, &mut draft.git_enabled);
             ui.end_row();
 
             ui.label("Git path");
@@ -653,10 +601,8 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Git autorefresh");
-            ui.checkbox(
-                &mut draft.git_autorefresh,
-                "Automatically refresh Git changes after workspace file changes",
-            );
+            ui_switch(ui, &mut draft.git_autorefresh)
+                .on_hover_text("Automatically refresh Git changes after workspace file changes");
             ui.end_row();
 
             ui.label("Auto fetch");
@@ -681,17 +627,13 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Ignore limit warning");
-            ui.checkbox(
-                &mut draft.git_ignore_limit_warning,
-                "Hide warning when Git changes hit the status limit",
-            );
+            ui_switch(ui, &mut draft.git_ignore_limit_warning)
+                .on_hover_text("Hide warning when Git changes hit the status limit");
             ui.end_row();
 
             ui.label("Ignore submodules");
-            ui.checkbox(
-                &mut draft.git_ignore_submodules,
-                "Ignore modifications to Git submodules",
-            );
+            ui_switch(ui, &mut draft.git_ignore_submodules)
+                .on_hover_text("Ignore modifications to Git submodules");
             ui.end_row();
 
             ui.label("Ignored repositories");
@@ -720,10 +662,8 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Detect submodules");
-            ui.checkbox(
-                &mut draft.git_detect_submodules,
-                "Automatically detect Git submodule changes",
-            );
+            ui_switch(ui, &mut draft.git_detect_submodules)
+                .on_hover_text("Automatically detect Git submodule changes");
             ui.end_row();
 
             ui.label("Submodule detect limit");
@@ -736,10 +676,8 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Detect worktrees");
-            ui.checkbox(
-                &mut draft.git_detect_worktrees,
-                "Detect Git worktree repositories",
-            );
+            ui_switch(ui, &mut draft.git_detect_worktrees)
+                .on_hover_text("Detect Git worktree repositories");
             ui.end_row();
 
             ui.label("Worktree detect limit");
@@ -758,10 +696,6 @@ pub(super) fn render_source_control_settings_with_highlight(
                 "packages/app\napps/web",
                 3,
             );
-            ui.end_row();
-
-            ui.label("Scan repositories");
-            render_string_list_input(ui, &mut draft.git_scan_repositories, "../repo\nC:/repo", 3);
             ui.end_row();
 
             ui.label("Clone directory");
@@ -802,10 +736,8 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Auto reveal");
-            ui.checkbox(
-                &mut draft.scm_auto_reveal,
-                "Select the active changed file in Source Control",
-            );
+            ui_switch(ui, &mut draft.scm_auto_reveal)
+                .on_hover_text("Select the active changed file in Source Control");
             ui.end_row();
 
             ui.label("Count badge");
@@ -821,10 +753,8 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Repositories");
-            ui.checkbox(
-                &mut draft.scm_always_show_repositories,
-                "Always show the Source Control repositories section",
-            );
+            ui_switch(ui, &mut draft.scm_always_show_repositories)
+                .on_hover_text("Always show the Source Control repositories section");
             ui.end_row();
 
             ui.label("Visible repositories");
@@ -837,17 +767,13 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Compact folders");
-            ui.checkbox(
-                &mut draft.scm_compact_folders,
-                "Compact single-folder chains in the Source Control tree",
-            );
+            ui_switch(ui, &mut draft.scm_compact_folders)
+                .on_hover_text("Compact single-folder chains in the Source Control tree");
             ui.end_row();
 
             ui.label("Page on scroll");
-            ui.checkbox(
-                &mut draft.scm_graph_page_on_scroll,
-                "Load the next graph page when scrolling to the end",
-            );
+            ui_switch(ui, &mut draft.scm_graph_page_on_scroll)
+                .on_hover_text("Load the next graph page when scrolling to the end");
             ui.end_row();
 
             ui.label("Graph page size");
@@ -864,38 +790,28 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Incoming changes");
-            ui.checkbox(
-                &mut draft.scm_graph_show_incoming_changes,
-                "Show incoming changes in the Source Control graph",
-            );
+            ui_switch(ui, &mut draft.scm_graph_show_incoming_changes)
+                .on_hover_text("Show incoming changes in the Source Control graph");
             ui.end_row();
 
             ui.label("Outgoing changes");
-            ui.checkbox(
-                &mut draft.scm_graph_show_outgoing_changes,
-                "Show outgoing changes in the Source Control graph",
-            );
+            ui_switch(ui, &mut draft.scm_graph_show_outgoing_changes)
+                .on_hover_text("Show outgoing changes in the Source Control graph");
             ui.end_row();
 
             ui.label("Commit input");
-            ui.checkbox(
-                &mut draft.git_show_commit_input,
-                "Show commit message input and commit button",
-            );
+            ui_switch(ui, &mut draft.git_show_commit_input)
+                .on_hover_text("Show commit message input and commit button");
             ui.end_row();
 
             ui.label("Editor commit input");
-            ui.checkbox(
-                &mut draft.git_use_editor_as_commit_input,
-                "Use the editor-style multiline commit input",
-            );
+            ui_switch(ui, &mut draft.git_use_editor_as_commit_input)
+                .on_hover_text("Use the editor-style multiline commit input");
             ui.end_row();
 
             ui.label("Verbose commit");
-            ui.checkbox(
-                &mut draft.git_verbose_commit,
-                "Show verbose staged-change output with the editor commit input",
-            );
+            ui_switch(ui, &mut draft.git_verbose_commit)
+                .on_hover_text("Show verbose staged-change output with the editor commit input");
             ui.end_row();
 
             ui.label("Post commit");
@@ -907,35 +823,27 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Remember post commit");
-            ui.checkbox(
-                &mut draft.git_remember_post_commit_command,
-                "Remember the selected post-commit command",
-            );
+            ui_switch(ui, &mut draft.git_remember_post_commit_command)
+                .on_hover_text("Remember the selected post-commit command");
             ui.end_row();
 
             ui.label("Commit action button");
-            ui.checkbox(
-                &mut draft.git_show_action_button_commit,
-                "Show the Git Commit button in the Source Control input",
-            );
+            ui_switch(ui, &mut draft.git_show_action_button_commit)
+                .on_hover_text("Show the Git Commit button in the Source Control input");
             ui.end_row();
 
             ui.label("Always sign off");
-            ui.checkbox(
-                &mut draft.git_always_sign_off,
-                "Add a Signed-off-by trailer to Git commits",
-            );
+            ui_switch(ui, &mut draft.git_always_sign_off)
+                .on_hover_text("Add a Signed-off-by trailer to Git commits");
             ui.end_row();
 
             ui.label("Commit signing");
-            ui.checkbox(&mut draft.git_enable_commit_signing, "Sign Git commits");
+            ui_switch(ui, &mut draft.git_enable_commit_signing);
             ui.end_row();
 
             ui.label("Diagnostics hook");
-            ui.checkbox(
-                &mut draft.git_diagnostics_commit_hook_enabled,
-                "Run diagnostics before Git commit",
-            );
+            ui_switch(ui, &mut draft.git_diagnostics_commit_hook_enabled)
+                .on_hover_text("Run diagnostics before Git commit");
             ui.end_row();
 
             ui.label("Diagnostics sources");
@@ -948,218 +856,161 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Allow no verify");
-            ui.checkbox(
-                &mut draft.git_allow_no_verify_commit,
-                "Allow commits that skip Git hooks",
-            );
+            ui_switch(ui, &mut draft.git_allow_no_verify_commit)
+                .on_hover_text("Allow commits that skip Git hooks");
             ui.end_row();
 
             ui.label("Confirm no verify");
-            ui.checkbox(
-                &mut draft.git_confirm_no_verify_commit,
-                "Ask before committing with no-verify",
-            );
+            ui_switch(ui, &mut draft.git_confirm_no_verify_commit)
+                .on_hover_text("Ask before committing with no-verify");
             ui.end_row();
 
             ui.label("Confirm committed delete");
-            ui.checkbox(
-                &mut draft.git_confirm_committed_delete,
-                "Ask before deleting files that are committed in Git",
-            );
+            ui_switch(ui, &mut draft.git_confirm_committed_delete)
+                .on_hover_text("Ask before deleting files that are committed in Git");
             ui.end_row();
 
             ui.label("Confirm empty commits");
-            ui.checkbox(
-                &mut draft.git_confirm_empty_commits,
-                "Ask before creating a commit without staged changes",
-            );
+            ui_switch(ui, &mut draft.git_confirm_empty_commits)
+                .on_hover_text("Ask before creating a commit without staged changes");
             ui.end_row();
 
             ui.label("Confirm force push");
-            ui.checkbox(
-                &mut draft.git_confirm_force_push,
-                "Ask before force pushing",
-            );
+            ui_switch(ui, &mut draft.git_confirm_force_push)
+                .on_hover_text("Ask before force pushing");
             ui.end_row();
 
             ui.label("Allow force push");
-            ui.checkbox(
-                &mut draft.git_allow_force_push,
-                "Allow Git force push actions",
-            );
+            ui_switch(ui, &mut draft.git_allow_force_push)
+                .on_hover_text("Allow Git force push actions");
             ui.end_row();
 
             ui.label("Force push lease");
-            ui.checkbox(
-                &mut draft.git_use_force_push_with_lease,
-                "Use --force-with-lease for force push",
-            );
+            ui_switch(ui, &mut draft.git_use_force_push_with_lease)
+                .on_hover_text("Use --force-with-lease for force push");
             ui.end_row();
 
             ui.label("Force push includes");
-            ui.checkbox(
-                &mut draft.git_use_force_push_if_includes,
-                "Use --force-if-includes for force push",
-            );
+            ui_switch(ui, &mut draft.git_use_force_push_if_includes)
+                .on_hover_text("Use --force-if-includes for force push");
             ui.end_row();
 
             ui.label("Require user config");
-            ui.checkbox(
-                &mut draft.git_require_user_config,
-                "Require explicit Git user name and email before committing",
-            );
+            ui_switch(ui, &mut draft.git_require_user_config)
+                .on_hover_text("Require explicit Git user name and email before committing");
             ui.end_row();
 
             ui.label("Git progress");
-            ui.checkbox(
-                &mut draft.git_show_progress,
-                "Show progress messages for Git operations",
-            );
+            ui_switch(ui, &mut draft.git_show_progress)
+                .on_hover_text("Show progress messages for Git operations");
             ui.end_row();
 
             ui.label("Push success");
-            ui.checkbox(
-                &mut draft.git_show_push_success_notification,
-                "Show notification after a successful Git push",
-            );
+            ui_switch(ui, &mut draft.git_show_push_success_notification)
+                .on_hover_text("Show notification after a successful Git push");
             ui.end_row();
 
             ui.label("Status bar sync");
-            ui.checkbox(
-                &mut draft.git_enable_status_bar_sync,
-                "Show sync actions in the status bar",
-            );
+            ui_switch(ui, &mut draft.git_enable_status_bar_sync)
+                .on_hover_text("Show sync actions in the status bar");
             ui.end_row();
 
             ui.label("Confirm sync");
-            ui.checkbox(
-                &mut draft.git_confirm_sync,
-                "Ask before synchronizing changes",
-            );
+            ui_switch(ui, &mut draft.git_confirm_sync)
+                .on_hover_text("Ask before synchronizing changes");
             ui.end_row();
 
             ui.label("Fetch on pull");
-            ui.checkbox(&mut draft.git_fetch_on_pull, "Fetch before pulling");
+            ui_switch(ui, &mut draft.git_fetch_on_pull);
             ui.end_row();
 
             ui.label("Prune on fetch");
-            ui.checkbox(
-                &mut draft.git_prune_on_fetch,
-                "Prune deleted remotes while fetching",
-            );
+            ui_switch(ui, &mut draft.git_prune_on_fetch)
+                .on_hover_text("Prune deleted remotes while fetching");
             ui.end_row();
 
             ui.label("Pull tags");
-            ui.checkbox(&mut draft.git_pull_tags, "Fetch tags when pulling");
+            ui_switch(ui, &mut draft.git_pull_tags).on_hover_text("Fetch tags when pulling");
             ui.end_row();
 
             ui.label("Follow tags");
-            ui.checkbox(
-                &mut draft.git_follow_tags_when_sync,
-                "Follow tags when syncing",
-            );
+            ui_switch(ui, &mut draft.git_follow_tags_when_sync)
+                .on_hover_text("Follow tags when syncing");
             ui.end_row();
 
             ui.label("Rebase sync");
-            ui.checkbox(&mut draft.git_rebase_when_sync, "Use rebase while syncing");
+            ui_switch(ui, &mut draft.git_rebase_when_sync)
+                .on_hover_text("Use rebase while syncing");
             ui.end_row();
 
             ui.label("Replace pull tags");
-            ui.checkbox(
-                &mut draft.git_replace_tags_when_pull,
-                "Replace local tags when pulling",
-            );
+            ui_switch(ui, &mut draft.git_replace_tags_when_pull)
+                .on_hover_text("Replace local tags when pulling");
             ui.end_row();
 
             ui.label("Pull before checkout");
-            ui.checkbox(
-                &mut draft.git_pull_before_checkout,
-                "Pull current branch before checkout",
-            );
+            ui_switch(ui, &mut draft.git_pull_before_checkout)
+                .on_hover_text("Pull current branch before checkout");
             ui.end_row();
 
             ui.label("Auto stash");
-            ui.checkbox(
-                &mut draft.git_auto_stash,
-                "Stash changes before pull when needed",
-            );
+            ui_switch(ui, &mut draft.git_auto_stash)
+                .on_hover_text("Stash changes before pull when needed");
             ui.end_row();
 
             ui.label("Trash untracked");
-            ui.checkbox(
-                &mut draft.git_discard_untracked_changes_to_trash,
-                "Move discarded untracked files to the OS trash",
-            );
+            ui_switch(ui, &mut draft.git_discard_untracked_changes_to_trash)
+                .on_hover_text("Move discarded untracked files to the OS trash");
             ui.end_row();
 
             ui.label("Merge editor");
-            ui.checkbox(
-                &mut draft.git_merge_editor,
-                "Use the merge editor for Git conflicts",
-            );
+            ui_switch(ui, &mut draft.git_merge_editor)
+                .on_hover_text("Use the merge editor for Git conflicts");
             ui.end_row();
 
             ui.label("Optimistic update");
-            ui.checkbox(
-                &mut draft.git_optimistic_update,
-                "Update Source Control optimistically after Git operations",
-            );
+            ui_switch(ui, &mut draft.git_optimistic_update)
+                .on_hover_text("Update Source Control optimistically after Git operations");
             ui.end_row();
 
             ui.label("Cancellation");
-            ui.checkbox(
-                &mut draft.git_support_cancellation,
-                "Allow supported Git operations to be cancelled",
-            );
+            ui_switch(ui, &mut draft.git_support_cancellation)
+                .on_hover_text("Allow supported Git operations to be cancelled");
             ui.end_row();
 
             ui.label("Terminal auth");
-            ui.checkbox(
-                &mut draft.git_terminal_authentication,
-                "Use terminal authentication for Git operations",
-            );
+            ui_switch(ui, &mut draft.git_terminal_authentication)
+                .on_hover_text("Use terminal authentication for Git operations");
             ui.end_row();
 
             ui.label("Terminal Git editor");
-            ui.checkbox(
-                &mut draft.git_terminal_git_editor,
-                "Use this app as the Git editor in integrated terminals",
-            );
+            ui_switch(ui, &mut draft.git_terminal_git_editor)
+                .on_hover_text("Use this app as the Git editor in integrated terminals");
             ui.end_row();
 
             ui.label("Integrated askpass");
-            ui.checkbox(
-                &mut draft.git_use_integrated_ask_pass,
-                "Use integrated askpass for Git authentication prompts",
-            );
+            ui_switch(ui, &mut draft.git_use_integrated_ask_pass)
+                .on_hover_text("Use integrated askpass for Git authentication prompts");
             ui.end_row();
 
             ui.label("Ignore legacy warning");
-            ui.checkbox(
-                &mut draft.git_ignore_legacy_warning,
-                "Hide Git legacy warnings",
-            );
+            ui_switch(ui, &mut draft.git_ignore_legacy_warning)
+                .on_hover_text("Hide Git legacy warnings");
             ui.end_row();
 
             ui.label("Ignore missing Git");
-            ui.checkbox(
-                &mut draft.git_ignore_missing_git_warning,
-                "Hide warnings when Git is missing",
-            );
+            ui_switch(ui, &mut draft.git_ignore_missing_git_warning)
+                .on_hover_text("Hide warnings when Git is missing");
             ui.end_row();
 
             ui.label("Ignore rebase warning");
-            ui.checkbox(
-                &mut draft.git_ignore_rebase_warning,
-                "Hide Git rebase warnings",
-            );
+            ui_switch(ui, &mut draft.git_ignore_rebase_warning)
+                .on_hover_text("Hide Git rebase warnings");
             ui.end_row();
 
             ui.label("Ignore Windows Git 2.7");
-            ui.checkbox(
-                &mut draft.git_ignore_windows_git27_warning,
-                "Hide Windows Git 2.7 warnings",
-            );
+            ui_switch(ui, &mut draft.git_ignore_windows_git27_warning)
+                .on_hover_text("Hide Windows Git 2.7 warnings");
             ui.end_row();
 
             ui.label("Commands to log");
@@ -1167,24 +1018,18 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Reference details");
-            ui.checkbox(
-                &mut draft.git_show_reference_details,
-                "Show branch/reference details in Source Control",
-            );
+            ui_switch(ui, &mut draft.git_show_reference_details)
+                .on_hover_text("Show branch/reference details in Source Control");
             ui.end_row();
 
             ui.label("History author");
-            ui.checkbox(
-                &mut draft.git_timeline_show_author,
-                "Show commit authors in Source Control history",
-            );
+            ui_switch(ui, &mut draft.git_timeline_show_author)
+                .on_hover_text("Show commit authors in Source Control history");
             ui.end_row();
 
             ui.label("History uncommitted");
-            ui.checkbox(
-                &mut draft.git_timeline_show_uncommitted,
-                "Show uncommitted changes in Source Control history",
-            );
+            ui_switch(ui, &mut draft.git_timeline_show_uncommitted)
+                .on_hover_text("Show uncommitted changes in Source Control history");
             ui.end_row();
 
             ui.label("History date");
@@ -1192,10 +1037,8 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Inline open file action");
-            ui.checkbox(
-                &mut draft.git_show_inline_open_file_action,
-                "Show Open File on Source Control rows",
-            );
+            ui_switch(ui, &mut draft.git_show_inline_open_file_action)
+                .on_hover_text("Show Open File on Source Control rows");
             ui.end_row();
 
             ui.label("Git count badge");
@@ -1220,24 +1063,18 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Open diff on click");
-            ui.checkbox(
-                &mut draft.git_open_diff_on_click,
-                "Open a diff when clicking Source Control rows",
-            );
+            ui_switch(ui, &mut draft.git_open_diff_on_click)
+                .on_hover_text("Open a diff when clicking Source Control rows");
             ui.end_row();
 
             ui.label("Close diff on operation");
-            ui.checkbox(
-                &mut draft.git_close_diff_on_operation,
-                "Close affected Source Control diffs after Git operations",
-            );
+            ui_switch(ui, &mut draft.git_close_diff_on_operation)
+                .on_hover_text("Close affected Source Control diffs after Git operations");
             ui.end_row();
 
             ui.label("Always show staged group");
-            ui.checkbox(
-                &mut draft.git_always_show_staged_changes_resource_group,
-                "Show Staged Changes even when it is empty",
-            );
+            ui_switch(ui, &mut draft.git_always_show_staged_changes_resource_group)
+                .on_hover_text("Show Staged Changes even when it is empty");
             ui.end_row();
 
             ui.label("Checkout refs");
@@ -1293,10 +1130,8 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Random branch names");
-            ui.checkbox(
-                &mut draft.git_branch_random_name_enable,
-                "Generate random branch names",
-            );
+            ui_switch(ui, &mut draft.git_branch_random_name_enable)
+                .on_hover_text("Generate random branch names");
             ui.end_row();
 
             ui.label("Random dictionaries");
@@ -1321,22 +1156,17 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Git decorations");
-            ui.checkbox(
-                &mut draft.git_decorations_enabled,
-                "Show Git colors and badges in the Explorer",
-            );
+            ui_switch(ui, &mut draft.git_decorations_enabled)
+                .on_hover_text("Show Git colors and badges in the Explorer");
             ui.end_row();
 
             ui.label("Smart commit");
-            ui.checkbox(
-                &mut draft.git_enable_smart_commit,
-                "Commit eligible changes when nothing is staged",
-            );
+            ui_switch(ui, &mut draft.git_enable_smart_commit)
+                .on_hover_text("Commit eligible changes when nothing is staged");
             ui.end_row();
 
             ui.label("Suggest smart commit");
-            ui.checkbox(
-                &mut draft.git_suggest_smart_commit,
+            ui_switch(ui, &mut draft.git_suggest_smart_commit).on_hover_text(
                 "Offer to stage eligible changes when committing with nothing staged",
             );
             ui.end_row();
@@ -1366,10 +1196,8 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Stash message");
-            ui.checkbox(
-                &mut draft.git_use_commit_input_as_stash_message,
-                "Use the commit input when saving a stash without a message",
-            );
+            ui_switch(ui, &mut draft.git_use_commit_input_as_stash_message)
+                .on_hover_text("Use the commit input when saving a stash without a message");
             ui.end_row();
 
             ui.label("Short hash length");
@@ -1380,10 +1208,8 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Commit validation");
-            ui.checkbox(
-                &mut draft.git_input_validation,
-                "Show warnings for long commit message lines",
-            );
+            ui_switch(ui, &mut draft.git_input_validation)
+                .on_hover_text("Show warnings for long commit message lines");
             ui.end_row();
 
             ui.label("Validation line length");
@@ -1398,31 +1224,23 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Blame status bar");
-            ui.checkbox(
-                &mut draft.git_blame_status_bar_item_enabled,
-                "Show active-line git blame in the status bar",
-            );
+            ui_switch(ui, &mut draft.git_blame_status_bar_item_enabled)
+                .on_hover_text("Show active-line git blame in the status bar");
             ui.end_row();
 
             ui.label("Blame editor decoration");
-            ui.checkbox(
-                &mut draft.git_blame_editor_decoration_enabled,
-                "Show active-line git blame in the editor",
-            );
+            ui_switch(ui, &mut draft.git_blame_editor_decoration_enabled)
+                .on_hover_text("Show active-line git blame in the editor");
             ui.end_row();
 
             ui.label("Blame hover");
-            ui.checkbox(
-                &mut draft.git_blame_editor_decoration_disable_hover,
-                "Disable hover for blame editor decorations",
-            );
+            ui_switch(ui, &mut draft.git_blame_editor_decoration_disable_hover)
+                .on_hover_text("Disable hover for blame editor decorations");
             ui.end_row();
 
             ui.label("Blame ignore whitespace");
-            ui.checkbox(
-                &mut draft.git_blame_ignore_whitespace,
-                "Ignore whitespace-only changes when resolving git blame",
-            );
+            ui_switch(ui, &mut draft.git_blame_ignore_whitespace)
+                .on_hover_text("Ignore whitespace-only changes when resolving git blame");
             ui.end_row();
 
             ui.label("Blame status template");
@@ -1444,10 +1262,8 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Input action button");
-            ui.checkbox(
-                &mut draft.scm_show_input_action_button,
-                "Show the commit button in the Source Control input",
-            );
+            ui_switch(ui, &mut draft.scm_show_input_action_button)
+                .on_hover_text("Show the commit button in the Source Control input");
             ui.end_row();
 
             ui.label("Input min lines");
@@ -1485,17 +1301,13 @@ pub(super) fn render_source_control_settings_with_highlight(
             ui.end_row();
 
             ui.label("Always show actions");
-            ui.checkbox(
-                &mut draft.scm_always_show_actions,
-                "Keep inline file actions visible in the Source Control list",
-            );
+            ui_switch(ui, &mut draft.scm_always_show_actions)
+                .on_hover_text("Keep inline file actions visible in the Source Control list");
             ui.end_row();
 
             ui.label("Action button");
-            ui.checkbox(
-                &mut draft.scm_show_action_button,
-                "Show Source Control view action buttons",
-            );
+            ui_switch(ui, &mut draft.scm_show_action_button)
+                .on_hover_text("Show Source Control view action buttons");
             ui.end_row();
 
             ui.label("Diff decorations");
@@ -1531,14 +1343,16 @@ pub(super) fn render_source_control_settings_with_highlight(
 
             ui.label("Gutter pattern");
             ui.horizontal(|ui| {
-                ui.checkbox(
-                    &mut draft.scm_diff_decorations_gutter_pattern.added,
-                    "Added",
-                );
-                ui.checkbox(
-                    &mut draft.scm_diff_decorations_gutter_pattern.modified,
-                    "Modified",
-                );
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.scm_diff_decorations_gutter_pattern.added);
+                    ui.label(egui::RichText::new("Added").small().weak());
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.scm_diff_decorations_gutter_pattern.modified);
+                    ui.label(egui::RichText::new("Modified").small().weak());
+                    r
+                });
             });
             ui.end_row();
 

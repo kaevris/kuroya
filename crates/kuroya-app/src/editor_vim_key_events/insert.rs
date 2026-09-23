@@ -1,11 +1,12 @@
 use eframe::egui::{Key, Modifiers};
-use kuroya_core::TextBuffer;
+use kuroya_core::{BufferId, TextBuffer};
+use std::collections::HashMap;
 
 use super::{
     EditorVimCharFind, EditorVimInsertReplayStep, EditorVimLastChange, EditorVimMode,
     EditorVimPendingKey, VimKeyResult, vim_delete_line_backward, vim_escape_key,
     vim_insert_delete_char_backward_key, vim_insert_delete_line_backward_key,
-    vim_insert_delete_word_backward_key,
+    vim_insert_delete_word_backward_key, vim_replay_counted_insert_session,
 };
 
 pub(super) fn handle_vim_insert_key_event(
@@ -16,10 +17,14 @@ pub(super) fn handle_vim_insert_key_event(
     pending: &mut Option<EditorVimPendingKey>,
     _last_char_find: &mut Option<EditorVimCharFind>,
     last_change: &mut Option<EditorVimLastChange>,
+    indent_unit: &str,
 ) -> VimKeyResult {
     if vim_escape_key(key, modifiers) {
         *mode = EditorVimMode::Normal;
         *pending = None;
+
+        vim_replay_counted_insert_session(buffer, last_change, indent_unit);
+        vim_rest_cursor_on_last_typed_char(buffer);
         VimKeyResult::handled(None)
     } else if vim_insert_delete_char_backward_key(key, modifiers) {
         let changed = buffer.delete_backward_with_auto_pair_delete(false);
@@ -53,6 +58,14 @@ pub(super) fn handle_vim_insert_key_event(
         }
     } else {
         VimKeyResult::ignored()
+    }
+}
+
+fn vim_rest_cursor_on_last_typed_char(buffer: &mut TextBuffer) {
+    let position = buffer.cursor_position();
+    let line_start = buffer.line_column_to_char(position.line, 0);
+    if buffer.cursor() > line_start {
+        buffer.move_left();
     }
 }
 
@@ -127,5 +140,31 @@ fn vim_record_insert_replay_step(
     };
     if change.action.accepts_inserted_text() {
         change.insert_replay.push(step);
+    }
+}
+
+pub(crate) fn vim_record_inserted_text_for_buffer(
+    last_changes: &mut HashMap<BufferId, EditorVimLastChange>,
+    buffer_id: BufferId,
+    text: &str,
+) {
+    let mut last_change = last_changes.remove(&buffer_id);
+    vim_record_inserted_text(&mut last_change, text);
+    if let Some(last_change) = last_change {
+        last_changes.insert(buffer_id, last_change);
+    }
+}
+
+pub(crate) fn vim_record_insert_replay_key_with_auto_indent_for_buffer(
+    last_changes: &mut HashMap<BufferId, EditorVimLastChange>,
+    buffer_id: BufferId,
+    key: Key,
+    modifiers: Modifiers,
+    auto_indent: bool,
+) {
+    let mut last_change = last_changes.remove(&buffer_id);
+    vim_record_insert_replay_key_with_auto_indent(&mut last_change, key, modifiers, auto_indent);
+    if let Some(last_change) = last_change {
+        last_changes.insert(buffer_id, last_change);
     }
 }

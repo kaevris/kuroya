@@ -69,8 +69,6 @@ pub(crate) fn format_on_type_request_after_text_edit(
 }
 
 fn typed_text_request_character(text: &str) -> Option<char> {
-    // Requests are scheduled at the cursor after the whole edit, so earlier
-    // characters in a coalesced text event should not act as fresh triggers.
     text.chars().next_back()
 }
 

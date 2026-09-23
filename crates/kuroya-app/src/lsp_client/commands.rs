@@ -1,13 +1,13 @@
 use crate::lsp_completion_resolve::CompletionResolveIntent;
 use kuroya_core::{
     BufferId, Diagnostic, LspCallHierarchyItem, LspCodeAction, LspCodeLens, LspCompletionItem,
-    LspRequestId, LspTypeHierarchyItem, TextSnapshot,
+    LspRequestId, LspTypeHierarchyItem, TextSnapshot, WatchedFileChange,
 };
 use serde_json::Value;
 use std::{path::PathBuf, sync::Arc};
 
 #[derive(Debug)]
-pub(super) enum LspClientCommand {
+pub(crate) enum LspClientCommand {
     DidOpen {
         id: BufferId,
         path: PathBuf,
@@ -93,6 +93,13 @@ pub(super) enum LspClientCommand {
         line: usize,
         character: usize,
         include_declaration: bool,
+    },
+    PrepareRename {
+        id: BufferId,
+        path: PathBuf,
+        version: u64,
+        line: usize,
+        character: usize,
     },
     Rename {
         id: BufferId,
@@ -203,6 +210,9 @@ pub(super) enum LspClientCommand {
         request_id: LspRequestId,
         applied: bool,
         failure_reason: Option<String>,
+    },
+    DidChangeWatchedFiles {
+        changes: Vec<WatchedFileChange>,
     },
     Shutdown,
 }

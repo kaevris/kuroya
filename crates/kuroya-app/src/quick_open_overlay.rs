@@ -1,27 +1,84 @@
 use crate::{
     KuroyaApp,
+    picker_ui::{PICKER_ROW_HEIGHT, picker_scroll_area, picker_selectable_row, picker_window_size},
     quick_open::{
-        MAX_QUICK_OPEN_QUERY_MEMORY, QUICK_OPEN_RESULT_LIMIT, QuickOpenMatchQuery, QuickOpenQuery,
-        QuickOpenResult, QuickOpenResultsCache, quick_open_index_file_identity,
-        quick_open_latest_navigation_locations_from_history, quick_open_paths_match,
+        MAX_QUICK_OPEN_QUERY_MEMORY, QUICK_OPEN_RESULT_LIMIT, QUICK_OPEN_REUSE_LIMIT,
+        QuickOpenBackgroundRank, QuickOpenCompletedRanking, QuickOpenMatchQuery, QuickOpenQuery,
+        QuickOpenRankKey, QuickOpenResult, QuickOpenResultsCache, next_quick_open_rank_request_id,
+        quick_open_latest_navigation_locations_from_history,
         quick_open_ranked_results_from_open_paths,
         quick_open_result_label_with_navigation_line_column,
         quick_open_target_with_navigation_line_column, record_quick_open_query_memory,
         sanitize_quick_open_query_input,
     },
+    ui_event_channel::send_ui_event,
+    ui_events::UiEvent,
     ui_state::{
         clamp_selection, handle_list_navigation_keys, selected_row_scroll_offset,
         selection_page_step,
     },
 };
-use eframe::egui::{self, Context, Key, ScrollArea, TextEdit};
+use eframe::egui::{self, Context, Key, TextEdit};
+use fuzzy_matcher::skim::SkimMatcherV2;
 use kuroya_core::Command;
-use std::{ops::Range, time::Duration};
+use std::{
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-const QUICK_OPEN_ROW_HEIGHT: f32 = 24.0;
-const QUICK_OPEN_WINDOW_PREFERRED_SIZE: [f32; 2] = [620.0, 420.0];
-const QUICK_OPEN_WINDOW_MIN_SIZE: [f32; 2] = [280.0, 180.0];
-const QUICK_OPEN_WINDOW_MARGIN: [f32; 2] = [32.0, 96.0];
+const QUICK_OPEN_RANK_DEBOUNCE: Duration = Duration::from_millis(150);
+
+fn ranking_due(last_change: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(last_change) >= QUICK_OPEN_RANK_DEBOUNCE
+}
+
+fn quick_open_rank_debounce_delay(last_change: Instant, now: Instant) -> Duration {
+    QUICK_OPEN_RANK_DEBOUNCE.saturating_sub(now.saturating_duration_since(last_change))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CandidateSource<'a> {
+    Full,
+
+    Reuse(&'a [PathBuf]),
+}
+
+fn candidates_for_query<'a>(
+    previous: Option<(&'a str, &'a [PathBuf], bool)>,
+    new_query: &str,
+    same_generation: bool,
+) -> CandidateSource<'a> {
+    let Some((previous_query, previous_paths, previous_truncated)) = previous else {
+        return CandidateSource::Full;
+    };
+    if previous_truncated {
+        return CandidateSource::Full;
+    }
+    if previous_query.is_empty() {
+        return CandidateSource::Full;
+    }
+    if !same_generation || !new_query.starts_with(previous_query) {
+        return CandidateSource::Full;
+    }
+    CandidateSource::Reuse(previous_paths)
+}
+
+#[derive(Debug)]
+enum QuickOpenRankCandidates {
+    Index(kuroya_core::ProjectIndex),
+    Paths(Vec<PathBuf>),
+}
+
+impl QuickOpenRankCandidates {
+    fn paths(&self) -> Vec<&Path> {
+        match self {
+            Self::Index(index) => index.files().iter().map(PathBuf::as_path).collect(),
+            Self::Paths(paths) => paths.iter().map(Path::new).collect(),
+        }
+    }
+}
 
 impl KuroyaApp {
     pub(crate) fn render_quick_open(&mut self, ctx: &Context) {
@@ -29,10 +86,13 @@ impl KuroyaApp {
         let mut open_target = None;
 
         egui::Window::new("Quick Open")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 96.0,
+            ))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 72.0])
-            .fixed_size(quick_open_window_size(ctx))
+            .fixed_size(picker_window_size(ctx))
             .show(ctx, |ui| {
                 let mut scroll_to_selection = false;
                 let response = ui.add(
@@ -48,13 +108,16 @@ impl KuroyaApp {
                     }
                     self.quick_open_selected = 0;
                     scroll_to_selection = true;
+                    if let Some(cache) = self.quick_open_results_cache.as_mut() {
+                        cache.last_query_changed_at = Some(Instant::now());
+                    }
                 }
 
                 if ui.input(|input| input.key_pressed(Key::Escape)) {
                     self.quick_open = false;
                 }
 
-                let row_count = self.refresh_quick_open_results_cache();
+                let row_count = self.refresh_quick_open_results_cache(ctx);
                 let indexing_pending = quick_open_indexing_pending(
                     self.workspace_placeholder,
                     self.index.files().len(),
@@ -74,7 +137,7 @@ impl KuroyaApp {
                             input,
                             &mut selected,
                             row_count,
-                            selection_page_step(QUICK_OPEN_ROW_HEIGHT, viewport_height),
+                            selection_page_step(PICKER_ROW_HEIGHT, viewport_height),
                         )
                     });
                     if ui.input(|input| input.key_pressed(Key::Enter)) {
@@ -88,27 +151,27 @@ impl KuroyaApp {
 
                     if row_count == 0 {
                         let message = quick_open_empty_state_message(indexing_pending);
-                        quick_open_scroll_area().show(ui, |ui| {
+                        picker_scroll_area().show(ui, |ui| {
                             ui.add_space(20.0);
                             ui.centered_and_justified(|ui| {
                                 ui.label(message);
                             });
                         });
                     } else {
-                        let mut scroll_area = quick_open_scroll_area();
+                        let mut scroll_area = picker_scroll_area();
                         if scroll_to_selection {
                             scroll_area =
                                 scroll_area.vertical_scroll_offset(selected_row_scroll_offset(
                                     selected,
                                     row_count,
-                                    QUICK_OPEN_ROW_HEIGHT,
+                                    PICKER_ROW_HEIGHT,
                                     viewport_height,
                                 ));
                         }
-                        scroll_area.show_rows(ui, QUICK_OPEN_ROW_HEIGHT, row_count, |ui, rows| {
+                        scroll_area.show_rows(ui, PICKER_ROW_HEIGHT, row_count, |ui, rows| {
                             for row in quick_open_prepare_visible_rows(cache, rows, row_count) {
                                 let is_selected = row.index == selected;
-                                if ui.selectable_label(is_selected, row.label).clicked() {
+                                if picker_selectable_row(ui, is_selected, row.label).clicked() {
                                     close_quick_open = true;
                                     open_target = quick_open_open_target_at(
                                         cache,
@@ -123,7 +186,7 @@ impl KuroyaApp {
                 } else {
                     selected = 0;
                     let message = quick_open_empty_state_message(indexing_pending);
-                    quick_open_scroll_area().show(ui, |ui| {
+                    picker_scroll_area().show(ui, |ui| {
                         ui.add_space(20.0);
                         ui.centered_and_justified(|ui| {
                             ui.label(message);
@@ -153,15 +216,13 @@ impl KuroyaApp {
         }
     }
 
-    fn refresh_quick_open_results_cache(&mut self) -> usize {
-        let index_file_identity = quick_open_index_file_identity(self.index.files());
+    fn refresh_quick_open_results_cache(&mut self, ctx: &Context) -> usize {
         let index_generation = self.project_index_generation;
         let current_navigation_location = self.current_navigation_location();
         if let Some(cache) = self.quick_open_results_cache.as_mut()
             && cache.matches(
                 &self.quick_open_query,
                 index_generation,
-                &index_file_identity,
                 &self.quick_open_recent_files,
                 self.buffers
                     .iter()
@@ -192,7 +253,6 @@ impl KuroyaApp {
                 cache,
                 &parsed_query,
                 index_generation,
-                &index_file_identity,
                 &self.quick_open_recent_files,
                 open_file_paths.iter().map(|path| path.as_path()),
                 &self.quick_open_query_memory,
@@ -209,38 +269,177 @@ impl KuroyaApp {
                 &navigation_locations,
             );
         }
-        let previous_cache = self.quick_open_results_cache.take();
-        let match_query = QuickOpenMatchQuery::from_sanitized_query(parsed_query.pattern.clone());
-        let results = quick_open_ranked_results_from_open_paths(
-            &self.matcher,
-            &self.workspace.root,
-            self.index.files().iter().map(|path| path.as_path()),
-            &self.quick_open_recent_files,
-            &open_file_paths,
-            &self.quick_open_query_memory,
-            &navigation_locations,
-            &match_query,
-            QUICK_OPEN_RESULT_LIMIT,
+        let previous_ranking = self
+            .quick_open_results_cache
+            .as_ref()
+            .and_then(|cache| cache.completed_ranking.clone());
+        let same_generation = previous_ranking
+            .as_ref()
+            .is_some_and(|ranking| ranking.generation == index_generation);
+        let candidate_source = candidates_for_query(
+            previous_ranking.as_ref().map(|ranking| {
+                (
+                    ranking.query.as_str(),
+                    ranking.matched_paths.as_slice(),
+                    ranking.matched_paths_truncated,
+                )
+            }),
+            &parsed_query.pattern,
+            same_generation,
         );
-        let (results, result_labels) =
-            quick_open_results_with_reused_display_metadata(results, &parsed_query, previous_cache);
+        self.refresh_quick_open_results_via_background_rank(
+            ctx,
+            index_generation,
+            current_navigation_location,
+            open_file_paths,
+            navigation_locations,
+            parsed_query,
+            candidate_source,
+        )
+    }
 
-        let visible_count = results.len();
-        self.quick_open_results_cache = Some(QuickOpenResultsCache {
+    fn refresh_quick_open_results_via_background_rank(
+        &mut self,
+        ctx: &Context,
+        index_generation: u64,
+        current_navigation_location: Option<crate::history::NavigationLocation>,
+        open_file_paths: Vec<std::path::PathBuf>,
+        navigation_locations: Vec<crate::history::NavigationLocation>,
+        parsed_query: QuickOpenQuery,
+        candidate_source: CandidateSource<'_>,
+    ) -> usize {
+        let key = QuickOpenRankKey {
             query_input: self.quick_open_query.clone(),
             index_generation,
-            index_file_identity,
             recent_files: self.quick_open_recent_files.clone(),
             open_files: open_file_paths,
             query_memory: self.quick_open_query_memory.clone(),
             navigation_back: self.navigation_back.clone(),
             navigation_forward: self.navigation_forward.clone(),
             current_navigation_location,
-            parsed_query,
-            result_labels,
-            results,
+        };
+        let outstanding_is_current = self
+            .quick_open_results_cache
+            .as_ref()
+            .and_then(|cache| cache.background_rank.as_ref())
+            .is_some_and(|rank| *rank.key == key);
+        if outstanding_is_current && let Some(cache) = self.quick_open_results_cache.as_mut() {
+            return quick_open_refresh_stale_display_metadata(cache);
+        }
+
+        let now = Instant::now();
+        if let Some(last_change) = self
+            .quick_open_results_cache
+            .as_ref()
+            .and_then(|cache| cache.last_query_changed_at)
+            && !ranking_due(last_change, now)
+        {
+            ctx.request_repaint_after(quick_open_rank_debounce_delay(last_change, now));
+            if let Some(cache) = self.quick_open_results_cache.as_mut() {
+                return quick_open_refresh_stale_display_metadata(cache);
+            }
+        }
+
+        let request_id = next_quick_open_rank_request_id();
+        let spawn_key = Arc::new(key.clone());
+        let match_query = QuickOpenMatchQuery::from_sanitized_query(parsed_query.pattern.clone());
+        let workspace_root = self.workspace.root.clone();
+        let spawn_candidates = match candidate_source {
+            CandidateSource::Full => QuickOpenRankCandidates::Index(self.index.clone()),
+            CandidateSource::Reuse(paths) => QuickOpenRankCandidates::Paths(paths.to_vec()),
+        };
+        let tx = self.tx.clone();
+        self.runtime.spawn_blocking(move || {
+            let matcher = SkimMatcherV2::default();
+            let candidate_paths = spawn_candidates.paths();
+            let results = quick_open_ranked_results_from_open_paths(
+                &matcher,
+                &workspace_root,
+                candidate_paths.iter().copied(),
+                &spawn_key.recent_files,
+                &spawn_key.open_files,
+                &spawn_key.query_memory,
+                &navigation_locations,
+                &match_query,
+                QUICK_OPEN_REUSE_LIMIT,
+            );
+            let _ = send_ui_event(
+                &tx,
+                UiEvent::QuickOpenRanked {
+                    request_id,
+                    key: spawn_key,
+                    results,
+                },
+            );
         });
-        visible_count
+
+        let record = QuickOpenBackgroundRank {
+            request_id,
+            key: Arc::new(key),
+        };
+        if let Some(cache) = self.quick_open_results_cache.as_mut() {
+            cache.background_rank = Some(record);
+            return quick_open_refresh_stale_display_metadata(cache);
+        }
+        self.quick_open_results_cache = Some(QuickOpenResultsCache {
+            query_input: record.key.query_input.clone(),
+            index_generation: record.key.index_generation,
+            recent_files: record.key.recent_files.clone(),
+            open_files: record.key.open_files.clone(),
+            query_memory: record.key.query_memory.clone(),
+            navigation_back: record.key.navigation_back.clone(),
+            navigation_forward: record.key.navigation_forward.clone(),
+            current_navigation_location: record.key.current_navigation_location.clone(),
+            parsed_query,
+            result_labels: Vec::new(),
+            results: Vec::new(),
+            background_rank: Some(record),
+            last_query_changed_at: None,
+            completed_ranking: None,
+        });
+        0
+    }
+
+    pub(crate) fn apply_quick_open_ranked_results(
+        &mut self,
+        request_id: u64,
+        key: &QuickOpenRankKey,
+        results: Vec<QuickOpenResult>,
+    ) -> bool {
+        let Some(cache) = self.quick_open_results_cache.as_mut() else {
+            return false;
+        };
+        let Some(rank) = cache.background_rank.as_ref() else {
+            return false;
+        };
+        if !rank.matches(request_id, key) {
+            return false;
+        }
+
+        let parsed_query = crate::quick_open::parse_quick_open_query(&key.query_input);
+        cache.query_input.clone_from(&key.query_input);
+        cache.index_generation = key.index_generation;
+        cache.recent_files.clone_from(&key.recent_files);
+        cache.open_files.clone_from(&key.open_files);
+        cache.query_memory.clone_from(&key.query_memory);
+        cache.navigation_back.clone_from(&key.navigation_back);
+        cache.navigation_forward.clone_from(&key.navigation_forward);
+        cache
+            .current_navigation_location
+            .clone_from(&key.current_navigation_location);
+        cache.parsed_query = parsed_query;
+
+        cache.completed_ranking = Some(QuickOpenCompletedRanking {
+            query: cache.parsed_query.pattern.clone(),
+            generation: key.index_generation,
+            matched_paths_truncated: results.len() >= QUICK_OPEN_REUSE_LIMIT,
+            matched_paths: results.iter().map(|result| result.path.clone()).collect(),
+        });
+        cache.results = results;
+        cache.results.truncate(QUICK_OPEN_RESULT_LIMIT);
+        cache.result_labels = quick_open_result_labels(&cache.results, &cache.parsed_query);
+        cache.background_rank = None;
+        true
     }
 }
 
@@ -262,40 +461,9 @@ fn quick_open_empty_state_message(indexing_pending: bool) -> &'static str {
     }
 }
 
-fn quick_open_scroll_area() -> ScrollArea {
-    ScrollArea::vertical()
-        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-}
-
-fn quick_open_window_size(ctx: &Context) -> [f32; 2] {
-    let available = ctx.available_rect().size();
-    quick_open_window_size_for_available(available.x, available.y)
-}
-
+#[cfg(test)]
 fn quick_open_window_size_for_available(available_width: f32, available_height: f32) -> [f32; 2] {
-    [
-        quick_open_window_dimension(
-            QUICK_OPEN_WINDOW_PREFERRED_SIZE[0],
-            QUICK_OPEN_WINDOW_MIN_SIZE[0],
-            available_width,
-            QUICK_OPEN_WINDOW_MARGIN[0],
-        ),
-        quick_open_window_dimension(
-            QUICK_OPEN_WINDOW_PREFERRED_SIZE[1],
-            QUICK_OPEN_WINDOW_MIN_SIZE[1],
-            available_height,
-            QUICK_OPEN_WINDOW_MARGIN[1],
-        ),
-    ]
-}
-
-fn quick_open_window_dimension(preferred: f32, minimum: f32, available: f32, margin: f32) -> f32 {
-    if !available.is_finite() || available <= 0.0 {
-        return preferred;
-    }
-
-    let usable = (available - margin).max(1.0);
-    preferred.min(usable).max(minimum.min(usable))
+    crate::picker_ui::picker_window_size_for_available(available_width, available_height)
 }
 
 fn quick_open_refresh_stale_display_metadata(cache: &mut QuickOpenResultsCache) -> usize {
@@ -380,7 +548,6 @@ fn quick_open_cache_ranking_inputs_match_ignoring_query_target<'a>(
     cache: &QuickOpenResultsCache,
     parsed_query: &QuickOpenQuery,
     index_generation: u64,
-    index_file_identity: &crate::quick_open::QuickOpenIndexFileIdentity,
     recent_files: &std::collections::VecDeque<std::path::PathBuf>,
     open_files: impl IntoIterator<Item = &'a std::path::Path>,
     query_memory: &std::collections::VecDeque<crate::quick_open::QuickOpenQueryMemoryEntry>,
@@ -390,7 +557,6 @@ fn quick_open_cache_ranking_inputs_match_ignoring_query_target<'a>(
         && cache.ranking_inputs_match(
             &cache.query_input,
             index_generation,
-            index_file_identity,
             recent_files,
             open_files,
             query_memory,
@@ -439,138 +605,12 @@ fn quick_open_refresh_cached_query_metadata(
     cache.results.len()
 }
 
-fn quick_open_results_with_reused_display_metadata(
-    results: Vec<QuickOpenResult>,
-    parsed_query: &QuickOpenQuery,
-    previous_cache: Option<QuickOpenResultsCache>,
-) -> (Vec<QuickOpenResult>, Vec<String>) {
-    let Some(previous_cache) = previous_cache else {
-        let result_labels = quick_open_result_labels(&results, parsed_query);
-        return (results, result_labels);
-    };
-
-    let QuickOpenResultsCache {
-        parsed_query: previous_query,
-        result_labels: previous_labels,
-        results: previous_results,
-        ..
-    } = previous_cache;
-
-    if quick_open_result_label_query_metadata_matches(&previous_query, parsed_query) {
-        if previous_results == results
-            && quick_open_result_labels_match_results(
-                &previous_results,
-                &previous_labels,
-                parsed_query,
-            )
-        {
-            return (previous_results, previous_labels);
-        }
-
-        let result_labels = quick_open_result_labels_reusing_previous(
-            &results,
-            parsed_query,
-            &previous_results,
-            previous_labels,
-        );
-        return (results, result_labels);
-    }
-
-    let result_labels = quick_open_result_labels(&results, parsed_query);
-    (results, result_labels)
-}
-
 fn quick_open_result_label_query_metadata_matches(
     previous_query: &QuickOpenQuery,
     query: &QuickOpenQuery,
 ) -> bool {
     previous_query.line == query.line
         && (query.line.is_none() || previous_query.column == query.column)
-}
-
-fn quick_open_result_labels_reusing_previous(
-    results: &[QuickOpenResult],
-    parsed_query: &QuickOpenQuery,
-    previous_results: &[QuickOpenResult],
-    previous_labels: Vec<String>,
-) -> Vec<String> {
-    let mut previous_labels: Vec<Option<String>> = previous_labels.into_iter().map(Some).collect();
-    results
-        .iter()
-        .enumerate()
-        .map(|(index, result)| {
-            if let Some(previous_label) = quick_open_take_previous_result_label(
-                previous_results,
-                &mut previous_labels,
-                parsed_query,
-                result,
-                index,
-            ) {
-                return previous_label;
-            }
-
-            quick_open_result_label_with_navigation_line_column(
-                &result.rel,
-                parsed_query,
-                result.navigation_line_column,
-            )
-        })
-        .collect()
-}
-
-fn quick_open_take_previous_result_label(
-    previous_results: &[QuickOpenResult],
-    previous_labels: &mut [Option<String>],
-    parsed_query: &QuickOpenQuery,
-    result: &QuickOpenResult,
-    preferred_index: usize,
-) -> Option<String> {
-    if let Some(label) = quick_open_take_previous_result_label_at(
-        previous_results,
-        previous_labels,
-        parsed_query,
-        result,
-        preferred_index,
-    ) {
-        return Some(label);
-    }
-
-    previous_results
-        .iter()
-        .zip(previous_labels.iter_mut())
-        .enumerate()
-        .find_map(|(index, (previous_result, previous_label))| {
-            let label = previous_label.as_ref()?;
-            if index != preferred_index
-                && quick_open_result_label_metadata_matches(previous_result, result, parsed_query)
-                && quick_open_result_label_matches_result(previous_result, label, parsed_query)
-            {
-                return previous_label.take();
-            }
-            None
-        })
-}
-
-fn quick_open_take_previous_result_label_at(
-    previous_results: &[QuickOpenResult],
-    previous_labels: &mut [Option<String>],
-    parsed_query: &QuickOpenQuery,
-    result: &QuickOpenResult,
-    index: usize,
-) -> Option<String> {
-    let previous_result = previous_results.get(index)?;
-    if !quick_open_result_label_metadata_matches(previous_result, result, parsed_query) {
-        return None;
-    }
-
-    let previous_label = previous_labels.get_mut(index)?;
-    if previous_label.as_ref().is_some_and(|label| {
-        quick_open_result_label_matches_result(previous_result, label, parsed_query)
-    }) {
-        return previous_label.take();
-    }
-
-    None
 }
 
 fn quick_open_result_labels_match_results(
@@ -597,17 +637,6 @@ fn quick_open_result_label_matches_result(
         )
 }
 
-fn quick_open_result_label_metadata_matches(
-    previous_result: &QuickOpenResult,
-    result: &QuickOpenResult,
-    query: &QuickOpenQuery,
-) -> bool {
-    quick_open_paths_match(&previous_result.path, &result.path)
-        && previous_result.rel == result.rel
-        && (query.line.is_some()
-            || previous_result.navigation_line_column == result.navigation_line_column)
-}
-
 fn quick_open_result_labels(
     results: &[QuickOpenResult],
     parsed_query: &QuickOpenQuery,
@@ -627,15 +656,16 @@ fn quick_open_result_labels(
 #[cfg(test)]
 mod tests {
     use super::{
+        CandidateSource, candidates_for_query,
         quick_open_cache_ranking_inputs_match_ignoring_query_target,
         quick_open_empty_state_message, quick_open_indexing_pending, quick_open_open_target_at,
-        quick_open_prepare_visible_rows, quick_open_refresh_cached_query_metadata,
-        quick_open_refresh_stale_display_metadata, quick_open_results_with_reused_display_metadata,
-        quick_open_visible_result_count, quick_open_window_size_for_available,
+        quick_open_prepare_visible_rows, quick_open_rank_debounce_delay,
+        quick_open_refresh_cached_query_metadata, quick_open_refresh_stale_display_metadata,
+        quick_open_visible_result_count, quick_open_window_size_for_available, ranking_due,
     };
     use crate::quick_open::{
-        QUICK_OPEN_RESULT_LABEL_MAX_CHARS, QuickOpenQuery, QuickOpenResult, QuickOpenResultsCache,
-        quick_open_index_file_identity,
+        QUICK_OPEN_RESULT_LABEL_MAX_CHARS, QuickOpenCompletedRanking, QuickOpenQuery,
+        QuickOpenResult, QuickOpenResultsCache,
     };
     use std::{collections::VecDeque, path::PathBuf};
 
@@ -657,14 +687,9 @@ mod tests {
         results: Vec<QuickOpenResult>,
         result_labels: Vec<String>,
     ) -> QuickOpenResultsCache {
-        let index_files = results
-            .iter()
-            .map(|result| result.path.clone())
-            .collect::<Vec<_>>();
         QuickOpenResultsCache {
             query_input: parsed_query.pattern.clone(),
             index_generation: 7,
-            index_file_identity: quick_open_index_file_identity(&index_files),
             recent_files: VecDeque::new(),
             open_files: Vec::new(),
             query_memory: VecDeque::new(),
@@ -674,6 +699,9 @@ mod tests {
             parsed_query,
             result_labels,
             results,
+            background_rank: None,
+            last_query_changed_at: None,
+            completed_ranking: None,
         }
     }
 
@@ -869,7 +897,6 @@ mod tests {
             &cache,
             &parsed_query,
             7,
-            &cache.index_file_identity,
             &recent_files,
             open_files.iter().map(PathBuf::as_path),
             &query_memory,
@@ -985,150 +1012,609 @@ mod tests {
         assert_eq!(quick_open_visible_result_count(&cache), visible_count);
     }
 
-    #[test]
-    fn quick_open_reuses_display_metadata_when_results_match() {
-        let query = QuickOpenQuery {
-            pattern: "main".to_owned(),
-            line: None,
-            column: 1,
-        };
-        let cached_result = quick_open_result("src/main.rs", Some((4, 2)));
-        let cached_result_rel = cached_result.rel.as_ptr();
-        let cached_label = "src/main.rs:4:2".to_owned();
-        let cached_label_text = cached_label.as_ptr();
-        let cache =
-            quick_open_results_cache(query.clone(), vec![cached_result], vec![cached_label]);
-        let rebuilt_results = vec![quick_open_result("src/main.rs", Some((4, 2)))];
+    use super::UiEvent;
+    use crate::{
+        KuroyaApp,
+        app_startup_context::AppStartupContext,
+        terminal::TerminalPane,
+        ui_event_channel::{Receiver, ui_event_channel},
+    };
+    use kuroya_core::{EditorSettings, ProjectIndex, Workspace};
+    use std::time::{Duration, Instant};
+    use tokio::runtime::Runtime;
 
-        let (results, labels) =
-            quick_open_results_with_reused_display_metadata(rebuilt_results, &query, Some(cache));
+    fn app_for_test(root: PathBuf) -> KuroyaApp {
+        let (tx, rx) = ui_event_channel();
+        let settings = EditorSettings::default();
+        KuroyaApp::from_startup_context(AppStartupContext {
+            runtime: Runtime::new().expect("test runtime"),
+            tx,
+            rx,
+            workspace: Workspace::new(root.clone()),
+            settings: settings.clone(),
+            settings_panel_draft: settings,
+            settings_editor_font_path: String::new(),
+            settings_ui_font_path: String::new(),
+            theme_picker_selected: 0,
+            saved_session: None,
+            terminal: TerminalPane::new(root.clone(), 100, 12.0, 1.2),
+            watcher: None,
+            recent_projects: Vec::new(),
+            trusted_workspaces: vec![root],
+            now: Instant::now(),
+            startup_timings: Vec::new(),
+        })
+    }
 
-        assert_eq!(results[0].rel.as_ptr(), cached_result_rel);
-        assert_eq!(labels[0].as_ptr(), cached_label_text);
-        assert_eq!(labels, vec!["src/main.rs:4:2"]);
+    fn synthetic_project_index(root: &str, file_count: usize) -> ProjectIndex {
+        let files = (0..file_count)
+            .map(|index| format!("{root}/src/file_{index:05}.rs"))
+            .collect::<Vec<_>>();
+        serde_json::from_value(serde_json::json!({
+            "root": root,
+            "files": files,
+            "entries": [],
+            "symbols": [],
+            "truncated": false,
+        }))
+        .expect("project index should deserialize")
+    }
+
+    fn synthetic_project_index_with_files(files: Vec<&str>) -> ProjectIndex {
+        serde_json::from_value(serde_json::json!({
+            "root": "workspace",
+            "files": files,
+            "entries": [],
+            "symbols": [],
+            "truncated": false,
+        }))
+        .expect("project index should deserialize")
+    }
+
+    fn seeded_completed_cache(
+        generation: u64,
+        query: &str,
+        rels: &[&str],
+    ) -> QuickOpenResultsCache {
+        let results = rels
+            .iter()
+            .map(|rel| quick_open_result(rel, None))
+            .collect::<Vec<_>>();
+        QuickOpenResultsCache {
+            query_input: query.to_owned(),
+            index_generation: generation,
+            recent_files: VecDeque::new(),
+            open_files: Vec::new(),
+            query_memory: VecDeque::new(),
+            navigation_back: VecDeque::new(),
+            navigation_forward: VecDeque::new(),
+            current_navigation_location: None,
+            parsed_query: QuickOpenQuery {
+                pattern: query.to_owned(),
+                line: None,
+                column: 1,
+            },
+            result_labels: rels.iter().map(|rel| (*rel).to_owned()).collect(),
+            results,
+            background_rank: None,
+            last_query_changed_at: None,
+            completed_ranking: Some(QuickOpenCompletedRanking {
+                query: query.to_owned(),
+                generation,
+                matched_paths_truncated: false,
+                matched_paths: rels
+                    .iter()
+                    .map(|rel| PathBuf::from("workspace").join(rel))
+                    .collect(),
+            }),
+        }
+    }
+
+    fn ranked_event(rx: &Receiver<UiEvent>) -> UiEvent {
+        rx.recv_timeout(Duration::from_secs(30))
+            .expect("ranked event should arrive")
     }
 
     #[test]
-    fn quick_open_reuses_display_metadata_when_results_reorder() {
-        let query = QuickOpenQuery {
-            pattern: "src".to_owned(),
-            line: None,
-            column: 1,
-        };
-        let first_result = quick_open_result("src/lib.rs", Some((8, 1)));
-        let second_result = quick_open_result("src/main.rs", Some((4, 2)));
-        let first_label = "src/lib.rs:8:1".to_owned();
-        let second_label = "src/main.rs:4:2".to_owned();
-        let first_label_text = first_label.as_ptr();
-        let second_label_text = second_label.as_ptr();
-        let cache = quick_open_results_cache(
-            query.clone(),
-            vec![first_result, second_result],
-            vec![first_label, second_label],
+    fn quick_open_small_universe_ranks_on_background_thread() {
+        let ctx = egui::Context::default();
+        let mut app = app_for_test(PathBuf::from("workspace"));
+        app.index = synthetic_project_index("workspace", 4);
+        app.project_index_generation = 3;
+        app.quick_open_query = "file".to_owned();
+
+        let visible = app.refresh_quick_open_results_cache(&ctx);
+
+        assert_eq!(visible, 0);
+        let cache = app.quick_open_results_cache.as_ref().unwrap();
+        let first_request_id = cache
+            .background_rank
+            .as_ref()
+            .expect("ranking should run on the background thread")
+            .request_id;
+        assert_eq!(cache.index_generation, 3);
+        assert!(cache.results.is_empty());
+
+        match ranked_event(&app.rx) {
+            UiEvent::QuickOpenRanked {
+                request_id,
+                key,
+                results,
+            } => {
+                assert_eq!(request_id, first_request_id);
+                assert_eq!(key.query_input, "file");
+                assert!(!results.is_empty());
+                assert!(app.apply_quick_open_ranked_results(request_id, &key, results));
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+        let cache = app.quick_open_results_cache.as_ref().unwrap();
+        assert!(cache.background_rank.is_none());
+        assert_eq!(cache.results.len(), cache.result_labels.len());
+        let ranking = cache
+            .completed_ranking
+            .as_ref()
+            .expect("completed ranking should be kept for prefix reuse");
+        assert_eq!(ranking.query, "file");
+        assert_eq!(ranking.generation, 3);
+        assert_eq!(ranking.matched_paths.len(), cache.results.len());
+    }
+
+    #[test]
+    fn quick_open_background_ranking_shows_stale_rows_until_results_arrive() {
+        let ctx = egui::Context::default();
+        let mut app = app_for_test(PathBuf::from("workspace"));
+        app.index = synthetic_project_index("workspace", 4);
+        app.quick_open_query = "old".to_owned();
+        app.quick_open_results_cache = Some(QuickOpenResultsCache {
+            query_input: "old".to_owned(),
+            index_generation: app.project_index_generation,
+            recent_files: VecDeque::new(),
+            open_files: Vec::new(),
+            query_memory: VecDeque::new(),
+            navigation_back: VecDeque::new(),
+            navigation_forward: VecDeque::new(),
+            current_navigation_location: None,
+            parsed_query: QuickOpenQuery {
+                pattern: "old".to_owned(),
+                line: None,
+                column: 1,
+            },
+            result_labels: vec!["stale".to_owned()],
+            results: vec![quick_open_result("stale", None)],
+            background_rank: None,
+            last_query_changed_at: None,
+            completed_ranking: None,
+        });
+        app.quick_open_query = "file_00001".to_owned();
+
+        let first_visible = app.refresh_quick_open_results_cache(&ctx);
+
+        assert_eq!(first_visible, 1);
+        let first_request_id = app
+            .quick_open_results_cache
+            .as_ref()
+            .and_then(|cache| cache.background_rank.as_ref())
+            .expect("background rank should be outstanding")
+            .request_id;
+        assert!(
+            app.quick_open_results_cache.as_ref().unwrap().results[0]
+                .rel
+                .starts_with("stale")
         );
-        let rebuilt_results = vec![
-            quick_open_result("src/main.rs", Some((4, 2))),
-            quick_open_result("src/lib.rs", Some((8, 1))),
+
+        let second_visible = app.refresh_quick_open_results_cache(&ctx);
+
+        assert_eq!(second_visible, first_visible);
+        assert_eq!(
+            app.quick_open_results_cache
+                .as_ref()
+                .and_then(|cache| cache.background_rank.as_ref())
+                .expect("outstanding rank should persist")
+                .request_id,
+            first_request_id
+        );
+
+        match ranked_event(&app.rx) {
+            UiEvent::QuickOpenRanked {
+                request_id,
+                key,
+                results,
+            } => {
+                assert_eq!(request_id, first_request_id);
+                assert_eq!(key.query_input, "file_00001");
+                assert!(!results.is_empty());
+                assert!(app.apply_quick_open_ranked_results(request_id, &key, results));
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+        let cache = app.quick_open_results_cache.as_ref().unwrap();
+        assert!(cache.background_rank.is_none());
+        assert_eq!(cache.query_input, "file_00001");
+        assert_eq!(cache.results.len(), cache.result_labels.len());
+        assert!(
+            cache
+                .results
+                .iter()
+                .any(|result| result.rel.contains("file_00001"))
+        );
+    }
+
+    #[test]
+    fn quick_open_query_edits_debounce_background_ranking() {
+        let ctx = egui::Context::default();
+        let mut app = app_for_test(PathBuf::from("workspace"));
+        app.index = synthetic_project_index("workspace", 4);
+        app.project_index_generation = 3;
+        app.quick_open_query = "file".to_owned();
+        app.refresh_quick_open_results_cache(&ctx);
+        let first_request_id = app
+            .quick_open_results_cache
+            .as_ref()
+            .and_then(|cache| cache.background_rank.as_ref())
+            .expect("initial rank should be outstanding")
+            .request_id;
+
+        app.quick_open_results_cache
+            .as_mut()
+            .unwrap()
+            .last_query_changed_at = Some(Instant::now());
+        app.quick_open_query = "file_0".to_owned();
+
+        let visible = app.refresh_quick_open_results_cache(&ctx);
+
+        assert_eq!(visible, 0);
+        let cache = app.quick_open_results_cache.as_ref().unwrap();
+        assert_eq!(
+            cache
+                .background_rank
+                .as_ref()
+                .expect("debounced edit should keep the outstanding rank")
+                .request_id,
+            first_request_id
+        );
+
+        let last_change = Instant::now()
+            .checked_sub(Duration::from_millis(151))
+            .expect("test instant underflow");
+        app.quick_open_results_cache
+            .as_mut()
+            .unwrap()
+            .last_query_changed_at = Some(last_change);
+
+        app.refresh_quick_open_results_cache(&ctx);
+
+        let second_request_id = app
+            .quick_open_results_cache
+            .as_ref()
+            .and_then(|cache| cache.background_rank.as_ref())
+            .expect("re-run should be outstanding after the debounce window")
+            .request_id;
+        assert_ne!(second_request_id, first_request_id);
+
+        let mut accepted = false;
+        for _ in 0..2 {
+            match ranked_event(&app.rx) {
+                UiEvent::QuickOpenRanked {
+                    request_id,
+                    key,
+                    results,
+                } => {
+                    let applied = app.apply_quick_open_ranked_results(request_id, &key, results);
+                    if request_id == second_request_id {
+                        assert!(applied, "current ranking should be accepted");
+                        accepted = true;
+                    } else {
+                        assert!(!applied, "late ranking for the old query must be rejected");
+                    }
+                }
+                event => panic!("unexpected event: {event:?}"),
+            }
+        }
+        assert!(accepted);
+        assert!(
+            app.quick_open_results_cache
+                .as_ref()
+                .unwrap()
+                .results
+                .iter()
+                .any(|result| result.rel.contains("file_00001"))
+        );
+    }
+
+    #[test]
+    fn quick_open_stale_ranked_events_are_ignored() {
+        let ctx = egui::Context::default();
+        let mut app = app_for_test(PathBuf::from("workspace"));
+        app.index = synthetic_project_index("workspace", 4);
+        app.quick_open_query = "file_00002".to_owned();
+        app.refresh_quick_open_results_cache(&ctx);
+        let outstanding_request_id = app
+            .quick_open_results_cache
+            .as_ref()
+            .and_then(|cache| cache.background_rank.as_ref())
+            .expect("background rank should be outstanding")
+            .request_id;
+        let key = {
+            let outstanding_key = app
+                .quick_open_results_cache
+                .as_ref()
+                .and_then(|cache| cache.background_rank.as_ref())
+                .map(|rank| rank.key.clone())
+                .expect("outstanding key");
+            (*outstanding_key).clone()
+        };
+
+        let wrong_request_id = outstanding_request_id.wrapping_add(1);
+        assert!(!app.apply_quick_open_ranked_results(
+            wrong_request_id,
+            &key,
+            vec![quick_open_result("spoofed", None)],
+        ));
+
+        let mut mismatched_key = key.clone();
+        mismatched_key.query_input = "changed".to_owned();
+        assert!(!app.apply_quick_open_ranked_results(
+            outstanding_request_id,
+            &mismatched_key,
+            vec![quick_open_result("spoofed", None)],
+        ));
+
+        let cache = app.quick_open_results_cache.as_ref().unwrap();
+        assert_eq!(
+            cache
+                .background_rank
+                .as_ref()
+                .expect("outstanding rank should survive stale events")
+                .request_id,
+            outstanding_request_id
+        );
+        assert!(cache.results.is_empty());
+
+        match ranked_event(&app.rx) {
+            UiEvent::QuickOpenRanked {
+                request_id,
+                key,
+                results,
+            } => {
+                assert!(app.apply_quick_open_ranked_results(request_id, &key, results));
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+        assert!(
+            app.quick_open_results_cache
+                .as_ref()
+                .unwrap()
+                .results
+                .iter()
+                .any(|result| result.rel.contains("file_00002"))
+        );
+    }
+
+    #[test]
+    fn ranking_due_requires_full_debounce_window_since_last_edit() {
+        let base = Instant::now();
+        assert!(!ranking_due(base, base));
+        assert!(!ranking_due(base, base + Duration::from_millis(149)));
+        assert!(ranking_due(base, base + Duration::from_millis(150)));
+        assert!(ranking_due(base, base + Duration::from_millis(5_000)));
+    }
+
+    #[test]
+    fn quick_open_rank_debounce_delay_covers_the_remaining_window() {
+        let base = Instant::now();
+        assert_eq!(
+            quick_open_rank_debounce_delay(base, base),
+            Duration::from_millis(150)
+        );
+        assert_eq!(
+            quick_open_rank_debounce_delay(base, base + Duration::from_millis(149)),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            quick_open_rank_debounce_delay(base, base + Duration::from_millis(150)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn candidates_for_query_reuses_previous_paths_for_prefix_extensions() {
+        let previous_paths = [
+            PathBuf::from("workspace/src/alpha.rs"),
+            PathBuf::from("workspace/src/alpha_beta.rs"),
         ];
 
-        let (_results, labels) =
-            quick_open_results_with_reused_display_metadata(rebuilt_results, &query, Some(cache));
+        let source =
+            candidates_for_query(Some(("al", previous_paths.as_slice(), false)), "alph", true);
 
-        assert_eq!(labels[0].as_ptr(), second_label_text);
-        assert_eq!(labels[1].as_ptr(), first_label_text);
-        assert_eq!(labels, vec!["src/main.rs:4:2", "src/lib.rs:8:1"]);
-    }
+        assert_eq!(source, CandidateSource::Reuse(previous_paths.as_slice()));
 
-    #[test]
-    fn quick_open_reuses_display_metadata_for_lexically_equivalent_result_paths() {
-        let query = QuickOpenQuery {
-            pattern: "main".to_owned(),
-            line: None,
-            column: 1,
-        };
-        let mut cached_result = quick_open_result("src/main.rs", Some((4, 2)));
-        cached_result.path = PathBuf::from("workspace/src/../src/main.rs");
-        let cached_label = "src/main.rs:4:2".to_owned();
-        let cached_label_text = cached_label.as_ptr();
-        let cache =
-            quick_open_results_cache(query.clone(), vec![cached_result], vec![cached_label]);
-        let rebuilt_results = vec![quick_open_result("src/main.rs", Some((4, 2)))];
-
-        let (_results, labels) =
-            quick_open_results_with_reused_display_metadata(rebuilt_results, &query, Some(cache));
-
-        assert_eq!(labels[0].as_ptr(), cached_label_text);
-        assert_eq!(labels, vec!["src/main.rs:4:2"]);
-    }
-
-    #[test]
-    fn quick_open_rebuilds_display_metadata_when_result_path_key_changes() {
-        let query = QuickOpenQuery {
-            pattern: "main".to_owned(),
-            line: None,
-            column: 1,
-        };
-        let mut cached_result = quick_open_result("src/main.rs", Some((4, 2)));
-        cached_result.path = PathBuf::from("other-workspace/src/main.rs");
-        let cached_label = "src/main.rs:4:2".to_owned();
-        let cached_label_text = cached_label.as_ptr();
-        let cache =
-            quick_open_results_cache(query.clone(), vec![cached_result], vec![cached_label]);
-        let rebuilt_results = vec![quick_open_result("src/main.rs", Some((4, 2)))];
-
-        let (_results, labels) =
-            quick_open_results_with_reused_display_metadata(rebuilt_results, &query, Some(cache));
-
-        assert_ne!(labels[0].as_ptr(), cached_label_text);
-        assert_eq!(labels, vec!["src/main.rs:4:2"]);
-    }
-
-    #[test]
-    fn quick_open_rebuilds_display_metadata_when_explicit_target_changes() {
-        let previous_query = QuickOpenQuery {
-            pattern: "main".to_owned(),
-            line: Some(4),
-            column: 2,
-        };
-        let query = QuickOpenQuery {
-            pattern: "main".to_owned(),
-            line: Some(9),
-            column: 3,
-        };
-        let cache = quick_open_results_cache(
-            previous_query,
-            vec![quick_open_result("src/main.rs", Some((4, 2)))],
-            vec!["src/main.rs:4:2".to_owned()],
+        assert_eq!(
+            candidates_for_query(
+                Some(("alph", previous_paths.as_slice(), false)),
+                "alph",
+                true
+            ),
+            CandidateSource::Reuse(previous_paths.as_slice())
         );
-        let rebuilt_results = vec![quick_open_result("src/main.rs", Some((4, 2)))];
-
-        let (_results, labels) =
-            quick_open_results_with_reused_display_metadata(rebuilt_results, &query, Some(cache));
-
-        assert_eq!(labels, vec!["src/main.rs:9:3"]);
     }
 
     #[test]
-    fn quick_open_rebuilds_stale_display_metadata_when_results_match() {
-        let query = QuickOpenQuery {
-            pattern: "main".to_owned(),
-            line: None,
-            column: 1,
-        };
-        let cache = quick_open_results_cache(
-            query.clone(),
-            vec![quick_open_result("src/main.rs", Some((4, 2)))],
-            vec![format!(
-                "src/main.rs:999:999\n{}",
-                "x".repeat(QUICK_OPEN_RESULT_LABEL_MAX_CHARS)
-            )],
+    fn candidates_for_query_falls_back_to_full_after_an_empty_query() {
+        let default_view_paths = [PathBuf::from("workspace/src/alpha.rs")];
+
+        assert_eq!(
+            candidates_for_query(
+                Some(("", default_view_paths.as_slice(), false)),
+                "alph",
+                true
+            ),
+            CandidateSource::Full
         );
-        let rebuilt_results = vec![quick_open_result("src/main.rs", Some((4, 2)))];
+    }
 
-        let (_results, labels) =
-            quick_open_results_with_reused_display_metadata(rebuilt_results, &query, Some(cache));
+    #[test]
+    fn candidates_for_query_falls_back_to_full_scan_without_prefix_extension() {
+        let previous_paths = [PathBuf::from("workspace/src/alpha.rs")];
 
-        assert_eq!(labels, vec!["src/main.rs:4:2"]);
-        assert!(labels[0].chars().count() <= QUICK_OPEN_RESULT_LABEL_MAX_CHARS);
+        assert_eq!(
+            candidates_for_query(None, "alph", true),
+            CandidateSource::Full
+        );
+
+        assert_eq!(
+            candidates_for_query(Some(("alph", previous_paths.as_slice(), false)), "al", true),
+            CandidateSource::Full
+        );
+
+        assert_eq!(
+            candidates_for_query(
+                Some(("alph", previous_paths.as_slice(), false)),
+                "beta",
+                true
+            ),
+            CandidateSource::Full
+        );
+
+        assert_eq!(
+            candidates_for_query(Some(("alph", previous_paths.as_slice(), false)), "", true),
+            CandidateSource::Full
+        );
+    }
+
+    #[test]
+    fn candidates_for_query_falls_back_to_full_scan_when_generation_changes() {
+        let previous_paths = [PathBuf::from("workspace/src/alpha.rs")];
+
+        assert_eq!(
+            candidates_for_query(
+                Some(("alph", previous_paths.as_slice(), false)),
+                "alpha",
+                false
+            ),
+            CandidateSource::Full
+        );
+    }
+
+    #[test]
+    fn quick_open_prefix_extension_reranks_only_previous_matched_paths() {
+        let ctx = egui::Context::default();
+        let mut app = app_for_test(PathBuf::from("workspace"));
+        app.index = synthetic_project_index_with_files(vec![
+            "workspace/src/alpha.rs",
+            "workspace/src/gamma_2.rs",
+            "workspace/src/xray_2.rs",
+        ]);
+        app.project_index_generation = 3;
+
+        app.quick_open_results_cache = Some(seeded_completed_cache(
+            3,
+            "a",
+            &["src/alpha.rs", "src/gamma_2.rs"],
+        ));
+        app.quick_open_query = "a_2".to_owned();
+
+        let visible = app.refresh_quick_open_results_cache(&ctx);
+
+        assert_eq!(visible, 2);
+        match ranked_event(&app.rx) {
+            UiEvent::QuickOpenRanked {
+                request_id,
+                key,
+                results,
+            } => {
+                assert_eq!(key.query_input, "a_2");
+                assert!(results.iter().any(|result| result.rel.contains("gamma_2")));
+                assert!(
+                    !results.iter().any(|result| result.rel.contains("xray_2")),
+                    "candidates outside the previous matched set must be skipped"
+                );
+                assert!(app.apply_quick_open_ranked_results(request_id, &key, results));
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+        let cache = app.quick_open_results_cache.as_ref().unwrap();
+        assert!(
+            cache
+                .results
+                .iter()
+                .any(|result| result.rel.contains("gamma_2"))
+        );
+        assert!(
+            !cache
+                .results
+                .iter()
+                .any(|result| result.rel.contains("xray_2"))
+        );
+        assert_eq!(
+            cache
+                .completed_ranking
+                .as_ref()
+                .map(|ranking| ranking.query.as_str()),
+            Some("a_2")
+        );
+    }
+
+    #[test]
+    fn quick_open_backspace_falls_back_to_full_candidates() {
+        let ctx = egui::Context::default();
+        let mut app = app_for_test(PathBuf::from("workspace"));
+        app.index = synthetic_project_index_with_files(vec![
+            "workspace/src/alpha.rs",
+            "workspace/src/arc.rs",
+        ]);
+        app.project_index_generation = 3;
+        app.quick_open_results_cache = Some(seeded_completed_cache(3, "a", &["src/alpha.rs"]));
+        app.quick_open_query = String::new();
+
+        app.refresh_quick_open_results_cache(&ctx);
+
+        match ranked_event(&app.rx) {
+            UiEvent::QuickOpenRanked {
+                request_id,
+                key,
+                results,
+            } => {
+                assert_eq!(key.query_input, "");
+                assert!(
+                    results.iter().any(|result| result.rel.contains("alpha"))
+                        && results.iter().any(|result| result.rel.contains("arc")),
+                    "a shortened query must rescan the full index"
+                );
+                assert!(app.apply_quick_open_ranked_results(request_id, &key, results));
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
+    }
+
+    #[test]
+    fn quick_open_generation_change_falls_back_to_full_candidates() {
+        let ctx = egui::Context::default();
+        let mut app = app_for_test(PathBuf::from("workspace"));
+        app.index = synthetic_project_index_with_files(vec![
+            "workspace/src/alpha.rs",
+            "workspace/src/arc.rs",
+        ]);
+        app.project_index_generation = 4;
+        app.quick_open_results_cache = Some(seeded_completed_cache(3, "a", &["src/alpha.rs"]));
+        app.quick_open_query = "ar".to_owned();
+
+        app.refresh_quick_open_results_cache(&ctx);
+
+        match ranked_event(&app.rx) {
+            UiEvent::QuickOpenRanked {
+                request_id,
+                key,
+                results,
+            } => {
+                assert_eq!(key.query_input, "ar");
+                assert!(
+                    results.iter().any(|result| result.rel.contains("arc")),
+                    "an index generation change must rescan the full index"
+                );
+                assert!(app.apply_quick_open_ranked_results(request_id, &key, results));
+            }
+            event => panic!("unexpected event: {event:?}"),
+        }
     }
 }

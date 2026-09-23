@@ -6,25 +6,132 @@ use crate::project_search_state::{
     project_search_result_is_current, record_recent_project_search,
     record_recent_project_search_from_parsed_globs,
 };
-use std::collections::VecDeque;
+use crate::{
+    KuroyaApp, app_startup_context::AppStartupContext, terminal::TerminalPane,
+    ui_event_channel::ui_event_channel,
+};
+use kuroya_core::{EditorSettings, ProjectIndex, Workspace};
+use std::{collections::VecDeque, fs};
+use std::{
+    path::PathBuf,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
+use tokio::runtime::Runtime;
 
 #[test]
 fn project_search_result_currency_tracks_query_and_options() {
     let include = vec!["src/**/*.rs".to_owned()];
     let exclude = vec!["target/**".to_owned()];
+    let max_file_bytes = 1024;
+    let max_results = 100;
 
     assert!(project_search_result_is_current(
-        "needle", 3, 3, true, false, &include, &exclude, "needle", true, false, &include, &exclude,
-    ));
-    assert!(!project_search_result_is_current(
-        "needle", 2, 3, true, false, &include, &exclude, "needle", true, false, &include, &exclude,
-    ));
-    assert!(!project_search_result_is_current(
-        "needle", 3, 3, true, false, &include, &exclude, "needle", false, false, &include,
+        "needle",
+        3,
+        3,
+        true,
+        false,
+        &include,
         &exclude,
+        max_file_bytes,
+        max_results,
+        "needle",
+        true,
+        false,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results,
     ));
     assert!(!project_search_result_is_current(
-        "needle", 3, 3, true, false, &include, &exclude, "", true, false, &include, &exclude,
+        "needle",
+        2,
+        3,
+        true,
+        false,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results,
+        "needle",
+        true,
+        false,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results,
+    ));
+    assert!(!project_search_result_is_current(
+        "needle",
+        3,
+        3,
+        true,
+        false,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results,
+        "needle",
+        false,
+        false,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results,
+    ));
+    assert!(!project_search_result_is_current(
+        "needle",
+        3,
+        3,
+        true,
+        false,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results,
+        "needle",
+        true,
+        false,
+        &include,
+        &exclude,
+        max_file_bytes.saturating_add(1),
+        max_results,
+    ));
+    assert!(!project_search_result_is_current(
+        "needle",
+        3,
+        3,
+        true,
+        false,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results,
+        "needle",
+        true,
+        false,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results.saturating_add(1),
+    ));
+    assert!(!project_search_result_is_current(
+        "needle",
+        3,
+        3,
+        true,
+        false,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results,
+        "",
+        true,
+        false,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results,
     ));
 }
 
@@ -32,18 +139,68 @@ fn project_search_result_currency_tracks_query_and_options() {
 fn project_search_request_currency_rejects_stale_async_results() {
     let include = vec!["src/**/*.rs".to_owned()];
     let exclude = vec!["target/**".to_owned()];
+    let max_file_bytes = 1024;
+    let max_results = 100;
 
     assert!(project_search_request_is_current(
-        7, 7, 4, 4, "needle", false, true, &include, &exclude, "needle", false, true, &include,
+        7,
+        7,
+        4,
+        4,
+        "needle",
+        false,
+        true,
+        &include,
         &exclude,
+        max_file_bytes,
+        max_results,
+        "needle",
+        false,
+        true,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results,
     ));
     assert!(!project_search_request_is_current(
-        6, 7, 4, 4, "needle", false, true, &include, &exclude, "needle", false, true, &include,
+        6,
+        7,
+        4,
+        4,
+        "needle",
+        false,
+        true,
+        &include,
         &exclude,
+        max_file_bytes,
+        max_results,
+        "needle",
+        false,
+        true,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results,
     ));
     assert!(!project_search_request_is_current(
-        7, 7, 3, 4, "needle", false, true, &include, &exclude, "needle", false, true, &include,
+        7,
+        7,
+        3,
+        4,
+        "needle",
+        false,
+        true,
+        &include,
         &exclude,
+        max_file_bytes,
+        max_results,
+        "needle",
+        false,
+        true,
+        &include,
+        &exclude,
+        max_file_bytes,
+        max_results,
     ));
     assert!(!project_search_request_is_current(
         7,
@@ -55,11 +212,15 @@ fn project_search_request_currency_rejects_stale_async_results() {
         true,
         &include,
         &exclude,
+        max_file_bytes,
+        max_results,
         "needle",
         false,
         true,
         &include,
-        &[]
+        &[],
+        max_file_bytes,
+        max_results,
     ));
 }
 
@@ -79,11 +240,15 @@ fn project_search_request_ids_wrap_without_reusing_saturated_active_id() {
         false,
         &[],
         &[],
+        1024,
+        100,
         "needle",
         false,
         false,
         &[],
         &[],
+        1024,
+        100,
     ));
 }
 
@@ -145,6 +310,7 @@ fn project_search_recent_records_are_trimmed_deduped_and_bounded() {
                 query: "third".to_owned(),
                 case_sensitive: false,
                 whole_word: false,
+                regex: false,
                 include: String::new(),
                 exclude: String::new(),
             },
@@ -173,6 +339,7 @@ fn project_search_recent_queries_are_single_line_and_bounded() {
         query: "needle\nsecond".to_owned(),
         case_sensitive: true,
         whole_word: false,
+        regex: false,
         include: String::new(),
         exclude: String::new(),
     });
@@ -188,6 +355,7 @@ fn project_search_recent_label_sanitizes_bidi_and_bounds_display_text() {
         ),
         case_sensitive: true,
         whole_word: true,
+        regex: false,
         include: "src/**".to_owned(),
         exclude: "target/**".to_owned(),
     });
@@ -205,6 +373,7 @@ fn project_search_recent_normalizes_persisted_entries() {
             query: " first ".to_owned(),
             case_sensitive: false,
             whole_word: false,
+            regex: false,
             include: String::new(),
             exclude: String::new(),
         },
@@ -212,6 +381,7 @@ fn project_search_recent_normalizes_persisted_entries() {
             query: "first".to_owned(),
             case_sensitive: false,
             whole_word: false,
+            regex: false,
             include: String::new(),
             exclude: String::new(),
         },
@@ -219,6 +389,7 @@ fn project_search_recent_normalizes_persisted_entries() {
             query: "second".to_owned(),
             case_sensitive: true,
             whole_word: true,
+            regex: false,
             include: "src/**".to_owned(),
             exclude: "target/**".to_owned(),
         },
@@ -255,6 +426,7 @@ fn project_search_recent_canonicalizes_effective_glob_drafts() {
                 query: "needle".to_owned(),
                 case_sensitive: false,
                 whole_word: false,
+                regex: false,
                 include: "src/**/*.rs; tests/**/*.rs; src/**/*.rs".to_owned(),
                 exclude: " target/**\n*.snap\ntarget/** ".to_owned(),
             },
@@ -262,6 +434,7 @@ fn project_search_recent_canonicalizes_effective_glob_drafts() {
                 query: "needle".to_owned(),
                 case_sensitive: false,
                 whole_word: false,
+                regex: false,
                 include: "src/**/*.rs,tests/**/*.rs".to_owned(),
                 exclude: "target/**, *.snap".to_owned(),
             },
@@ -294,6 +467,7 @@ fn project_search_recent_records_from_already_parsed_globs() {
         " needle\nvalue ",
         true,
         false,
+        false,
         &include,
         &exclude,
         MAX_PROJECT_SEARCH_RECENT_QUERIES,
@@ -303,10 +477,142 @@ fn project_search_recent_records_from_already_parsed_globs() {
         "needle value",
         true,
         false,
+        false,
         &include,
         &exclude,
         MAX_PROJECT_SEARCH_RECENT_QUERIES,
     );
 
     assert_eq!(recent.into_iter().collect::<Vec<_>>(), vec![expected]);
+}
+
+#[test]
+fn sync_project_search_after_settings_change_respawns_when_effective_settings_change() {
+    let root = temp_project_search_root("settings-sync-restart");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/main.rs"), "needle here\n").unwrap();
+    let mut app = app_for_settings_sync_test(root.clone());
+    app.index = ProjectIndex::rebuild(&root, 40_000);
+    app.project_index_generation = 1;
+    app.project_search_index_generation = 1;
+    app.project_search = true;
+    app.project_search_query = "needle".to_owned();
+
+    app.spawn_project_search();
+    assert!(app.project_search_submitted_key.is_some());
+    let request_id_after_spawn = app.project_search_next_request_id;
+
+    app.settings.project_search_max_results += 1;
+    app.sync_project_search_after_settings_change();
+
+    assert!(app.project_search_next_request_id > request_id_after_spawn);
+    assert!(app.status.starts_with("Searching for `needle`"));
+    let request_id_after_restart = app.project_search_next_request_id;
+
+    app.settings.project_search_exclude_globs = vec!["ignored".to_owned()];
+    app.sync_project_search_after_settings_change();
+
+    assert!(app.project_search_next_request_id > request_id_after_restart);
+    drop(app);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sync_project_search_after_settings_change_is_noop_until_effective_inputs_change() {
+    let root = temp_project_search_root("settings-sync-noop");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/main.rs"), "needle here\n").unwrap();
+    let mut app = app_for_settings_sync_test(root.clone());
+    app.index = ProjectIndex::rebuild(&root, 40_000);
+    app.project_index_generation = 1;
+    app.project_search_index_generation = 1;
+    app.project_search = true;
+    app.project_search_query = "needle".to_owned();
+
+    app.spawn_project_search();
+    let request_id_after_spawn = app.project_search_next_request_id;
+
+    app.sync_project_search_after_settings_change();
+    assert_eq!(app.project_search_next_request_id, request_id_after_spawn);
+
+    app.settings.project_search_max_results += 1;
+    app.project_search = false;
+    app.sync_project_search_after_settings_change();
+    assert_eq!(app.project_search_next_request_id, request_id_after_spawn);
+
+    app.project_search = true;
+    app.sync_project_search_after_settings_change();
+    assert!(app.project_search_next_request_id > request_id_after_spawn);
+    drop(app);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn spawn_project_search_records_submitted_key_matching_current_inputs() {
+    let root = temp_project_search_root("submitted-key");
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/main.rs"), "needle here\n").unwrap();
+    let mut app = app_for_settings_sync_test(root.clone());
+    app.index = ProjectIndex::rebuild(&root, 40_000);
+    app.project_index_generation = 1;
+    app.project_search_index_generation = 1;
+    app.project_search_include = " src/**/*.rs, src/**/*.rs ".to_owned();
+    app.project_search_query = " needle ".to_owned();
+
+    app.spawn_project_search();
+
+    let submitted = app
+        .project_search_submitted_key
+        .clone()
+        .expect("submitted key");
+    assert_eq!(submitted.root, root);
+    assert_eq!(submitted.query, "needle");
+    assert_eq!(submitted.include_globs, vec!["src/**/*.rs".to_owned()]);
+    assert_eq!(
+        submitted.exclude_globs,
+        app.project_search_result_exclude_globs
+    );
+    assert_eq!(
+        submitted.max_file_bytes,
+        app.project_search_result_max_file_bytes
+    );
+    assert_eq!(submitted.max_results, app.project_search_result_max_results);
+    assert!(app.project_search_key_matches_submitted(&submitted));
+    drop(app);
+    let _ = fs::remove_dir_all(root);
+}
+
+fn app_for_settings_sync_test(root: PathBuf) -> KuroyaApp {
+    let (tx, rx) = ui_event_channel();
+    let mut settings = EditorSettings::default();
+    settings.project_search_exclude_globs.clear();
+    KuroyaApp::from_startup_context(AppStartupContext {
+        runtime: Runtime::new().expect("test runtime"),
+        tx,
+        rx,
+        workspace: Workspace::new(root.clone()),
+        settings: settings.clone(),
+        settings_panel_draft: settings,
+        settings_editor_font_path: String::new(),
+        settings_ui_font_path: String::new(),
+        theme_picker_selected: 0,
+        saved_session: None,
+        terminal: TerminalPane::new(root.clone(), 100, 12.0, 1.2),
+        watcher: None,
+        recent_projects: Vec::new(),
+        trusted_workspaces: vec![root],
+        now: Instant::now(),
+        startup_timings: Vec::new(),
+    })
+}
+
+fn temp_project_search_root(name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    std::env::temp_dir().join(format!(
+        "kuroya-project-search-tests-{name}-{}-{nanos}",
+        std::process::id()
+    ))
 }

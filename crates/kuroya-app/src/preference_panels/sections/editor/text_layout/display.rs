@@ -4,6 +4,7 @@ use crate::preference_panels::sections::{
     SETTINGS_TARGET_EDITOR_DISPLAY, SETTINGS_TEXT_INPUT_MAX_CHARS, SettingsHighlightState,
     bounded_settings_text_edit_width, guarded_f32_drag_value, settings_target_heading,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::{
     DEFAULT_EDITOR_FAST_SCROLL_SENSITIVITY, DEFAULT_EDITOR_LINE_DECORATIONS_WIDTH,
@@ -43,11 +44,8 @@ pub(super) fn render_display_settings_with_highlight(
             ui.end_row();
 
             ui.label("Line number selection");
-            ui.checkbox(
-                &mut draft.select_on_line_numbers,
-                "Select line when clicking line number",
-            )
-            .on_hover_text("Clicking a visible line number selects the whole line");
+            ui_switch(ui, &mut draft.select_on_line_numbers)
+                .on_hover_text("Clicking a visible line number selects the whole line");
             ui.end_row();
 
             ui.label("Scroll beyond last column");
@@ -60,16 +58,38 @@ pub(super) fn render_display_settings_with_highlight(
 
             ui.label("Scroll behavior");
             ui.vertical(|ui| {
-                ui.checkbox(
-                    &mut draft.scroll_on_middle_click,
-                    "Scroll with middle mouse button",
-                );
-                ui.checkbox(
-                    &mut draft.scroll_predominant_axis,
-                    "Keep trackpad scroll on predominant axis",
-                );
-                ui.checkbox(&mut draft.inertial_scroll, "Use inertial scrolling");
-                ui.checkbox(&mut draft.mouse_wheel_zoom, "Zoom font with mouse wheel");
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.scroll_on_middle_click);
+                    ui.label(
+                        egui::RichText::new("Scroll with middle mouse button")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.scroll_predominant_axis);
+                    ui.label(
+                        egui::RichText::new("Keep trackpad scroll on predominant axis")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.inertial_scroll);
+                    ui.label(egui::RichText::new("Use inertial scrolling").small().weak());
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.mouse_wheel_zoom);
+                    ui.label(
+                        egui::RichText::new("Zoom font with mouse wheel")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
             });
             ui.end_row();
 
@@ -110,15 +130,15 @@ pub(super) fn render_display_settings_with_highlight(
             ui.end_row();
 
             ui.label("Editor links");
-            ui.checkbox(&mut draft.links, "Detect links in editor text");
+            ui_switch(ui, &mut draft.links).on_hover_text("Detect links in editor text");
             ui.end_row();
 
             ui.label("Context menu");
-            ui.checkbox(&mut draft.contextmenu, "Use editor context menu");
+            ui_switch(ui, &mut draft.contextmenu);
             ui.end_row();
 
             ui.label("Color decorators");
-            ui.checkbox(&mut draft.color_decorators, "Show inline color previews");
+            ui_switch(ui, &mut draft.color_decorators).on_hover_text("Show inline color previews");
             ui.end_row();
 
             ui.label("Color picker trigger");
@@ -178,7 +198,8 @@ pub(super) fn render_display_settings_with_highlight(
             );
             ui.end_row();
 
-            ui.label("GPU acceleration");
+            ui.label("GPU acceleration")
+                .on_hover_text("Caches prepared editor rows to reduce per-frame layout work");
             editor_experimental_gpu_acceleration_combo(
                 ui,
                 "editor_experimental_gpu_acceleration",
@@ -195,24 +216,15 @@ pub(super) fn render_display_settings_with_highlight(
             ui.end_row();
 
             ui.label("Control characters");
-            ui.checkbox(
-                &mut draft.render_control_characters,
-                "Render control characters",
-            );
+            ui_switch(ui, &mut draft.render_control_characters);
             ui.end_row();
 
             ui.label("Unicode invisible");
-            ui.checkbox(
-                &mut draft.unicode_highlight_invisible_characters,
-                "Highlight invisible characters",
-            );
+            ui_switch(ui, &mut draft.unicode_highlight_invisible_characters);
             ui.end_row();
 
             ui.label("Unicode ambiguous");
-            ui.checkbox(
-                &mut draft.unicode_highlight_ambiguous_characters,
-                "Highlight ambiguous characters",
-            );
+            ui_switch(ui, &mut draft.unicode_highlight_ambiguous_characters);
             ui.end_row();
 
             ui.label("Unicode non-ASCII");

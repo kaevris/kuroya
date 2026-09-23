@@ -1,3 +1,4 @@
+use super::super::state::vim_set_previous_context_mark;
 use super::matching::{vim_search_match_range_for_query, vim_search_word_target};
 use super::state::VIM_SEARCHES;
 use kuroya_core::TextBuffer;
@@ -9,13 +10,12 @@ pub(in crate::editor_vim_key_events) fn vim_operator_search_repeat_range(
     reverse: bool,
 ) -> Option<Range<usize>> {
     let start = buffer.cursor();
-    if !vim_repeat_last_search(buffer, count, reverse) {
-        return None;
-    }
 
-    let target = buffer.cursor();
+    let target = vim_last_search_target(buffer, count, reverse)?;
+    buffer.set_single_cursor(target);
+    let end = buffer.cursor();
     buffer.set_single_cursor(start);
-    (start != target).then_some(start.min(target)..start.max(target))
+    (start != end).then_some(start.min(end)..start.max(end))
 }
 
 pub(in crate::editor_vim_key_events) fn vim_operator_search_match_range(
@@ -62,9 +62,19 @@ pub(in crate::editor_vim_key_events) fn vim_repeat_last_search(
     count: usize,
     reverse: bool,
 ) -> bool {
+    let Some(target) = vim_last_search_target(buffer, count, reverse) else {
+        return false;
+    };
+
+    vim_set_previous_context_mark(buffer);
+    buffer.set_single_cursor(target);
+    true
+}
+
+fn vim_last_search_target(buffer: &TextBuffer, count: usize, reverse: bool) -> Option<usize> {
     let buffer_id = buffer.id();
     let origin = buffer.cursor();
-    let target = VIM_SEARCHES.with(|searches| {
+    VIM_SEARCHES.with(|searches| {
         let searches = searches.borrow();
         let search = searches
             .iter()
@@ -83,13 +93,7 @@ pub(in crate::editor_vim_key_events) fn vim_repeat_last_search(
             forward,
             search.whole_word,
         )
-    });
-
-    let Some(target) = target else {
-        return false;
-    };
-    buffer.set_single_cursor(target);
-    true
+    })
 }
 
 pub(in crate::editor_vim_key_events) fn vim_repeat_last_search_in_direction(
@@ -120,6 +124,8 @@ pub(in crate::editor_vim_key_events) fn vim_repeat_last_search_in_direction(
     let Some(target) = target else {
         return false;
     };
+
+    vim_set_previous_context_mark(buffer);
     buffer.set_single_cursor(target);
     true
 }

@@ -1,14 +1,15 @@
 use super::super::super::super::reserve_request_id;
 use super::pending::{register_code_action_resolve_request, register_code_actions_request};
+use crate::lsp_client::pending::PendingLspRequests;
 use crate::lsp_client::{
     pending::{
-        MAX_LSP_OUTBOUND_JSON_PAYLOAD_BYTES, PendingLspRequest, lsp_json_payload_is_bounded,
+        MAX_LSP_OUTBOUND_JSON_PAYLOAD_BYTES, lsp_json_payload_is_bounded,
         lsp_request_target_is_valid,
     },
     request_dispatch::write_request_message,
 };
 use kuroya_core::{BufferId, Diagnostic, LspCodeAction, LspWireMessage};
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 use tokio::process::ChildStdin;
 
 pub(super) async fn dispatch_code_actions(
@@ -24,7 +25,7 @@ pub(super) async fn dispatch_code_actions(
     diagnostics: Vec<Diagnostic>,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     if !lsp_request_target_is_valid(id, &path) {
         return true;
@@ -62,7 +63,7 @@ pub(super) async fn dispatch_code_action_resolve(
     action: LspCodeAction,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     if !lsp_request_target_is_valid(id, &path) {
         return true;
@@ -87,7 +88,7 @@ pub(super) async fn dispatch_code_action_resolve(
 
 fn reserve_code_action_resolve_message(
     next_request_id: &mut u64,
-    pending_requests: &HashMap<u64, PendingLspRequest>,
+    pending_requests: &PendingLspRequests,
     action: &LspCodeAction,
 ) -> Option<(u64, serde_json::Value)> {
     let resolve_payload = action.resolve_payload.as_ref()?;
@@ -108,10 +109,11 @@ fn reserve_code_action_resolve_message(
 #[cfg(test)]
 mod tests {
     use super::reserve_code_action_resolve_message;
+    use crate::lsp_client::pending::PendingLspRequests;
     use crate::lsp_client::pending::{MAX_LSP_OUTBOUND_JSON_PAYLOAD_BYTES, PendingLspRequest};
     use kuroya_core::LspCodeAction;
     use serde_json::json;
-    use std::{collections::HashMap, path::PathBuf, sync::Arc};
+    use std::{path::PathBuf, sync::Arc};
 
     fn hover(version: u64) -> PendingLspRequest {
         PendingLspRequest::Hover {
@@ -126,7 +128,7 @@ mod tests {
     #[test]
     fn code_action_resolve_message_does_not_reserve_without_payload() {
         let mut next_request_id = 9;
-        let pending_requests = HashMap::new();
+        let pending_requests = PendingLspRequests::default();
         let action = code_action(None);
 
         let message =
@@ -139,7 +141,7 @@ mod tests {
     #[test]
     fn code_action_resolve_message_reserves_after_payload_is_sendable() {
         let mut next_request_id = 9;
-        let pending_requests = HashMap::new();
+        let pending_requests = PendingLspRequests::default();
         let action = code_action(Some(Arc::new(json!({
             "title": "Import HashMap",
             "data": { "id": 7 }
@@ -159,7 +161,7 @@ mod tests {
     #[test]
     fn code_action_resolve_message_skips_active_pending_id() {
         let mut next_request_id = 9;
-        let pending_requests = HashMap::from([(9, hover(1))]);
+        let pending_requests = PendingLspRequests::from([(9, hover(1))]);
         let action = code_action(Some(Arc::new(json!({
             "title": "Import HashMap",
             "data": { "id": 7 }
@@ -177,7 +179,7 @@ mod tests {
     #[test]
     fn code_action_resolve_message_does_not_reserve_oversized_payload() {
         let mut next_request_id = 9;
-        let pending_requests = HashMap::new();
+        let pending_requests = PendingLspRequests::default();
         let action = code_action(Some(Arc::new(json!({
             "data": "x".repeat(MAX_LSP_OUTBOUND_JSON_PAYLOAD_BYTES)
         }))));

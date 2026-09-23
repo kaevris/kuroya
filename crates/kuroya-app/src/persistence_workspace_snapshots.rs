@@ -159,12 +159,23 @@ fn latest_duplicate_workspace_snapshot_path(
 }
 
 fn prune_workspace_snapshots(dir: &Path) -> anyhow::Result<()> {
-    let snapshots = workspace_snapshot_files_in_dir(dir)?;
+    let mut snapshots = workspace_snapshot_files_in_dir(dir)?;
+    sort_workspace_snapshots_oldest_modified_first(&mut snapshots);
     let overflow = snapshots.len().saturating_sub(MAX_WORKSPACE_SNAPSHOTS);
     for path in snapshots.into_iter().take(overflow) {
         fs::remove_file(path)?;
     }
     Ok(())
+}
+
+fn sort_workspace_snapshots_oldest_modified_first(snapshots: &mut [PathBuf]) {
+    snapshots.sort_by_key(|path| snapshot_modified_time(path).unwrap_or(UNIX_EPOCH));
+}
+
+fn snapshot_modified_time(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
 }
 
 fn workspace_snapshot_files_in_dir(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
@@ -247,7 +258,6 @@ fn quarantined_workspace_snapshot_path(path: &Path, reason: &str) -> PathBuf {
 }
 
 fn sort_workspace_snapshot_paths(snapshots: &mut [PathBuf]) {
-    // Preserve path tie-breaking without cloning every PathBuf into the cached key.
     snapshots.sort();
     snapshots.sort_by_cached_key(|path| workspace_snapshot_sort_key(path));
 }
@@ -324,15 +334,15 @@ fn workspace_snapshot_sort_key(path: &Path) -> WorkspaceSnapshotSortKey {
 #[cfg(test)]
 mod tests {
     use super::{
-        WORKSPACE_SNAPSHOT_SCAN_LIMIT, load_latest_workspace_snapshot,
-        load_latest_workspace_snapshot_with_quarantine, save_workspace_snapshot,
-        sort_workspace_snapshot_paths, unique_workspace_snapshot_path,
+        MAX_WORKSPACE_SNAPSHOTS, WORKSPACE_SNAPSHOT_SCAN_LIMIT, load_latest_workspace_snapshot,
+        load_latest_workspace_snapshot_with_quarantine, prune_workspace_snapshots,
+        save_workspace_snapshot, sort_workspace_snapshot_paths, unique_workspace_snapshot_path,
         workspace_snapshot_files_in_dir,
     };
     use crate::{
         layout::{
-            DIAGNOSTICS_PANEL_DEFAULT_WIDTH, EXPLORER_DEFAULT_WIDTH, PROJECT_SEARCH_DEFAULT_WIDTH,
-            SOURCE_CONTROL_DEFAULT_WIDTH, SYMBOLS_PANEL_DEFAULT_WIDTH, TERMINAL_DEFAULT_HEIGHT,
+            DIAGNOSTICS_PANEL_DEFAULT_WIDTH, EXPLORER_DEFAULT_WIDTH, SOURCE_CONTROL_DEFAULT_WIDTH,
+            SYMBOLS_PANEL_DEFAULT_WIDTH, TERMINAL_DEFAULT_HEIGHT,
         },
         persistence::{PersistedSession, RecoveredBuffer},
         persistence_session::PERSISTED_SESSION_MAX_BYTES,
@@ -341,7 +351,7 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     #[test]
@@ -480,11 +490,62 @@ mod tests {
         fs::remove_dir_all(workspace).unwrap();
     }
 
+    #[test]
+    fn workspace_snapshot_prune_keeps_newest_modified_not_newest_name() {
+        let workspace = temp_workspace("prune-mtime");
+        let snapshot_dir = workspace_snapshots_dir(&workspace);
+        fs::create_dir_all(&snapshot_dir).unwrap();
+        let base = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let total = MAX_WORKSPACE_SNAPSHOTS + 2;
+        for index in 0..total {
+            let path = snapshot_dir.join(format!("workspace.{index}.0.0.json"));
+            fs::write(&path, "{not valid json").unwrap();
+            let file = fs::File::options().write(true).open(&path).unwrap();
+
+            file.set_modified(base + Duration::from_secs((total - 1 - index) as u64))
+                .unwrap();
+        }
+
+        prune_workspace_snapshots(&snapshot_dir).unwrap();
+
+        assert!(snapshot_dir.join("workspace.0.0.0.json").exists());
+        assert!(
+            snapshot_dir
+                .join(format!(
+                    "workspace.{}.0.0.json",
+                    MAX_WORKSPACE_SNAPSHOTS - 1
+                ))
+                .exists()
+        );
+        assert!(
+            !snapshot_dir
+                .join(format!("workspace.{MAX_WORKSPACE_SNAPSHOTS}.0.0.json"))
+                .exists()
+        );
+        assert!(
+            !snapshot_dir
+                .join(format!("workspace.{}.0.0.json", total - 1))
+                .exists()
+        );
+        let remaining = fs::read_dir(&snapshot_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with("workspace.") && name.ends_with(".json"))
+            })
+            .count();
+        assert_eq!(remaining, MAX_WORKSPACE_SNAPSHOTS);
+
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
     fn snapshot_session(workspace: &Path, text: &str) -> PersistedSession {
         PersistedSession {
             workspace_root: workspace.to_path_buf(),
             explorer_width: EXPLORER_DEFAULT_WIDTH,
-            project_search_width: PROJECT_SEARCH_DEFAULT_WIDTH,
             symbols_panel_width: SYMBOLS_PANEL_DEFAULT_WIDTH,
             diagnostics_panel_width: DIAGNOSTICS_PANEL_DEFAULT_WIDTH,
             source_control_width: SOURCE_CONTROL_DEFAULT_WIDTH,

@@ -10,6 +10,7 @@ pub(super) use case::{
     vim_toggle_case_operator_motion, vim_toggle_case_text_object,
 };
 pub(super) use delete::{
+    vim_apply_change_operator_motion, vim_apply_change_operator_motion_into_named_register,
     vim_apply_operator_motion, vim_apply_operator_motion_into_named_register,
     vim_apply_text_object, vim_apply_text_object_into_named_register,
 };

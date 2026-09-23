@@ -506,9 +506,9 @@ fn terminal_restore_preserves_scrollback_offset() {
 fn terminal_restore_bounds_total_scrollback_and_prioritizes_active_session() {
     let size = test_terminal_size();
     let mut snapshots = Vec::new();
-    for id in 1..=6 {
+    for id in 1..=16 {
         snapshots.push(PersistedTerminalSession {
-            cwd: Some(PathBuf::from("workspace")),
+            cwd: None,
             scrollback: format!("{}active-marker-{id}\n", "line\n".repeat(70 * 1024)),
             scrollback_offset: 0,
             custom_title: None,
@@ -519,7 +519,7 @@ fn terminal_restore_bounds_total_scrollback_and_prioritizes_active_session() {
     }
     let mut pane = pane_with_sessions(Vec::new(), size);
 
-    pane.restore_terminal_sessions(&snapshots, 5, false, &[1.0; 6], true);
+    pane.restore_terminal_sessions(&snapshots, 5, false, &[1.0; 16], true);
 
     let total_scrollback_bytes = pane
         .sessions

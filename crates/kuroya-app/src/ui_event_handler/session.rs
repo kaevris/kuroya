@@ -1,27 +1,44 @@
 use crate::{
-    KuroyaApp, path_display::display_error_label_cow, save_lifecycle::finish_session_save,
+    KuroyaApp,
+    path_display::display_error_label_cow,
+    save_lifecycle::{
+        finish_session_save, note_session_save_failed, note_session_save_succeeded,
+        with_session_save_rotation_order,
+    },
     workspace_state::workspace_event_matches,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub(super) fn handle_session_saved_event(app: &mut KuroyaApp, root: PathBuf) {
-    finish_session_save_and_start_next(app, root);
+    if let Some(fingerprint) = note_session_save_succeeded(&root) {
+        app.last_saved_session_structure_fingerprint = Some(fingerprint);
+    }
+    finish_session_save_and_start_next(app, &root);
 }
 
 pub(super) fn handle_session_save_failed_event(app: &mut KuroyaApp, root: PathBuf, error: String) {
-    if workspace_event_matches(&app.workspace.root, &root) {
+    let is_current_workspace = workspace_event_matches(&app.workspace.root, &root);
+    if is_current_workspace {
         app.status = session_save_failure_status(&error);
+        app.last_saved_session_structure_fingerprint = None;
     }
-    finish_session_save_and_start_next(app, root);
+    finish_session_save_and_start_next(app, &root);
+    if is_current_workspace && note_session_save_failed(&root) {
+        app.request_session_save(root, app.build_session_save_snapshot());
+    }
 }
 
-fn finish_session_save_and_start_next(app: &mut KuroyaApp, root: PathBuf) {
-    let was_current = app.session_save_in_flight.as_deref() == Some(root.as_path());
-    if let Some((next_root, next_session)) = finish_session_save(
-        &root,
-        &mut app.session_save_in_flight,
-        &mut app.queued_session_saves,
-    ) {
+fn finish_session_save_and_start_next(app: &mut KuroyaApp, root: &Path) {
+    let was_current = app.session_save_in_flight.as_deref() == Some(root);
+    let next = with_session_save_rotation_order(|order| {
+        finish_session_save(
+            root,
+            &mut app.session_save_in_flight,
+            &mut app.queued_session_saves,
+            order,
+        )
+    });
+    if let Some((next_root, next_session)) = next {
         app.spawn_session_save(next_root, next_session);
     } else if was_current {
         app.session_save_in_flight_snapshot = None;

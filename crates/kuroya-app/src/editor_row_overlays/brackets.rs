@@ -1,11 +1,121 @@
 use crate::{
-    editor_pane_rows::EditorRowContext, editor_text_geometry::visual_column_for_char_offset,
-    theme::bracket_depth_color,
+    editor_pane_rows::EditorRowContext, editor_pane_support::fingerprint_fold_u64,
+    editor_text_geometry::visual_column_for_char_offset, theme::bracket_depth_color,
 };
 use eframe::egui::{self, Color32, Pos2, pos2, vec2};
-use kuroya_core::EditorBracketPairGuideMode;
-use kuroya_core::buffer::BracketColor;
-use std::ops::Range;
+use kuroya_core::{
+    EditorBracketPairGuideMode, TextBuffer,
+    buffer::{BracketColor, BracketPairGuide},
+};
+use std::{
+    collections::HashMap,
+    ops::Range,
+    sync::{LazyLock, Mutex, MutexGuard},
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResolvedBracketPairGuide {
+    open_idx: usize,
+    close_idx: usize,
+    depth: usize,
+    active: bool,
+    open_line: usize,
+    open_column: usize,
+    close_line: usize,
+    close_column: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BracketPairGuideBucketKey {
+    buffer_id: u64,
+    buffer_version: u64,
+    buffer_len_chars: usize,
+    guides_fingerprint: u64,
+    active_matches_fingerprint: u64,
+    vertical_guides: EditorBracketPairGuideMode,
+    horizontal_guides: EditorBracketPairGuideMode,
+}
+
+#[derive(Default)]
+struct BracketPairGuideBucketCache {
+    key: Option<BracketPairGuideBucketKey>,
+    buckets: HashMap<usize, Vec<ResolvedBracketPairGuide>>,
+}
+
+fn bracket_pair_guide_bucket_cache() -> MutexGuard<'static, BracketPairGuideBucketCache> {
+    static BRACKET_PAIR_GUIDE_BUCKETS: LazyLock<Mutex<BracketPairGuideBucketCache>> =
+        LazyLock::new(|| Mutex::new(BracketPairGuideBucketCache::default()));
+    BRACKET_PAIR_GUIDE_BUCKETS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn bracket_pair_guides_fingerprint(guides: &[BracketPairGuide]) -> u64 {
+    let mut hash = guides.len() as u64;
+    for guide in guides {
+        fingerprint_fold_u64(&mut hash, guide.open_idx as u64);
+        fingerprint_fold_u64(&mut hash, guide.close_idx as u64);
+        fingerprint_fold_u64(&mut hash, guide.depth as u64);
+    }
+    hash
+}
+
+fn bracket_active_matches_fingerprint(matches: &[(usize, usize)]) -> u64 {
+    let mut hash = matches.len() as u64;
+    for (open_idx, close_idx) in matches {
+        fingerprint_fold_u64(&mut hash, *open_idx as u64);
+        fingerprint_fold_u64(&mut hash, *close_idx as u64);
+    }
+    hash
+}
+
+fn build_bracket_pair_guide_buckets(
+    buffer: &TextBuffer,
+    guides: &[BracketPairGuide],
+    active_matches: &[(usize, usize)],
+    vertical_guides: EditorBracketPairGuideMode,
+    horizontal_guides: EditorBracketPairGuideMode,
+) -> HashMap<usize, Vec<ResolvedBracketPairGuide>> {
+    let mut buckets: HashMap<usize, Vec<ResolvedBracketPairGuide>> = HashMap::new();
+    for guide in guides {
+        let active = guide_is_active(guide.open_idx, guide.close_idx, active_matches);
+        if !guide_mode_shows_any(vertical_guides, horizontal_guides, active) {
+            continue;
+        }
+        let vertical_shows = guide_mode_shows(vertical_guides, active);
+        let open_pos = buffer.char_position(guide.open_idx);
+        let close_pos = buffer.char_position(guide.close_idx);
+        let resolved = ResolvedBracketPairGuide {
+            open_idx: guide.open_idx,
+            close_idx: guide.close_idx,
+            depth: guide.depth,
+            active,
+            open_line: open_pos.line,
+            open_column: open_pos.column,
+            close_line: close_pos.line,
+            close_column: close_pos.column,
+        };
+        if vertical_shows {
+            let start = resolved.open_line.min(resolved.close_line);
+            let end = resolved.open_line.max(resolved.close_line);
+            for line in start..=end {
+                buckets.entry(line).or_default().push(resolved);
+            }
+        } else {
+            buckets
+                .entry(resolved.open_line)
+                .or_default()
+                .push(resolved);
+            if resolved.close_line != resolved.open_line {
+                buckets
+                    .entry(resolved.close_line)
+                    .or_default()
+                    .push(resolved);
+            }
+        }
+    }
+    buckets
+}
 
 pub(crate) fn paint_bracket_pair_guides(
     painter: &egui::Painter,
@@ -32,22 +142,37 @@ pub(crate) fn paint_bracket_pair_guides(
         return;
     }
 
-    for guide in row.bracket_pair_guide_ranges {
-        let active = guide_is_active(
-            guide.open_idx,
-            guide.close_idx,
+    let key = BracketPairGuideBucketKey {
+        buffer_id: row.buffer.id(),
+        buffer_version: row.buffer.version(),
+        buffer_len_chars: row.buffer.len_chars(),
+        guides_fingerprint: bracket_pair_guides_fingerprint(row.bracket_pair_guide_ranges),
+        active_matches_fingerprint: bracket_active_matches_fingerprint(
             row.active_bracket_pair_matches,
+        ),
+        vertical_guides,
+        horizontal_guides,
+    };
+    let mut cache = bracket_pair_guide_bucket_cache();
+    if cache.key != Some(key) {
+        cache.key = Some(key);
+        cache.buckets = build_bracket_pair_guide_buckets(
+            row.buffer,
+            row.bracket_pair_guide_ranges,
+            row.active_bracket_pair_matches,
+            vertical_guides,
+            horizontal_guides,
         );
-        if !guide_mode_shows_any(vertical_guides, horizontal_guides, active) {
-            continue;
-        }
+    }
+    let Some(row_guides) = cache.buckets.get(&line_idx) else {
+        return;
+    };
 
-        let open_pos = row.buffer.char_position(guide.open_idx);
-        let close_pos = row.buffer.char_position(guide.close_idx);
-        let draw_vertical = guide_mode_shows(vertical_guides, active)
-            && guide_visible_on_line(open_pos.line, close_pos.line, line_idx);
-        let draw_horizontal = guide_mode_shows(horizontal_guides, active)
-            && (line_idx == open_pos.line || line_idx == close_pos.line);
+    for guide in row_guides {
+        let draw_vertical = guide_mode_shows(vertical_guides, guide.active)
+            && guide_visible_on_line(guide.open_line, guide.close_line, line_idx);
+        let draw_horizontal = guide_mode_shows(horizontal_guides, guide.active)
+            && (line_idx == guide.open_line || line_idx == guide.close_line);
         if !draw_vertical && !draw_horizontal {
             continue;
         }
@@ -57,23 +182,23 @@ pub(crate) fn paint_bracket_pair_guides(
             text_pos,
             line_idx,
             line_text,
-            open_pos.line,
-            open_pos.column,
+            guide.open_line,
+            guide.open_column,
         );
         let stroke = bracket_pair_guide_stroke(
             guide.depth,
-            active,
+            guide.active,
             row.highlight_active_bracket_pair,
             row.weak_text_color,
         );
 
         if draw_vertical {
-            let top = if line_idx == open_pos.line {
+            let top = if line_idx == guide.open_line {
                 rect.top() + row.row_height * 0.58
             } else {
                 rect.top() + 2.0
             };
-            let bottom = if line_idx == close_pos.line {
+            let bottom = if line_idx == guide.close_line {
                 rect.top() + row.row_height * 0.42
             } else {
                 rect.bottom() - 2.0
@@ -89,13 +214,13 @@ pub(crate) fn paint_bracket_pair_guides(
                 text_pos,
                 line_idx,
                 line_text,
-                close_pos.line,
-                close_pos.column,
+                guide.close_line,
+                guide.close_column,
             );
-            if open_pos.line == close_pos.line && line_idx == open_pos.line {
+            if guide.open_line == guide.close_line && line_idx == guide.open_line {
                 paint_horizontal_bracket_pair_guide(painter, rect, row, open_x, close_x, stroke);
             } else {
-                if line_idx == open_pos.line {
+                if line_idx == guide.open_line {
                     paint_horizontal_bracket_pair_guide(
                         painter,
                         rect,
@@ -105,7 +230,7 @@ pub(crate) fn paint_bracket_pair_guides(
                         stroke,
                     );
                 }
-                if line_idx == close_pos.line {
+                if line_idx == guide.close_line {
                     paint_horizontal_bracket_pair_guide(
                         painter, rect, row, open_x, close_x, stroke,
                     );
@@ -300,10 +425,135 @@ fn bracket_overlay_geometry_is_valid(
 #[cfg(test)]
 mod tests {
     use super::{
-        bracket_overlay_geometry_is_valid, guide_is_active, guide_mode_shows, guide_mode_shows_any,
-        guide_visible_on_line,
+        bracket_active_matches_fingerprint, bracket_overlay_geometry_is_valid,
+        bracket_pair_guides_fingerprint, build_bracket_pair_guide_buckets, guide_is_active,
+        guide_mode_shows, guide_mode_shows_any, guide_visible_on_line,
     };
-    use kuroya_core::EditorBracketPairGuideMode;
+    use kuroya_core::{EditorBracketPairGuideMode, TextBuffer, buffer::BracketPairGuide};
+
+    #[test]
+    fn bracket_pair_guide_bucket_resolves_each_spanning_line_once() {
+        let buffer = TextBuffer::from_text(1, None, "{\nmid\n}".to_owned());
+        let guides = [BracketPairGuide {
+            open_idx: 0,
+            close_idx: 6,
+            depth: 1,
+        }];
+
+        let vertical = build_bracket_pair_guide_buckets(
+            &buffer,
+            &guides,
+            &[],
+            EditorBracketPairGuideMode::On,
+            EditorBracketPairGuideMode::Off,
+        );
+        for line in 0..=2usize {
+            assert_eq!(vertical.get(&line).map(Vec::len), Some(1));
+        }
+        let resolved = &vertical[&1][0];
+        assert_eq!((resolved.open_line, resolved.open_column), (0, 0));
+        assert_eq!((resolved.close_line, resolved.close_column), (2, 0));
+        assert_eq!(resolved.depth, 1);
+        assert!(!resolved.active);
+
+        let horizontal = build_bracket_pair_guide_buckets(
+            &buffer,
+            &guides,
+            &[],
+            EditorBracketPairGuideMode::Off,
+            EditorBracketPairGuideMode::On,
+        );
+        assert_eq!(horizontal.get(&0).map(Vec::len), Some(1));
+        assert_eq!(horizontal.get(&1), None);
+        assert_eq!(horizontal.get(&2).map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn bracket_pair_guide_bucket_keeps_source_order_within_a_line() {
+        let buffer = TextBuffer::from_text(1, None, "{\n{\n}\n}".to_owned());
+        let guides = [
+            BracketPairGuide {
+                open_idx: 2,
+                close_idx: 4,
+                depth: 1,
+            },
+            BracketPairGuide {
+                open_idx: 0,
+                close_idx: 6,
+                depth: 0,
+            },
+        ];
+
+        let buckets = build_bracket_pair_guide_buckets(
+            &buffer,
+            &guides,
+            &[],
+            EditorBracketPairGuideMode::On,
+            EditorBracketPairGuideMode::Off,
+        );
+
+        let line = &buckets[&1];
+        assert_eq!(line.len(), 2);
+        assert_eq!(line[0].open_idx, 2);
+        assert_eq!(line[1].open_idx, 0);
+    }
+
+    #[test]
+    fn bracket_pair_guide_bucket_follows_active_only_modes() {
+        let buffer = TextBuffer::from_text(1, None, "{\n}".to_owned());
+        let guides = [BracketPairGuide {
+            open_idx: 0,
+            close_idx: 2,
+            depth: 0,
+        }];
+
+        let active = build_bracket_pair_guide_buckets(
+            &buffer,
+            &guides,
+            &[(0, 2)],
+            EditorBracketPairGuideMode::Active,
+            EditorBracketPairGuideMode::Off,
+        );
+        assert_eq!(active.get(&0).map(Vec::len), Some(1));
+        assert_eq!(active.get(&1).map(Vec::len), Some(1));
+        assert!(active[&0][0].active);
+
+        let inactive = build_bracket_pair_guide_buckets(
+            &buffer,
+            &guides,
+            &[],
+            EditorBracketPairGuideMode::Active,
+            EditorBracketPairGuideMode::Active,
+        );
+        assert!(inactive.is_empty());
+    }
+
+    #[test]
+    fn bracket_pair_guide_fingerprints_track_payload_changes() {
+        let base = [BracketPairGuide {
+            open_idx: 1,
+            close_idx: 4,
+            depth: 1,
+        }];
+        let shifted = [BracketPairGuide {
+            open_idx: 2,
+            close_idx: 4,
+            depth: 1,
+        }];
+
+        assert_ne!(
+            bracket_pair_guides_fingerprint(&base),
+            bracket_pair_guides_fingerprint(&shifted)
+        );
+        assert_eq!(
+            bracket_pair_guides_fingerprint(&base),
+            bracket_pair_guides_fingerprint(&base)
+        );
+        assert_ne!(
+            bracket_active_matches_fingerprint(&[(1, 4)]),
+            bracket_active_matches_fingerprint(&[(1, 5)])
+        );
+    }
 
     #[test]
     fn bracket_pair_guide_modes_follow_active_state() {

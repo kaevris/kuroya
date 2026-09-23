@@ -1,5 +1,7 @@
-use crate::lsp_text_positions::lsp_one_based_utf16_position_to_buffer_char;
-use crate::lsp_text_positions::lsp_one_based_utf16_span_to_buffer_char_range;
+use crate::lsp_text_positions::{
+    lsp_line_content_utf16_len, lsp_one_based_utf16_position_to_buffer_char,
+    lsp_one_based_utf16_span_to_buffer_char_range,
+};
 use kuroya_core::TextBuffer;
 
 pub(super) fn lsp_position_within_buffer(buffer: &TextBuffer, line: usize, column: usize) -> bool {
@@ -12,7 +14,15 @@ pub(super) fn lsp_span_within_buffer(
     column: usize,
     length: usize,
 ) -> bool {
-    lsp_one_based_utf16_span_to_buffer_char_range(buffer, line, column, length).is_some()
+    if length == 0 || line == 0 {
+        return false;
+    }
+    let Some(line_utf16_len) = lsp_line_content_utf16_len(buffer, line - 1) else {
+        return false;
+    };
+    let start_utf16 = column.saturating_sub(1);
+    let clamped_length = length.min(line_utf16_len.saturating_sub(start_utf16));
+    lsp_one_based_utf16_span_to_buffer_char_range(buffer, line, column, clamped_length).is_some()
 }
 
 #[cfg(test)]
@@ -45,14 +55,18 @@ mod tests {
     }
 
     #[test]
-    fn lsp_spans_must_fit_inside_one_line() {
+    fn lsp_spans_clamp_multi_line_lengths_to_the_first_line() {
         let buffer = TextBuffer::from_text(1, None, "alpha\nbeta".to_owned());
 
         assert!(lsp_span_within_buffer(&buffer, 1, 1, 5));
         assert!(lsp_span_within_buffer(&buffer, 2, 2, 3));
-        assert!(!lsp_span_within_buffer(&buffer, 1, 1, 6));
+
+        assert!(lsp_span_within_buffer(&buffer, 1, 1, 6));
+        assert!(lsp_span_within_buffer(&buffer, 1, 3, 99));
+
         assert!(!lsp_span_within_buffer(&buffer, 1, 6, 1));
         assert!(!lsp_span_within_buffer(&buffer, 2, 2, 0));
+        assert!(!lsp_span_within_buffer(&buffer, 3, 1, 1));
     }
 
     #[test]

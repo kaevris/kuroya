@@ -202,6 +202,95 @@ fn single_cursor_plain_delete_run_entry_matches(
         }
 }
 
+pub(super) enum MergedUndoGroup {
+    Unchanged,
+
+    Merged(Box<HistoryEntry>),
+
+    ReplayFailed,
+}
+
+pub(super) fn merge_undo_history_group(
+    entries: &[HistoryEntry],
+    current: &Rope,
+) -> MergedUndoGroup {
+    if entries.len() < 2 {
+        return MergedUndoGroup::ReplayFailed;
+    }
+
+    let mut replay = current.clone();
+    for entry in entries.iter().rev() {
+        if !apply_history_inverses_checked(&mut replay, entry) {
+            return MergedUndoGroup::ReplayFailed;
+        }
+    }
+    if !selections_replayable_at_len(&entries[0].selections_before, replay.len_chars())
+        || !selections_replayable_at_len(
+            entries
+                .last()
+                .map(|entry| entry.selections_after.as_slice())
+                .unwrap_or(&[]),
+            current.len_chars(),
+        )
+    {
+        return MergedUndoGroup::ReplayFailed;
+    }
+
+    let edit = rope_pair_diff_edit(&replay, current);
+    if edit.range.start == edit.range.end && edit.inserted.is_empty() {
+        return MergedUndoGroup::Unchanged;
+    }
+
+    let inserted_len = edit.inserted.chars().count();
+    let removed = replay.slice(edit.range.clone()).to_string();
+    MergedUndoGroup::Merged(Box::new(HistoryEntry {
+        edits: vec![edit.clone()],
+        inverses: vec![TextEdit {
+            range: edit.range.start..edit.range.start + inserted_len,
+            inserted: removed,
+        }],
+        selections_before: entries[0].selections_before.clone(),
+        selections_after: entries
+            .last()
+            .map(|entry| entry.selections_after.clone())
+            .unwrap_or_default(),
+        coalescible_typing: false,
+        coalescible_delete: None,
+    }))
+}
+
+fn rope_pair_diff_edit(old: &Rope, new: &Rope) -> TextEdit {
+    let old_len = old.len_chars();
+    let new_len = new.len_chars();
+    let mut prefix = 0;
+    for (old_ch, new_ch) in old.chars().zip(new.chars()) {
+        if old_ch != new_ch {
+            break;
+        }
+        prefix += 1;
+    }
+
+    let max_suffix = old_len
+        .saturating_sub(prefix)
+        .min(new_len.saturating_sub(prefix));
+    let mut suffix = 0;
+    let old_suffix = old.chars_at(old_len).reversed();
+    let new_suffix = new.chars_at(new_len).reversed();
+    for (old_ch, new_ch) in old_suffix.zip(new_suffix) {
+        if suffix >= max_suffix || old_ch != new_ch {
+            break;
+        }
+        suffix += 1;
+    }
+
+    TextEdit {
+        range: prefix..old_len.saturating_sub(suffix),
+        inserted: new
+            .slice(prefix..new_len.saturating_sub(suffix))
+            .to_string(),
+    }
+}
+
 pub(super) fn history_entries_snapshot(
     entries: &[HistoryEntry],
     max_entries: usize,

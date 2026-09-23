@@ -1,6 +1,9 @@
 use kuroya_core::{TextBuffer, TextEdit};
 
-use super::super::{EditorVimRegister, EditorVimRegisterKind, VIM_MAX_COUNT};
+use super::super::state::vim_adjust_marks_for_edit;
+use super::super::{
+    EditorVimRegister, EditorVimRegisterKind, VIM_MAX_COUNT, vim_line_first_non_whitespace_char,
+};
 
 pub(in crate::editor_vim_key_events) fn vim_put_register_after(
     buffer: &mut TextBuffer,
@@ -73,15 +76,33 @@ fn vim_put_linewise_register(
         0
     };
 
+    let insert_position = buffer.char_position(insert_at);
     let edit = TextEdit {
         range: insert_at..insert_at,
         inserted,
     };
-    buffer.apply_edits_with_inserted_selection(
+    let changed = buffer.apply_edits_with_inserted_selection(
         vec![edit.clone()],
         &edit,
         cursor_offset..cursor_offset,
-    )
+    );
+    if changed {
+        vim_adjust_marks_for_edit(
+            buffer.id(),
+            (insert_position.line, insert_position.column),
+            (insert_position.line, insert_position.column),
+            &edit.inserted,
+        );
+
+        let cursor_line = if after {
+            current_line + 1
+        } else {
+            current_line
+        }
+        .min(buffer.len_lines().saturating_sub(1));
+        buffer.set_single_cursor(vim_line_first_non_whitespace_char(buffer, cursor_line));
+    }
+    changed
 }
 
 fn vim_put_characterwise_register(
@@ -105,15 +126,25 @@ fn vim_put_characterwise_register(
     }
     let inserted_len = inserted.chars().count();
     let cursor_offset = inserted_len.saturating_sub(1);
+    let insert_position = buffer.char_position(insert_at);
     let edit = TextEdit {
         range: insert_at..insert_at,
         inserted,
     };
-    buffer.apply_edits_with_inserted_selection(
+    let changed = buffer.apply_edits_with_inserted_selection(
         vec![edit.clone()],
         &edit,
         cursor_offset..cursor_offset,
-    )
+    );
+    if changed {
+        vim_adjust_marks_for_edit(
+            buffer.id(),
+            (insert_position.line, insert_position.column),
+            (insert_position.line, insert_position.column),
+            &edit.inserted,
+        );
+    }
+    changed
 }
 
 fn vim_buffer_ends_with_line_break(buffer: &TextBuffer) -> bool {

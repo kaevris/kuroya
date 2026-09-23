@@ -86,7 +86,7 @@ fn normal_mode_visual_character_c_changes_selection_and_repeats_insert() {
         unnamed_register
             .as_ref()
             .map(|register| (register.text.as_str(), register.kind)),
-        Some(("bcd", EditorVimRegisterKind::Characterwise))
+        Some(("ghi", EditorVimRegisterKind::Characterwise))
     );
     assert!(vim_events_include_mutation(
         &[

@@ -90,12 +90,19 @@ impl KuroyaApp {
             self.clear_buffer_path_state_for_path(&path);
         }
         self.buffers.remove(position);
+        crate::editor_vim_key_events::vim_forget_marks_for_buffer(id);
+        crate::editor_vim_key_events::vim_forget_searches_for_buffer(id);
+        self.editor_vim_last_change.remove(&id);
+        if self.editor_vim_insert_undo_group_buffer == Some(id) {
+            self.editor_vim_insert_undo_group_buffer = None;
+        }
         self.virtual_buffer_labels.remove(&id);
         self.diff_buffer_sources.remove(&id);
         self.diff_cache.remove(&id);
         self.diff_cache_pending.retain(|key, _| key.buffer_id != id);
         self.buffer_find_cache.clear_for_buffer(id);
         self.editor_bracket_overlay_cache.clear_for_buffer(id);
+        self.editor_row_render_cache.clear_for_buffer(id);
         self.minimap_line_length_cache.clear_for_buffer(id);
         self.minimap_section_header_cache.clear_for_buffer(id);
         self.syntax_tree_cache.clear_for_buffer(id);
@@ -293,6 +300,95 @@ mod tests {
         time::{Instant, SystemTime, UNIX_EPOCH},
     };
     use tokio::runtime::Runtime;
+
+    #[test]
+    fn force_close_buffer_purges_vim_marks_for_the_closed_buffer() {
+        use crate::editor_vim_key_events::{
+            EditorVimMode, EditorVimPendingKey, vim_marks_are_empty_for_test,
+        };
+        use eframe::egui::{Key, Modifiers};
+
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root);
+        app.buffers
+            .push(TextBuffer::from_text(7, None, "alpha\nbeta\n".to_owned()));
+
+        let mut mode = EditorVimMode::Normal;
+        let mut pending: Option<EditorVimPendingKey> = None;
+        let mut last_char_find = None;
+        let mut unnamed_register = None;
+        let mut last_change = None;
+        let settings = EditorSettings::default();
+        for (key, modifiers) in [(Key::M, Modifiers::NONE), (Key::A, Modifiers::NONE)] {
+            let buffer = app.buffers.get_mut(0).expect("test buffer");
+            crate::editor_vim_key_events::handle_vim_editor_key_event_with_settings_and_indent(
+                buffer,
+                key,
+                modifiers,
+                &mut mode,
+                &mut pending,
+                &mut last_char_find,
+                &mut unnamed_register,
+                &mut last_change,
+                &settings.vim,
+                "    ",
+            );
+        }
+        assert!(!vim_marks_are_empty_for_test());
+
+        app.force_close_buffer(7);
+
+        assert!(vim_marks_are_empty_for_test());
+    }
+
+    #[test]
+    fn force_close_buffer_purges_vim_searches_and_last_change_for_the_closed_buffer() {
+        use crate::editor_vim_key_events::{
+            EditorVimLastChange, EditorVimRepeatAction, vim_last_search_word_for_test,
+        };
+
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root);
+        let closed = TextBuffer::from_text(7, None, "alpha beta".to_owned());
+        let kept = TextBuffer::from_text(8, None, "gamma".to_owned());
+        app.buffers.push(closed);
+        app.buffers.push(kept);
+        {
+            let closed = app.buffer(7).expect("closed buffer");
+            crate::editor_vim_key_events::vim_set_last_search_for_test(
+                closed, "alpha", true, false,
+            );
+        }
+        {
+            let kept = app.buffer(8).expect("kept buffer");
+            crate::editor_vim_key_events::vim_set_last_search_for_test(kept, "gamma", true, false);
+        }
+        app.editor_vim_last_change.insert(
+            7,
+            EditorVimLastChange {
+                action: EditorVimRepeatAction::DeleteForwardChars,
+                count: 1,
+                insert_replay: Vec::new(),
+            },
+        );
+        app.editor_vim_last_change.insert(
+            8,
+            EditorVimLastChange {
+                action: EditorVimRepeatAction::DeleteForwardChars,
+                count: 1,
+                insert_replay: Vec::new(),
+            },
+        );
+        app.editor_vim_insert_undo_group_buffer = Some(7);
+
+        app.force_close_buffer(7);
+
+        assert_eq!(vim_last_search_word_for_test(7), None);
+        assert_eq!(vim_last_search_word_for_test(8), Some("gamma".to_owned()));
+        assert!(!app.editor_vim_last_change.contains_key(&7));
+        assert!(app.editor_vim_last_change.contains_key(&8));
+        assert_eq!(app.editor_vim_insert_undo_group_buffer, None);
+    }
 
     #[test]
     fn request_close_buffer_sanitizes_dirty_status_label() {
@@ -679,7 +775,7 @@ mod tests {
         app.active = Some(7);
         app.buffer_find_query = "needle".to_owned();
         assert_eq!(app.active_find_matches(), vec![0..6]);
-        assert_eq!(app.buffer_find_cache.cached_buffer_id_for_test(), Some(7));
+        assert_eq!(app.buffer_find_cache.cached_buffer_ids_for_test(), vec![7]);
         let buffer = app.buffer(7).unwrap().clone();
         assert!(!buffer_needs_line_render_protection_cached(
             &mut app.line_render_protection_cache,
@@ -730,7 +826,11 @@ mod tests {
 
         app.force_close_buffer(7);
 
-        assert_eq!(app.buffer_find_cache.cached_buffer_id_for_test(), None);
+        assert!(
+            app.buffer_find_cache
+                .cached_buffer_ids_for_test()
+                .is_empty()
+        );
         assert!(!app.line_render_protection_cache.contains_key(&7));
         assert!(!app.editor_bracket_overlay_cache.contains_buffer_for_test(7));
         assert!(!app.minimap_line_length_cache.contains_buffer_for_test(7));

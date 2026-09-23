@@ -125,6 +125,7 @@ fn invalid_numeric_count(draft: &EditorSettings) -> usize {
     for value in [
         draft.font_size,
         draft.ui_font_size,
+        draft.background_image_dim,
         draft.letter_spacing,
         draft.line_height,
         draft.mouse_wheel_scroll_sensitivity,

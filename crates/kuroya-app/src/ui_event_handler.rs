@@ -11,6 +11,7 @@ use crate::{
     },
     ui_events::UiEvent,
     workspace_state::workspace_event_matches,
+    workspace_trust::workspace_path_stays_within_root_lexically,
 };
 use eframe::egui::Context;
 
@@ -19,6 +20,7 @@ mod session;
 
 const UI_EVENT_DRAIN_BUDGET: usize = 512;
 const EXPLORER_FAILURE_ACTION_LABEL_MAX_CHARS: usize = 64;
+const PLUGIN_OPEN_FILE_PLUGIN_ID_MAX_CHARS: usize = 48;
 
 impl KuroyaApp {
     #[cfg(test)]
@@ -66,7 +68,7 @@ impl KuroyaApp {
                     }
                     if spawn_queued_index {
                         self.spawn_index();
-                    } else if self.project_search_waiting_for_index() {
+                    } else if self.project_search_should_refresh_after_index() {
                         self.spawn_project_search();
                     }
                 }
@@ -104,6 +106,33 @@ impl KuroyaApp {
                     error,
                 } => {
                     self.apply_local_history_failed(root, generation, path, error);
+                }
+                UiEvent::LocalHistoryBrowserLoaded {
+                    root,
+                    generation,
+                    path,
+                    snapshots,
+                } => {
+                    self.apply_local_history_browser_loaded(root, generation, path, snapshots);
+                }
+                UiEvent::LocalHistoryBrowserSnapshotLoaded {
+                    root,
+                    generation,
+                    path,
+                    snapshot_path,
+                    sequence,
+                    modified,
+                    result,
+                } => {
+                    self.apply_local_history_browser_snapshot_loaded(
+                        root,
+                        generation,
+                        path,
+                        snapshot_path,
+                        sequence,
+                        modified,
+                        result,
+                    );
                 }
                 UiEvent::SessionSaved { root } => {
                     handle_session_saved_event(self, root);
@@ -147,6 +176,51 @@ impl KuroyaApp {
                 } => {
                     if self.workspace_event_is_current(&root, generation) {
                         self.apply_settings_font_picker_failed(target, error);
+                    }
+                }
+                UiEvent::SettingsBackgroundImagePicked {
+                    root,
+                    generation,
+                    path,
+                } => {
+                    if self.workspace_event_is_current(&root, generation) {
+                        self.apply_settings_background_image_picked(path);
+                    }
+                }
+                UiEvent::SettingsBackgroundImagePickerCanceled { root, generation } => {
+                    if self.workspace_event_is_current(&root, generation) {
+                        self.apply_settings_background_image_picker_canceled();
+                    }
+                }
+                UiEvent::SettingsBackgroundImagePickerFailed {
+                    root,
+                    generation,
+                    error,
+                } => {
+                    if self.workspace_event_is_current(&root, generation) {
+                        self.apply_settings_background_image_picker_failed(error);
+                    }
+                }
+                UiEvent::EditorBackgroundImageLoaded {
+                    request_id,
+                    path,
+                    loaded,
+                } => {
+                    if self.apply_background_image_loaded(request_id, path, loaded) {
+                        if let Some(ctx) = ctx {
+                            ctx.request_repaint();
+                        }
+                    }
+                }
+                UiEvent::EditorBackgroundImageLoadFailed {
+                    request_id,
+                    path,
+                    error,
+                } => {
+                    if self.apply_background_image_load_failed(request_id, &path, &error) {
+                        if let Some(ctx) = ctx {
+                            ctx.request_repaint();
+                        }
                     }
                 }
                 UiEvent::ExplorerCreatePathPicked {
@@ -197,7 +271,9 @@ impl KuroyaApp {
                     if !self.workspace_event_is_current(&root, generation) {
                         continue;
                     }
-                    self.status = explorer_operation_failed_status(action, &path, &error);
+                    self.set_status_with_toast(explorer_operation_failed_status(
+                        action, &path, &error,
+                    ));
                     self.spawn_index();
                     self.spawn_git_auto_refresh();
                 }
@@ -210,6 +286,8 @@ impl KuroyaApp {
                     whole_word,
                     include_globs,
                     exclude_globs,
+                    max_file_bytes,
+                    max_results,
                     result,
                 } => {
                     if !handle_search_finished_event(
@@ -222,6 +300,8 @@ impl KuroyaApp {
                         whole_word,
                         include_globs,
                         exclude_globs,
+                        max_file_bytes,
+                        max_results,
                         result,
                     ) {
                         continue;
@@ -236,6 +316,8 @@ impl KuroyaApp {
                     whole_word,
                     include_globs,
                     exclude_globs,
+                    max_file_bytes,
+                    max_results,
                     progress,
                 } => {
                     if !handle_search_progress_event(
@@ -248,6 +330,8 @@ impl KuroyaApp {
                         whole_word,
                         include_globs,
                         exclude_globs,
+                        max_file_bytes,
+                        max_results,
                         progress,
                     ) {
                         continue;
@@ -260,6 +344,7 @@ impl KuroyaApp {
                     root_cache_entry,
                     git,
                 } => {
+                    let scan_error = git.scan_error().map(str::to_owned);
                     let root_is_current = workspace_event_matches(&self.workspace.root, &root);
                     let spawn_queued_git_scan =
                         root_is_current && self.finish_git_scan_request(request_id);
@@ -275,6 +360,9 @@ impl KuroyaApp {
                             self.spawn_git_scan();
                         }
                         continue;
+                    }
+                    if let Some(error) = scan_error {
+                        self.set_status_with_toast(git_scan_failed_status(&error));
                     }
                     if spawn_queued_git_scan {
                         self.spawn_git_scan();
@@ -882,6 +970,16 @@ impl KuroyaApp {
                         self.apply_plugin_command_finished(plugin_id, command_id, result);
                     }
                 }
+                UiEvent::PluginOpenFileRequested { plugin_id, path } => {
+                    self.apply_plugin_open_file_requested(plugin_id, path);
+                }
+                UiEvent::PluginBufferTextApply {
+                    plugin_id,
+                    path,
+                    text,
+                } => {
+                    self.apply_plugin_buffer_text_apply(plugin_id, path, &text);
+                }
                 UiEvent::DiagnosticsComputed {
                     request_id,
                     id,
@@ -901,6 +999,35 @@ impl KuroyaApp {
                         self.spawn_diagnostics_for(id);
                     }
                 }
+                UiEvent::QuickOpenRanked {
+                    request_id,
+                    key,
+                    results,
+                } => {
+                    if self.apply_quick_open_ranked_results(request_id, &key, results)
+                        && let Some(ctx) = ctx
+                    {
+                        ctx.request_repaint();
+                    }
+                }
+                UiEvent::ExplorerDirectoryLoaded {
+                    root,
+                    generation,
+                    request_token,
+                    directory,
+                    snapshot,
+                } => {
+                    if self.apply_explorer_directory_loaded_event(
+                        &root,
+                        generation,
+                        request_token,
+                        &directory,
+                        snapshot,
+                    ) && let Some(ctx) = ctx
+                    {
+                        ctx.request_repaint();
+                    }
+                }
                 UiEvent::UpdateCheckFinished(outcome) => {
                     self.apply_update_check_finished(outcome);
                 }
@@ -910,11 +1037,27 @@ impl KuroyaApp {
                 UiEvent::UpdateInstallerReady(update) => {
                     self.apply_update_installer_ready(update);
                 }
-                UiEvent::UpdateDownloadFailed {
+                UiEvent::UpdateDownloadProgress {
                     latest_version,
-                    error,
+                    asset_name,
+                    bytes_downloaded,
                 } => {
-                    self.apply_update_download_failed(latest_version, error);
+                    self.apply_update_download_progress(
+                        latest_version,
+                        asset_name,
+                        bytes_downloaded,
+                    );
+                }
+                UiEvent::UpdateDownloadFailed { available, error } => {
+                    self.apply_update_download_failed(available, error);
+                }
+                UiEvent::StartupSessionLoaded {
+                    root,
+                    target,
+                    session,
+                    warning,
+                } => {
+                    self.apply_startup_session_loaded(root, target, session, warning);
                 }
                 UiEvent::Lsp(_) => continue,
             }
@@ -937,6 +1080,80 @@ fn explorer_operation_failed_status(action: &str, path: &std::path::Path, error:
         path.as_ref(),
         error.as_ref()
     )
+}
+
+fn git_scan_failed_status(error: &str) -> String {
+    format!("Git scan failed: {}", display_error_label_cow(error))
+}
+
+impl KuroyaApp {
+    fn apply_plugin_open_file_requested(&mut self, plugin_id: String, path: std::path::PathBuf) {
+        if self.workspace_placeholder {
+            self.set_status_with_toast("No folder open");
+            return;
+        }
+        if !plugin_open_file_path_is_openable(&self.workspace.root, &path) {
+            self.set_status_with_toast(plugin_open_file_rejected_status(&plugin_id, &path));
+            return;
+        }
+        self.spawn_open_file(path);
+    }
+
+    fn apply_plugin_buffer_text_apply(
+        &mut self,
+        _plugin_id: String,
+        path: std::path::PathBuf,
+        text: &str,
+    ) {
+        let Some(id) = self
+            .buffers
+            .iter()
+            .find(|buffer| buffer.path() == Some(&path))
+            .map(kuroya_core::TextBuffer::id)
+        else {
+            self.set_status_with_toast(plugin_buffer_text_skipped_status(&path));
+            return;
+        };
+        if let Some(buffer) = self.buffer_mut(id) {
+            buffer.replace_text_from_ui(text);
+        }
+        self.mark_buffer_changed(id);
+        self.set_status_with_toast(plugin_buffer_text_updated_status(&path));
+    }
+}
+
+fn plugin_open_file_path_is_openable(root: &std::path::Path, path: &std::path::Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+        && workspace_path_stays_within_root_lexically(root, path)
+}
+
+fn plugin_open_file_rejected_status(plugin_id: &str, path: &std::path::Path) -> String {
+    let name = display_path_label_cow(path);
+    match plugin_open_file_plugin_label(plugin_id) {
+        Some(plugin) => format!("Plugin {plugin} could not open {}", name.as_ref()),
+        None => format!("Plugin could not open {}", name.as_ref()),
+    }
+}
+
+fn plugin_open_file_plugin_label(plugin_id: &str) -> Option<String> {
+    let trimmed = plugin_id.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > PLUGIN_OPEN_FILE_PLUGIN_ID_MAX_CHARS {
+        return None;
+    }
+    Some(
+        sanitized_display_label_cow(trimmed, PLUGIN_OPEN_FILE_PLUGIN_ID_MAX_CHARS, "plugin")
+            .into_owned(),
+    )
+}
+
+fn plugin_buffer_text_updated_status(path: &std::path::Path) -> String {
+    let name = display_path_label_cow(path);
+    format!("Plugin updated {}", name.as_ref())
+}
+
+fn plugin_buffer_text_skipped_status(path: &std::path::Path) -> String {
+    let name = display_path_label_cow(path);
+    format!("Plugin changes skipped: {} is not open", name.as_ref())
 }
 
 #[cfg(test)]

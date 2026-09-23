@@ -170,12 +170,51 @@ fn normal_mode_block_text_objects_delete_change_and_count() {
     }
 
     assert_eq!(mode, EditorVimMode::Insert);
-    assert_eq!(buffer.text(), "wrap  now");
+    assert_eq!(buffer.text(), "wrap now");
     assert_eq!(
         unnamed_register
             .as_ref()
             .map(|register| (register.text.as_str(), register.kind)),
-        Some(("<beta>", EditorVimRegisterKind::Characterwise))
+        Some(("<beta> ", EditorVimRegisterKind::Characterwise))
+    );
+    assert!(pending.is_none());
+}
+
+#[test]
+fn normal_mode_block_text_object_searches_forward_when_cursor_is_outside() {
+    let mut buffer = TextBuffer::from_text(1, None, "a (b) c (d)".to_owned());
+    buffer.set_single_cursor(0);
+    let mut mode = EditorVimMode::Normal;
+    let mut pending = None;
+    let mut last_char_find = None;
+    let mut unnamed_register = None;
+    let mut last_change = None;
+
+    for (key, modifiers) in [
+        (Key::D, Modifiers::NONE),
+        (Key::I, Modifiers::NONE),
+        (Key::Num9, Modifiers::SHIFT),
+    ] {
+        let result = handle_vim_editor_key_event_with_repeat_state(
+            &mut buffer,
+            key,
+            modifiers,
+            &mut mode,
+            &mut pending,
+            &mut last_char_find,
+            &mut unnamed_register,
+            &mut last_change,
+        );
+        assert!(result.handled);
+    }
+
+    assert_eq!(mode, EditorVimMode::Normal);
+    assert_eq!(buffer.text(), "a () c (d)");
+    assert_eq!(
+        unnamed_register
+            .as_ref()
+            .map(|register| register.text.as_str()),
+        Some("b")
     );
     assert!(pending.is_none());
 }

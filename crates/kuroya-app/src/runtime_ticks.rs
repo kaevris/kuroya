@@ -2,21 +2,28 @@ use crate::{
     KuroyaApp,
     app_session::SessionSaveSnapshot,
     lsp_diagnostics_batch::LSP_DIAGNOSTIC_BATCH_DELAY,
-    lsp_lifecycle::{LANGUAGE_SYNC_DEBOUNCE, due_language_sync_ids},
+    lsp_lifecycle::{
+        LANGUAGE_SYNC_DEBOUNCE, due_language_sync_ids, lsp_lifecycle_target_for_buffer,
+    },
+    lsp_runtime::{lsp_diagnostics_source_key, lsp_server_configs_for_settings},
     path_display::compact_path,
     persistence,
-    save_lifecycle::{SessionSaveRequest, autosave_buffer_ids, reserve_session_save},
+    save_lifecycle::{
+        SessionSaveRequest, autosave_buffer_ids, reserve_session_save,
+        should_skip_session_persistence, stage_session_save_fingerprint,
+        with_session_save_rotation_order,
+    },
     transient_state::{PendingExit, PendingWorkspaceSwitch},
     ui_events::UiEvent,
     workspace_state::{PaneId, lsp_event_path_is_current},
 };
 use kuroya_core::{
     BufferId, EditorAutoSaveMode, TextBuffer, clamp_autosave_delay_ms,
-    clamp_quick_suggestions_delay_ms,
+    clamp_quick_suggestions_delay_ms, diagnostics::LspDiagnosticUnits,
 };
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -37,8 +44,23 @@ impl KuroyaApp {
             return false;
         }
         self.last_session_save = now;
+        let fingerprint = self.session_structure_fingerprint();
+        if should_skip_session_persistence(
+            Some(fingerprint),
+            self.last_session_structure_fingerprint,
+            self.last_saved_session_structure_fingerprint,
+            self.session_save_in_flight.is_some(),
+            !self.queued_session_saves.is_empty(),
+        ) {
+            self.session_save_persisted_changes = false;
+            return false;
+        }
+
+        self.session_save_persisted_changes = true;
         let root = self.workspace.root.clone();
         let session = self.build_session_save_snapshot();
+        self.last_session_structure_fingerprint = Some(fingerprint);
+        stage_session_save_fingerprint(&root, fingerprint);
         self.request_session_save(root, session)
     }
 
@@ -47,13 +69,16 @@ impl KuroyaApp {
         root: PathBuf,
         session: SessionSaveSnapshot,
     ) -> bool {
-        if reserve_session_save(
-            &root,
-            session.clone(),
-            &mut self.session_save_in_flight,
-            &mut self.queued_session_saves,
-        ) == SessionSaveRequest::Spawn
-        {
+        let request = with_session_save_rotation_order(|order| {
+            reserve_session_save(
+                &root,
+                session.clone(),
+                &mut self.session_save_in_flight,
+                &mut self.queued_session_saves,
+                order,
+            )
+        });
+        if request == SessionSaveRequest::Spawn {
             self.spawn_session_save(root, session);
             true
         } else {
@@ -69,11 +94,13 @@ impl KuroyaApp {
             let session = session.into_persisted_session();
             match persistence::save_session_async(root.clone(), session).await {
                 Ok(()) => {
-                    let _ =
-                        crate::ui_event_channel::send_ui_event(&tx, UiEvent::SessionSaved { root });
+                    let _ = crate::ui_event_channel::send_critical_ui_event(
+                        &tx,
+                        UiEvent::SessionSaved { root },
+                    );
                 }
                 Err(error) => {
-                    let _ = crate::ui_event_channel::send_ui_event(
+                    let _ = crate::ui_event_channel::send_critical_ui_event(
                         &tx,
                         UiEvent::SessionSaveFailed {
                             root,
@@ -85,7 +112,33 @@ impl KuroyaApp {
         }));
     }
 
+    pub(crate) fn flush_pending_lsp_resync(&mut self) -> usize {
+        let paths = std::mem::take(&mut self.pending_lsp_resync);
+        let mut count = 0usize;
+        for path in paths {
+            let Some(id) = self.pending_lsp_resync_target(&path) else {
+                continue;
+            };
+            self.schedule_language_sync(id);
+            count = count.saturating_add(1);
+        }
+        count
+    }
+
+    fn pending_lsp_resync_target(&self, path: &Path) -> Option<BufferId> {
+        let buffer = self.buffer_by_lexical_path(path)?;
+        let (language, _) = lsp_lifecycle_target_for_buffer(
+            buffer,
+            &lsp_server_configs_for_settings(&self.settings),
+            &self.plugin_languages,
+            &self.lossy_decoded_buffers,
+            &self.binary_preview_buffers,
+        )?;
+        (!self.live_lsp_clients_for_language(&language).is_empty()).then_some(buffer.id())
+    }
+
     pub(crate) fn flush_pending_language_sync(&mut self) -> usize {
+        self.flush_pending_lsp_resync();
         let now = Instant::now();
         let ids = due_language_sync_ids(&self.pending_language_sync, now, LANGUAGE_SYNC_DEBOUNCE);
         let mut count = 0usize;
@@ -245,7 +298,10 @@ impl KuroyaApp {
             if !lsp_event_path_is_current(&self.workspace.root, &path) {
                 continue;
             }
-            let (path, diagnostics) = if let Some(buffer) = self.buffer_by_lexical_path(&path) {
+
+            let (path, diagnostics, units) = if let Some(buffer) =
+                self.buffer_by_lexical_path(&path)
+            {
                 if entry
                     .version
                     .is_some_and(|version| version != buffer.version())
@@ -257,12 +313,40 @@ impl KuroyaApp {
                     entry.diagnostics,
                 );
                 let path = buffer.path().cloned().unwrap_or(path);
-                (path, diagnostics)
+                (path, diagnostics, LspDiagnosticUnits::Chars)
             } else {
-                (path, entry.diagnostics)
+                (path, entry.diagnostics, LspDiagnosticUnits::Utf16)
             };
-            self.diagnostics.replace_lsp(path, diagnostics);
+
+            match entry
+                .source
+                .as_ref()
+                .map(|source| lsp_diagnostics_source_key(&source.language, source.generation))
+            {
+                Some(source_key) => {
+                    self.diagnostics
+                        .replace_lsp_source_units(path, &source_key, diagnostics, units)
+                }
+                None => self.diagnostics.replace_lsp_units(path, diagnostics, units),
+            }
             count = count.saturating_add(1);
+        }
+
+        for path in self.diagnostics.raw_utf16_lsp_paths() {
+            let Some(buffer) = self.buffer_by_lexical_path(&path).cloned() else {
+                continue;
+            };
+            for (source_key, raw) in self.diagnostics.drain_raw_utf16_lsp_buckets(&path) {
+                let converted =
+                    crate::lsp_diagnostics_batch::valid_lsp_diagnostics_for_buffer(&buffer, raw);
+                self.diagnostics.replace_lsp_source_units(
+                    path.clone(),
+                    &source_key,
+                    converted,
+                    LspDiagnosticUnits::Chars,
+                );
+                count = count.saturating_add(1);
+            }
         }
         count
     }
@@ -550,6 +634,7 @@ mod tests {
         let root = PathBuf::from("workspace");
         let path = root.join("src/main.rs");
         let mut app = app_for_test(root);
+        app.settings.autosave = true;
         app.settings.autosave_mode = EditorAutoSaveMode::OnFocusChange;
         app.last_autosave_window_focused = true;
         app.last_autosave_focused_pane = Some(1);
@@ -571,6 +656,7 @@ mod tests {
         let root = PathBuf::from("workspace");
         let path = root.join("src/main.rs");
         let mut app = app_for_test(root);
+        app.settings.autosave = true;
         app.settings.autosave_mode = EditorAutoSaveMode::OnFocusChange;
         app.last_autosave_window_focused = true;
         app.last_autosave_focused_pane = Some(1);
@@ -595,6 +681,7 @@ mod tests {
         let pending_path = root.join("src/pending.rs");
         let unrelated_path = root.join("src/unrelated.rs");
         let mut app = app_for_test(root);
+        app.settings.autosave = true;
         app.settings.autosave_mode = EditorAutoSaveMode::OnFocusChange;
         app.last_autosave_window_focused = true;
         app.last_autosave_focused_pane = Some(1);
@@ -627,6 +714,7 @@ mod tests {
         let root = PathBuf::from("workspace");
         let path = root.join("src/main.rs");
         let mut app = app_for_test(root);
+        app.settings.autosave = true;
         app.settings.autosave_mode = EditorAutoSaveMode::AfterDelay;
         app.last_autosave = Instant::now() + Duration::from_secs(60);
         let mut buffer = TextBuffer::from_text(7, Some(path), "newer text".to_owned());
@@ -661,6 +749,83 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_session_state_skips_redundant_session_snapshots() {
+        let root = temp_session_root("fingerprint-skip");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        app.last_session_save = Instant::now() - Duration::from_secs(60);
+
+        assert!(app.persist_session_if_needed());
+        assert!(
+            app.session_save_persisted_changes,
+            "staging a save keeps the session-save wakeup armed"
+        );
+
+        if let Some(task) = app.session_save_in_flight_task.take() {
+            app.runtime.block_on(task).expect("session save task");
+        }
+        app.handle_events();
+
+        assert_eq!(
+            app.last_saved_session_structure_fingerprint,
+            app.last_session_structure_fingerprint
+        );
+        assert!(app.session_save_in_flight.is_none());
+
+        app.last_session_save = Instant::now() - Duration::from_secs(60);
+
+        assert!(!app.persist_session_if_needed());
+        assert!(
+            !app.session_save_persisted_changes,
+            "a tick that persists nothing must disarm the session-save wakeup"
+        );
+        assert!(app.rx.try_recv().is_err());
+        assert!(app.session_save_in_flight.is_none());
+
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn session_structure_change_triggers_new_session_snapshot_after_skip() {
+        let root = temp_session_root("fingerprint-change");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("src/main.rs");
+        let mut app = app_for_test(root.clone());
+        app.buffers
+            .push(TextBuffer::from_text(7, Some(path), "text".to_owned()));
+        let fingerprint = app.session_structure_fingerprint();
+        app.last_session_structure_fingerprint = Some(fingerprint);
+        app.last_saved_session_structure_fingerprint = Some(fingerprint);
+        app.last_session_save = Instant::now() - Duration::from_secs(60);
+
+        assert!(!app.persist_session_if_needed());
+        assert!(!app.session_save_persisted_changes);
+
+        app.buffer_mut(7).expect("buffer").mark_dirty();
+        app.last_session_save = Instant::now() - Duration::from_secs(60);
+
+        assert!(app.persist_session_if_needed());
+        assert_ne!(app.last_session_structure_fingerprint, Some(fingerprint));
+        assert!(
+            app.session_save_persisted_changes,
+            "a changed session re-arms the session-save wakeup"
+        );
+        assert!(app.session_save_in_flight.is_some());
+
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn temp_session_root(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!("kuroya-{name}-{}-{nanos}", std::process::id()))
+    }
+
+    #[test]
     fn focus_change_autosave_skips_modal_guard_buffers_but_saves_unrelated_dirty_buffer() {
         let root = PathBuf::from("workspace");
         let dirty_close_path = root.join("src/dirty_close.rs");
@@ -668,6 +833,7 @@ mod tests {
         let conflict_path = root.join("src/conflict.rs");
         let unrelated_path = root.join("src/unrelated.rs");
         let mut app = app_for_test(root);
+        app.settings.autosave = true;
         app.settings.autosave_mode = EditorAutoSaveMode::OnFocusChange;
         app.last_autosave_window_focused = true;
         app.last_autosave_focused_pane = Some(1);
@@ -708,6 +874,7 @@ mod tests {
         let root = PathBuf::from("workspace");
         let path = root.join("src/main.rs");
         let mut app = app_for_test(root);
+        app.settings.autosave = true;
         app.settings.autosave_mode = EditorAutoSaveMode::OnFocusChange;
         app.last_autosave_window_focused = true;
         app.last_autosave_focused_pane = Some(1);
@@ -738,6 +905,7 @@ mod tests {
         let path = root.join("src/main.rs");
         let equivalent_path = root.join("src").join(".").join("main.rs");
         let mut app = app_for_test(root);
+        app.settings.autosave = true;
         app.settings.autosave_mode = EditorAutoSaveMode::OnFocusChange;
         app.last_autosave_window_focused = true;
         app.last_autosave_focused_pane = Some(1);
@@ -767,6 +935,7 @@ mod tests {
         let root = PathBuf::from("workspace");
         let path = root.join("src/main.rs");
         let mut app = app_for_test(root);
+        app.settings.autosave = true;
         app.settings.autosave_mode = EditorAutoSaveMode::OnFocusChange;
         app.last_autosave_window_focused = true;
         app.last_autosave_focused_pane = Some(1);
@@ -793,6 +962,7 @@ mod tests {
         let root = PathBuf::from("workspace");
         let path = root.join("src/main.rs");
         let mut app = app_for_test(root);
+        app.settings.autosave = true;
         app.settings.autosave_mode = EditorAutoSaveMode::OnFocusChange;
         app.last_autosave_window_focused = true;
         app.last_autosave_focused_pane = Some(1);
@@ -866,6 +1036,71 @@ mod tests {
 
         assert_eq!(dispatch, vec![2]);
         assert_eq!(pending.keys().copied().collect::<Vec<_>>(), vec![3]);
+    }
+
+    #[test]
+    fn flush_pending_lsp_resync_hands_off_failed_did_change_paths_to_language_sync() {
+        let root = PathBuf::from("workspace");
+        let path = root.join("src/main.rs");
+        let mut app = app_for_test(root);
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(path.clone()),
+            "alpha".to_owned(),
+        ));
+        app.lsp_clients
+            .insert("rust".to_owned(), LspClientHandle::full_queue_for_test());
+
+        app.notify_lsp_change(7);
+
+        assert!(app.pending_lsp_resync.contains(&path));
+        assert!(app.pending_language_sync.is_empty());
+
+        assert_eq!(app.flush_pending_lsp_resync(), 1);
+
+        assert!(app.pending_lsp_resync.is_empty());
+        assert!(app.pending_language_sync.contains_key(&7));
+
+        app.lsp_clients
+            .insert("rust".to_owned(), LspClientHandle::accepting_for_test());
+        app.pending_language_sync
+            .insert(7, Instant::now() - LANGUAGE_SYNC_DEBOUNCE);
+
+        assert_eq!(app.flush_pending_language_sync(), 1);
+
+        assert!(
+            app.lsp_trace
+                .iter()
+                .any(|entry| entry.method == "textDocument/didChange")
+        );
+        assert!(!app.pending_lsp_resync.contains(&path));
+    }
+
+    #[test]
+    fn flush_pending_lsp_resync_drops_closed_buffers_and_unavailable_servers() {
+        let root = PathBuf::from("workspace");
+        let open_path = root.join("src/open.rs");
+        let closed_path = root.join("src/closed.rs");
+        let mut app = app_for_test(root.clone());
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(open_path.clone()),
+            "alpha".to_owned(),
+        ));
+        app.pending_lsp_resync.push_back(open_path.clone());
+        app.pending_lsp_resync.push_back(closed_path);
+
+        assert_eq!(app.flush_pending_lsp_resync(), 0);
+
+        assert!(app.pending_lsp_resync.is_empty());
+        assert!(!app.pending_language_sync.contains_key(&7));
+
+        app.lsp_clients
+            .insert("rust".to_owned(), LspClientHandle::accepting_for_test());
+        app.pending_lsp_resync.push_back(open_path);
+
+        assert_eq!(app.flush_pending_lsp_resync(), 1);
+        assert!(app.pending_language_sync.contains_key(&7));
     }
 
     #[test]
@@ -965,6 +1200,130 @@ mod tests {
     }
 
     #[test]
+    fn flush_pending_lsp_diagnostics_converts_closed_file_payloads_once_buffer_opens() {
+        let root = PathBuf::from("workspace");
+        let path = root.join("src/main.rs");
+        let mut app = app_for_test(root);
+        let queued_at = Instant::now() - LSP_DIAGNOSTIC_BATCH_DELAY;
+
+        app.pending_lsp_diagnostics.queue(
+            path.clone(),
+            None,
+            vec![positioned_diagnostic(&path, 1, 3, 2..7, "identifier")],
+            queued_at,
+        );
+
+        assert_eq!(app.flush_pending_lsp_diagnostics(), 1);
+
+        let stored = app.diagnostics.for_path(&path);
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].column, 3);
+        assert_eq!(stored[0].char_range, 2..7);
+
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(path.clone()),
+            "\u{1f600}alpha\n".to_owned(),
+        ));
+        assert_eq!(app.flush_pending_lsp_diagnostics(), 1);
+
+        assert_eq!(app.flush_pending_lsp_diagnostics(), 0);
+
+        let converted = app.diagnostics.for_path(&path);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].column, 2);
+        assert_eq!(converted[0].char_range, 1..6);
+    }
+
+    #[test]
+    fn flush_pending_lsp_diagnostics_clamps_multi_line_sentinel_when_converting_closed_payloads() {
+        let root = PathBuf::from("workspace");
+        let path = root.join("src/main.rs");
+        let mut app = app_for_test(root);
+        let queued_at = Instant::now() - LSP_DIAGNOSTIC_BATCH_DELAY;
+
+        app.pending_lsp_diagnostics.queue(
+            path.clone(),
+            None,
+            vec![positioned_diagnostic(
+                &path,
+                1,
+                3,
+                2..usize::MAX,
+                "multi line",
+            )],
+            queued_at,
+        );
+
+        assert_eq!(app.flush_pending_lsp_diagnostics(), 1);
+        assert_eq!(app.diagnostics.for_path(&path)[0].char_range, 2..usize::MAX);
+
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(path.clone()),
+            "alpha\nbeta\n".to_owned(),
+        ));
+        assert_eq!(app.flush_pending_lsp_diagnostics(), 1);
+
+        let converted = app.diagnostics.for_path(&path);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0].column, 3);
+        assert_eq!(converted[0].char_range, 2..5);
+    }
+
+    #[test]
+    fn flush_pending_lsp_diagnostics_keeps_coattached_server_payloads_for_same_path() {
+        let root = PathBuf::from("workspace");
+        let path = root.join("src/main.rs");
+        let mut app = app_for_test(root);
+
+        app.lsp_clients.insert(
+            "rust".to_owned(),
+            LspClientHandle::disconnected_with_generation_for_test(10),
+        );
+        app.lsp_clients.insert(
+            "rust\u{0}rust-analyzer-obsidian".to_owned(),
+            LspClientHandle::disconnected_with_generation_for_test(11),
+        );
+
+        let queued_at = Instant::now() - LSP_DIAGNOSTIC_BATCH_DELAY;
+        app.pending_lsp_diagnostics.queue_for_server(
+            PendingLspDiagnosticsSource {
+                language: "rust".to_owned(),
+                root: PathBuf::from("workspace"),
+                generation: 10,
+            },
+            path.clone(),
+            None,
+            vec![diagnostic(&path, "primary server")],
+            queued_at,
+        );
+        app.pending_lsp_diagnostics.queue_for_server(
+            PendingLspDiagnosticsSource {
+                language: "rust".to_owned(),
+                root: PathBuf::from("workspace"),
+                generation: 11,
+            },
+            path.clone(),
+            None,
+            vec![diagnostic(&path, "sibling server")],
+            queued_at,
+        );
+
+        assert_eq!(app.flush_pending_lsp_diagnostics(), 2);
+
+        let messages = app
+            .diagnostics
+            .for_path(&path)
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>();
+        assert!(messages.contains(&"primary server"), "{messages:?}");
+        assert!(messages.contains(&"sibling server"), "{messages:?}");
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
     fn pending_format_on_save_before_timeout_does_not_fallback() {
         let root = PathBuf::from("workspace");
         let path = root.join("src/main.rs");
@@ -1058,6 +1417,21 @@ mod tests {
             message: message.to_owned(),
             unused: false,
             deprecated: false,
+        }
+    }
+
+    fn positioned_diagnostic(
+        path: &std::path::Path,
+        line: usize,
+        column: usize,
+        range: std::ops::Range<usize>,
+        message: &str,
+    ) -> Diagnostic {
+        Diagnostic {
+            line,
+            column,
+            char_range: range,
+            ..diagnostic(path, message)
         }
     }
 

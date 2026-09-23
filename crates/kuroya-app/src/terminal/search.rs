@@ -39,6 +39,8 @@ pub(super) struct TerminalVisibleSearchSpan {
     pub(super) row: u16,
     pub(super) start_col: u16,
     pub(super) end_col: u16,
+
+    pub(super) active: bool,
 }
 
 impl TerminalVisibleSearchSpan {

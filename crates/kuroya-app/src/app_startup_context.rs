@@ -3,23 +3,26 @@ use crate::{
     editor_vim_key_events::sanitize_vim_settings_for_runtime,
     fonts::{apply_typography, install_fonts},
     fs_watcher::FileWatcher,
+    path_display::display_error_label_cow,
     persistence::{AppState, PersistedSession},
-    preferences::load_workspace_settings,
+    persistence_storage::{legacy_session_path, session_path},
+    preferences::load_app_settings,
     settings_form::optional_setting_path_to_input,
+    startup_arguments::StartupTarget,
     terminal::TerminalPane,
     theme::apply_theme,
     theme_picker_panel::selected_theme_picker_index_for_settings,
-    ui_event_channel::{Receiver, Sender, ui_event_channel},
+    ui_event_channel::{Receiver, Sender, set_ui_wake_hook, ui_event_channel},
     ui_events::UiEvent,
     workspace_state::paths_match_lexically,
-    workspace_trust::workspace_is_trusted,
 };
 use anyhow::Context as _;
 use kuroya_core::{EditorSettings, PluginThemeRegistry, Workspace, window_zoom_factor};
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
 use tokio::runtime::Runtime;
@@ -59,11 +62,7 @@ impl AppStartupContext {
         let workspace = Workspace::new(workspace_root);
         startup_profiler.record("Initialize runtime");
 
-        let workspace_trusted =
-            workspace_is_trusted(&app_state.trusted_workspaces, &workspace.root);
-        let settings =
-            load_startup_workspace_settings(&workspace.root, workspace_trusted, &app_state)
-                .unwrap_or_default();
+        let settings = load_startup_app_settings(&workspace.root, &app_state).unwrap_or_default();
         startup_profiler.record("Load settings");
 
         install_fonts(&cc.egui_ctx, &workspace.root, &settings);
@@ -81,9 +80,8 @@ impl AppStartupContext {
         let settings_panel_draft = settings.clone();
         let settings_editor_font_path = optional_setting_path_to_input(&settings.editor_font_path);
         let settings_ui_font_path = optional_setting_path_to_input(&settings.ui_font_path);
-        let saved_session =
-            load_startup_session(&workspace.root, workspace_placeholder).unwrap_or(None);
-        startup_profiler.record("Load persistence");
+
+        startup_profiler.record("Queue session load");
 
         let mut terminal = TerminalPane::with_settings(
             terminal_root_for_workspace(&workspace.root),
@@ -130,6 +128,8 @@ impl AppStartupContext {
             settings.terminal_mouse_wheel_zoom,
         );
         terminal.set_repaint_context(cc.egui_ctx.clone());
+        let repaint_ctx = cc.egui_ctx.clone();
+        set_ui_wake_hook(Arc::new(move || repaint_ctx.request_repaint()));
         startup_profiler.record("Create terminal");
 
         let watcher = startup_file_watcher(&workspace.root, workspace_placeholder);
@@ -148,7 +148,7 @@ impl AppStartupContext {
             settings_editor_font_path,
             settings_ui_font_path,
             theme_picker_selected,
-            saved_session,
+            saved_session: None,
             terminal,
             watcher,
             recent_projects: app_state.recent_projects,
@@ -198,15 +198,90 @@ fn load_startup_session(
     PersistedSession::load(workspace_root)
 }
 
-fn load_startup_workspace_settings(
+pub(crate) fn load_startup_session_with_warning(
     workspace_root: &Path,
-    workspace_trusted: bool,
+    workspace_placeholder: bool,
+) -> (Option<PersistedSession>, Option<String>) {
+    match load_startup_session(workspace_root, workspace_placeholder) {
+        Ok(Some(session)) => (Some(session), None),
+        Ok(None) if startup_session_has_quarantine_artifacts(workspace_root) => (
+            None,
+            Some(startup_session_load_warning(
+                STARTUP_SESSION_QUARANTINED_REASON,
+            )),
+        ),
+        Ok(None) => (None, None),
+        Err(error) => (None, Some(startup_session_load_warning(error))),
+    }
+}
+
+pub(crate) fn spawn_startup_session_load(
+    runtime: &Runtime,
+    tx: Sender<UiEvent>,
+    workspace_root: PathBuf,
+    startup_target: Option<StartupTarget>,
+) {
+    runtime.spawn_blocking(move || {
+        let (session, warning) = load_startup_session_with_warning(&workspace_root, false);
+        let _ = crate::ui_event_channel::send_critical_ui_event(
+            &tx,
+            UiEvent::StartupSessionLoaded {
+                root: workspace_root,
+                target: startup_target,
+                session: session.map(Box::new),
+                warning,
+            },
+        );
+    });
+}
+
+const STARTUP_SESSION_QUARANTINED_REASON: &str = "corrupt saved session file was quarantined";
+
+pub(crate) fn startup_session_load_warning(error: impl std::fmt::Display) -> String {
+    let error = error.to_string();
+    format!(
+        "Could not load saved session: {}",
+        display_error_label_cow(&error)
+    )
+}
+
+fn startup_session_has_quarantine_artifacts(workspace_root: &Path) -> bool {
+    [
+        session_path(workspace_root),
+        legacy_session_path(workspace_root),
+    ]
+    .iter()
+    .any(|session_file| startup_session_file_has_quarantine_artifacts(session_file))
+}
+
+fn startup_session_file_has_quarantine_artifacts(session_file: &Path) -> bool {
+    let Some(dir) = session_file.parent() else {
+        return false;
+    };
+    let Some(file_name) = session_file.file_name().and_then(OsStr::to_str) else {
+        return false;
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+
+    entries.filter_map(Result::ok).any(|entry| {
+        entry.file_name().to_str().is_some_and(|name| {
+            name.strip_prefix(file_name).is_some_and(|suffix| {
+                suffix.starts_with(".corrupt.") || suffix.starts_with(".mismatched.")
+            })
+        })
+    })
+}
+
+fn load_startup_app_settings(
+    workspace_root: &Path,
     app_state: &AppState,
 ) -> anyhow::Result<EditorSettings> {
-    let loaded = load_workspace_settings(workspace_root, workspace_trusted)?;
+    let loaded = load_app_settings(workspace_root)?;
     let mut settings = loaded.settings;
     if loaded.source.applies_startup_app_state_fallback() {
-        apply_restricted_app_state_vim_settings(&mut settings, app_state);
+        apply_app_state_settings_fallback(&mut settings, app_state);
     }
     Ok(settings)
 }
@@ -219,7 +294,7 @@ fn startup_file_watcher(workspace_root: &Path, workspace_placeholder: bool) -> O
     }
 }
 
-fn apply_restricted_app_state_vim_settings(settings: &mut EditorSettings, app_state: &AppState) {
+fn apply_app_state_settings_fallback(settings: &mut EditorSettings, app_state: &AppState) {
     if let Some(theme) = &app_state.theme {
         settings.theme = theme.clone();
     }
@@ -256,7 +331,7 @@ fn terminal_root_for_workspace_with_home(workspace_root: &Path, home: Option<Pat
     }
 }
 
-fn home_dir_from_env() -> Option<PathBuf> {
+pub(crate) fn home_dir_from_env() -> Option<PathBuf> {
     home_dir_from_env_values(std::env::var_os("USERPROFILE"), std::env::var_os("HOME"))
 }
 
@@ -279,18 +354,26 @@ pub(crate) fn is_empty_startup_workspace_root(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_restricted_app_state_vim_settings, create_runtime, empty_startup_workspace_root,
-        home_dir_from_env_values, is_empty_startup_workspace_root, load_startup_session,
-        load_startup_workspace_settings, startup_recent_project_is_usable, startup_workspace_root,
+        apply_app_state_settings_fallback, create_runtime, empty_startup_workspace_root,
+        home_dir_from_env_values, is_empty_startup_workspace_root, load_startup_app_settings,
+        load_startup_session, load_startup_session_with_warning, spawn_startup_session_load,
+        startup_recent_project_is_usable, startup_session_load_warning, startup_workspace_root,
         startup_workspace_root_with_dir_probe, terminal_root_for_workspace_with_home,
     };
-    use crate::{persistence::AppState, workspace_state::settings_path};
+    use crate::{
+        path_display::DISPLAY_ERROR_LABEL_MAX_CHARS,
+        persistence::AppState,
+        persistence_storage::{session_path, state_dir},
+        startup_arguments::StartupTarget,
+        ui_events::UiEvent,
+        workspace_state::settings_path,
+    };
     use kuroya_core::{EditorSettings, EditorVimKeyOverride, EditorVimSettings, ThemeSettings};
     use std::{
         ffi::OsString,
         fs,
         path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     #[test]
@@ -414,7 +497,133 @@ mod tests {
     }
 
     #[test]
-    fn startup_missing_workspace_settings_restores_vim_from_app_state() {
+    fn spawn_startup_session_load_sends_event_with_startup_target() {
+        let root = temp_workspace("session-load-event");
+        fs::create_dir_all(&root).unwrap();
+        let target = root.join("opened-on-startup.rs");
+
+        let runtime = create_runtime().unwrap();
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        spawn_startup_session_load(
+            &runtime,
+            tx,
+            root.clone(),
+            Some(StartupTarget::File(target.clone())),
+        );
+
+        let event = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("startup session load should deliver an event");
+        match event {
+            UiEvent::StartupSessionLoaded {
+                root: event_root,
+                target: event_target,
+                session,
+                warning,
+            } => {
+                assert_eq!(event_root, root);
+                assert_eq!(event_target, Some(StartupTarget::File(target)));
+
+                assert!(session.is_none());
+                assert!(warning.is_none());
+            }
+            other => panic!("unexpected startup event: {other:?}"),
+        }
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn spawn_startup_session_load_carries_warning_for_missing_session_file() {
+        let root = temp_workspace("session-load-event-warning");
+        fs::create_dir_all(&root).unwrap();
+
+        let runtime = create_runtime().unwrap();
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        spawn_startup_session_load(&runtime, tx, root.clone(), None);
+
+        let event = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("startup session load should deliver an event");
+        match event {
+            UiEvent::StartupSessionLoaded {
+                root: event_root,
+                session,
+                warning,
+                ..
+            } => {
+                assert_eq!(event_root, root);
+                assert!(session.is_none());
+                assert!(warning.is_none(), "a missing session is not a warning");
+            }
+            other => panic!("unexpected startup event: {other:?}"),
+        }
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_missing_saved_session_loads_without_warning() {
+        let root = temp_workspace("missing-session-no-warning");
+        fs::create_dir_all(&root).unwrap();
+
+        let (session, warning) =
+            load_startup_session_with_warning(&root.join("src").join(".."), true);
+        assert!(session.is_none());
+        assert!(warning.is_none());
+
+        let (session, warning) = load_startup_session_with_warning(&root, false);
+        assert!(session.is_none());
+        assert!(warning.is_none());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_corrupt_saved_session_surfaces_quarantine_warning() {
+        let root = temp_workspace("corrupt-session-warning");
+        fs::create_dir_all(&root).unwrap();
+        let session_file = session_path(&root);
+        fs::create_dir_all(session_file.parent().unwrap()).unwrap();
+        fs::write(&session_file, b"{not json").unwrap();
+
+        let (session, warning) = load_startup_session_with_warning(&root, false);
+
+        assert!(session.is_none());
+        let warning = warning.expect("quarantined session should surface a warning");
+        assert!(
+            warning.starts_with("Could not load saved session: "),
+            "{}",
+            warning
+        );
+        assert!(warning.contains("quarantined"), "{}", warning);
+
+        assert!(!session_file.exists());
+        let mut entries = fs::read_dir(session_file.parent().unwrap()).unwrap();
+        assert!(entries.next().is_some());
+
+        drop(fs::remove_dir_all(state_dir(&root)));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_session_load_warning_is_single_line_and_bounded() {
+        let raw_error = format!("first line\nsecond line \u{202e}{}", "x".repeat(400));
+        let warning = startup_session_load_warning(&raw_error);
+        let prefix = "Could not load saved session: ";
+
+        assert!(warning.starts_with(prefix));
+        assert!(!warning.contains('\n'));
+        assert!(!warning.contains('\u{202e}'));
+        assert!(warning[prefix.len()..].chars().count() <= DISPLAY_ERROR_LABEL_MAX_CHARS);
+        assert_eq!(
+            startup_session_load_warning(""),
+            format!("{prefix}unknown error")
+        );
+    }
+
+    #[test]
+    fn startup_missing_app_settings_restores_vim_from_app_state() {
         let root = temp_workspace("missing-settings-vim-fallback");
         fs::create_dir_all(&root).unwrap();
         let settings_path = settings_path(&root);
@@ -438,7 +647,7 @@ mod tests {
             ..AppState::default()
         };
 
-        let settings = load_startup_workspace_settings(&root, true, &app_state).unwrap();
+        let settings = load_startup_app_settings(&root, &app_state).unwrap();
 
         assert!(settings.vim_keybindings);
         assert_eq!(
@@ -458,8 +667,8 @@ mod tests {
     }
 
     #[test]
-    fn startup_untrusted_workspace_settings_restores_vim_from_app_state() {
-        let root = temp_workspace("untrusted-settings-vim-fallback");
+    fn startup_app_settings_override_fallback_regardless_of_workspace_trust() {
+        let root = temp_workspace("app-settings-before-fallback");
         fs::create_dir_all(&root).unwrap();
         let settings_path = settings_path(&root);
         fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
@@ -477,20 +686,17 @@ mod tests {
             ..AppState::default()
         };
 
-        let settings = load_startup_workspace_settings(&root, false, &app_state).unwrap();
+        let settings = load_startup_app_settings(&root, &app_state).unwrap();
 
-        assert!(settings.vim_keybindings);
-        assert_eq!(settings.vim.disabled_bindings, ["Q"]);
-        assert_eq!(
-            settings.word_separators,
-            EditorSettings::default().word_separators
-        );
+        assert!(!settings.vim_keybindings);
+        assert!(settings.vim.disabled_bindings.is_empty());
+        assert_eq!(settings.word_separators, ".");
         fs::remove_dir_all(settings_path.parent().unwrap()).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn restricted_startup_restores_vim_keybindings_and_config_from_app_state() {
+    fn missing_app_settings_restore_appearance_and_vim_from_app_state() {
         let mut settings = EditorSettings::default();
         let theme_path = std::env::temp_dir()
             .join("themes")
@@ -537,11 +743,14 @@ mod tests {
             ..AppState::default()
         };
 
-        apply_restricted_app_state_vim_settings(&mut settings, &app_state);
+        apply_app_state_settings_fallback(&mut settings, &app_state);
 
         assert_eq!(settings.theme.name, "Saved Theme");
         assert_eq!(settings.theme.accent, [1, 2, 3]);
-        assert_eq!(settings.custom_theme_paths, [theme_path.clone()]);
+        assert_eq!(
+            settings.custom_theme_paths,
+            std::slice::from_ref(&theme_path)
+        );
         assert_eq!(
             settings.active_custom_theme_path.as_deref(),
             Some(theme_path.as_str())

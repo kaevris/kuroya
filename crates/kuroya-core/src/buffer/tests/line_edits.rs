@@ -68,6 +68,36 @@ fn newline_can_use_per_cursor_indent_overrides() {
 }
 
 #[test]
+fn newline_in_crlf_buffer_inserts_crlf_without_stray_cr() {
+    let mut buffer = TextBuffer::from_text(1, None, "abc\r\ndef".to_owned());
+    buffer.set_single_cursor(buffer.line_content_end_char(0));
+
+    buffer.insert_newline_with_indent();
+
+    assert_eq!(buffer.text(), "abc\r\n\r\ndef");
+}
+
+#[test]
+fn newline_at_content_end_in_crlf_buffer_appends_crlf() {
+    let mut buffer = TextBuffer::from_text(1, None, "alpha\r\nbeta".to_owned());
+    buffer.set_single_cursor(buffer.len_chars());
+
+    buffer.insert_newline_with_indent();
+
+    assert_eq!(buffer.text(), "alpha\r\nbeta\r\n");
+}
+
+#[test]
+fn newline_mid_line_in_crlf_buffer_splits_line_with_crlf() {
+    let mut buffer = TextBuffer::from_text(1, None, "alpha\r\nbeta gamma".to_owned());
+    buffer.set_single_cursor(buffer.line_column_to_char(1, 5));
+
+    buffer.insert_newline_with_indent();
+
+    assert_eq!(buffer.text(), "alpha\r\nbeta \r\ngamma");
+}
+
+#[test]
 fn indent_lines_indents_selected_line_range() {
     let mut buffer =
         TextBuffer::from_text(1, None, "fn main() {\nlet x = 1;\nlet y = 2;\n}".to_owned());
@@ -85,6 +115,18 @@ fn indent_lines_indents_selected_line_range() {
     assert_eq!(buffer.text(), "fn main() {\nlet x = 1;\nlet y = 2;\n}");
     assert!(buffer.redo());
     assert_eq!(buffer.text(), "fn main() {\n  let x = 1;\n  let y = 2;\n}");
+}
+
+#[test]
+fn indent_lines_leaves_blank_and_whitespace_only_lines_empty() {
+    let mut buffer = TextBuffer::from_text(1, None, "one\n\ntwo\n  \nthree".to_owned());
+    buffer.select_all();
+
+    assert!(buffer.indent_lines("    "));
+    assert_eq!(buffer.text(), "    one\n\n    two\n  \n    three");
+
+    assert!(buffer.undo());
+    assert_eq!(buffer.text(), "one\n\ntwo\n  \nthree");
 }
 
 #[test]

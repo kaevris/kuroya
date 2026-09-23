@@ -1,11 +1,11 @@
 mod dispatch;
 mod pending;
 
-use crate::lsp_client::pending::PendingLspRequest;
+use crate::lsp_client::pending::PendingLspRequests;
 use dispatch::{dispatch_code_lens_resolve, dispatch_code_lenses, dispatch_execute_command};
 use kuroya_core::{BufferId, LspCodeLens};
 use serde_json::Value;
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 use tokio::process::ChildStdin;
 
 pub(super) async fn dispatch_code_lenses_request(
@@ -14,7 +14,7 @@ pub(super) async fn dispatch_code_lenses_request(
     version: u64,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     dispatch_code_lenses(id, path, version, writer, next_request_id, pending_requests).await
 }
@@ -26,7 +26,7 @@ pub(super) async fn dispatch_code_lens_resolve_request(
     lens: LspCodeLens,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     dispatch_code_lens_resolve(
         id,
@@ -49,7 +49,7 @@ pub(super) async fn dispatch_execute_command_request(
     arguments: Option<Arc<Value>>,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     dispatch_execute_command(
         id,

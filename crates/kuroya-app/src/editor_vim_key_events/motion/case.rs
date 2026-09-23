@@ -81,20 +81,36 @@ pub(in crate::editor_vim_key_events) fn vim_convert_case_range(
         let Some(ch) = buffer.char_at(idx) else {
             continue;
         };
-        let converted = match conversion {
-            EditorVimCaseConversion::Lower if ch.is_ascii_uppercase() => ch.to_ascii_lowercase(),
-            EditorVimCaseConversion::Upper if ch.is_ascii_lowercase() => ch.to_ascii_uppercase(),
-            EditorVimCaseConversion::Toggle if ch.is_ascii_lowercase() => ch.to_ascii_uppercase(),
-            EditorVimCaseConversion::Toggle if ch.is_ascii_uppercase() => ch.to_ascii_lowercase(),
-            _ => continue,
+        let Some(converted) = convert_case_char(ch, conversion) else {
+            continue;
         };
         edits.push(TextEdit {
             range: idx..idx + 1,
-            inserted: converted.to_string(),
+            inserted: converted,
         });
     }
 
     let changed = !edits.is_empty() && buffer.apply_edits(edits);
     buffer.set_single_cursor(cursor.min(buffer.len_chars()));
     changed
+}
+
+fn convert_case_char(ch: char, conversion: EditorVimCaseConversion) -> Option<String> {
+    match conversion {
+        EditorVimCaseConversion::Lower => {
+            let lowered = ch.to_lowercase().collect::<String>();
+            (lowered != ch.to_string()).then_some(lowered)
+        }
+        EditorVimCaseConversion::Upper => {
+            let uppered = ch.to_uppercase().collect::<String>();
+            (uppered != ch.to_string()).then_some(uppered)
+        }
+        EditorVimCaseConversion::Toggle if ch.is_lowercase() => {
+            Some(ch.to_uppercase().collect::<String>())
+        }
+        EditorVimCaseConversion::Toggle if ch.is_uppercase() => {
+            Some(ch.to_lowercase().collect::<String>())
+        }
+        EditorVimCaseConversion::Toggle => None,
+    }
 }

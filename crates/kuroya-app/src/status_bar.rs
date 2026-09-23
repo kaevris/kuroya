@@ -15,15 +15,20 @@ use std::{borrow::Cow, collections::HashSet, fmt::Write as _};
 pub(crate) mod items;
 mod warnings;
 
-use items::{git_status_label, normalize_status_bar_text, prepare_status_item, status_item};
+use items::{
+    git_status_label, normalize_status_bar_text, prepare_status_item, status_item,
+    status_item_width,
+};
 use warnings::render_status_warnings;
 
 const STATUS_MESSAGE_MAX_CHARS: usize = 180;
 const STATUS_LANGUAGE_MAX_CHARS: usize = 48;
+const STATUS_BAR_ITEM_MIN_FREE_WIDTH: f32 = 60.0;
 
 impl KuroyaApp {
     pub(crate) fn render_status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
+            self.ingest_status_toast();
             let disk_change_state = self.status_bar_disk_change_state();
             let git_blame_label = self.active_git_blame_status_bar_text();
             let active = self.active_buffer();
@@ -43,7 +48,20 @@ impl KuroyaApp {
                 .unwrap_or(Cow::Borrowed("No file"));
             let lines = active.map(|buffer| buffer.len_lines()).unwrap_or_default();
             let cursor_label = active.map(cursor_status_label);
-            ui.label(RichText::new(status_bar_message(&self.status)).small());
+
+            let cursor_item = prepare_status_item(
+                cursor_label.as_deref().unwrap_or("Ln -, Col -"),
+                "Cursor position",
+            );
+            let language_item = prepare_status_item(
+                language_line_status_label(language.as_ref(), lines),
+                "Language and line count",
+            );
+            let diagnostics_tooltip = diagnostics_status_tooltip(&self.diagnostics);
+            let diagnostics_item = prepare_status_item(
+                diagnostics_status_label(&self.diagnostics),
+                diagnostics_tooltip.as_ref(),
+            );
             if self.settings.vim_keybindings {
                 if let Some(vim_status_label) =
                     vim_pending_left_status_label(self.editor_vim_pending_key, &self.settings.vim)
@@ -55,87 +73,26 @@ impl KuroyaApp {
                     );
                 }
             }
+
+            let fits = |item: &items::PreparedStatusItem<'_>, ui: &mut egui::Ui| {
+                ui.available_width() >= status_item_width(ui, item) + STATUS_BAR_ITEM_MIN_FREE_WIDTH
+            };
+
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                let diagnostics_tooltip = diagnostics_status_tooltip(&self.diagnostics);
-                status_item(
-                    ui,
-                    IconKind::Code,
-                    prepare_status_item(
-                        language_line_status_label(language.as_ref(), lines),
-                        "Language and line count",
-                    ),
-                );
-                status_item(
-                    ui,
-                    IconKind::Cursor,
-                    prepare_status_item(
-                        cursor_label.as_deref().unwrap_or("Ln -, Col -"),
-                        "Cursor position",
-                    ),
-                );
-                status_item(
-                    ui,
-                    IconKind::Diagnostics,
-                    prepare_status_item(
-                        diagnostics_status_label(&self.diagnostics),
-                        diagnostics_tooltip.as_ref(),
-                    ),
-                );
-                status_item(
-                    ui,
-                    IconKind::Lsp,
-                    prepare_status_item(
-                        count_status_label(self.lsp_clients.len(), "lsp"),
-                        "Language servers",
-                    ),
-                );
-                if self.settings.vim_keybindings {
-                    status_item(
-                        ui,
-                        IconKind::Command,
-                        prepare_status_item(
-                            vim_mode_status_label(
-                                self.editor_vim_mode,
-                                self.editor_vim_pending_key,
-                            ),
-                            "Vim mode",
-                        ),
+                status_item(ui, IconKind::Cursor, cursor_item);
+                status_item(ui, IconKind::Code, language_item);
+                status_item(ui, IconKind::Diagnostics, diagnostics_item);
+
+                if let Some(buffer) = active {
+                    let encoding_item = prepare_status_item(
+                        encoding_status_label(buffer, active_binary_preview),
+                        "File encoding",
                     );
+                    if fits(&encoding_item, ui) {
+                        status_item(ui, IconKind::File, encoding_item);
+                    }
                 }
-                status_item(
-                    ui,
-                    IconKind::Panes,
-                    prepare_status_item(
-                        count_status_label(self.panes.len(), "panes"),
-                        "Editor panes",
-                    ),
-                );
-                status_item(
-                    ui,
-                    IconKind::GitBranch,
-                    prepare_status_item(git_status_label(&self.git), "Git status"),
-                );
-                if let Some(git_blame_label) = git_blame_label.as_deref() {
-                    status_item(
-                        ui,
-                        IconKind::GitBranch,
-                        prepare_status_item(git_blame_label, "Git blame for active line"),
-                    );
-                }
-                status_item(
-                    ui,
-                    IconKind::Settings,
-                    prepare_status_item(
-                        if self.workspace_placeholder {
-                            "no folder"
-                        } else if self.workspace_trusted {
-                            "trusted"
-                        } else {
-                            "restricted"
-                        },
-                        "Workspace trust",
-                    ),
-                );
+
                 render_status_warnings(
                     ui,
                     disk_change_state.active_changed_on_disk,
@@ -145,13 +102,65 @@ impl KuroyaApp {
                     active_read_only,
                     active_large_file_mode,
                     disk_change_state.external_change_count,
+                    self.settings.word_wrap,
                 );
-                status_item(
-                    ui,
-                    IconKind::Theme,
-                    prepare_status_item(self.settings.theme.name.as_str(), "Theme"),
+
+                let git_item = prepare_status_item(git_status_label(&self.git), "Git status");
+                if fits(&git_item, ui) {
+                    status_item(ui, IconKind::GitBranch, git_item);
+                }
+                if self.settings.vim_keybindings {
+                    let vim_item = prepare_status_item(
+                        vim_mode_status_label(self.editor_vim_mode, self.editor_vim_pending_key),
+                        "Vim mode",
+                    );
+                    if fits(&vim_item, ui) {
+                        status_item(ui, IconKind::Command, vim_item);
+                    }
+                }
+                if let Some(git_blame_label) = git_blame_label.as_deref() {
+                    let blame_item =
+                        prepare_status_item(git_blame_label, "Git blame for active line");
+                    if fits(&blame_item, ui) {
+                        status_item(ui, IconKind::GitBranch, blame_item);
+                    }
+                }
+                let lsp_item = prepare_status_item(
+                    count_status_label(self.lsp_clients.len(), "lsp"),
+                    "Language servers",
                 );
-                ui.label(RichText::new("wgpu").small());
+                if fits(&lsp_item, ui) {
+                    status_item(ui, IconKind::Lsp, lsp_item);
+                }
+                let panes_item = prepare_status_item(
+                    count_status_label(self.panes.len(), "panes"),
+                    "Editor panes",
+                );
+                if fits(&panes_item, ui) {
+                    status_item(ui, IconKind::Panes, panes_item);
+                }
+                let trust_item = prepare_status_item(
+                    if self.workspace_placeholder {
+                        "no folder"
+                    } else if self.workspace_trusted {
+                        "trusted"
+                    } else {
+                        "restricted"
+                    },
+                    "Workspace trust",
+                );
+                if fits(&trust_item, ui) {
+                    status_item(ui, IconKind::Settings, trust_item);
+                }
+                let theme_item = prepare_status_item(self.settings.theme.name.as_str(), "Theme");
+                if fits(&theme_item, ui) {
+                    status_item(ui, IconKind::Theme, theme_item);
+                }
+                let renderer_item = prepare_status_item("wgpu", "Renderer backend");
+                if fits(&renderer_item, ui) {
+                    ui.label(RichText::new("wgpu").small());
+                    ui.separator();
+                }
             });
         });
     }
@@ -213,6 +222,20 @@ pub(crate) fn status_bar_message(status: &str) -> Cow<'_, str> {
     normalize_status_bar_text(status, STATUS_MESSAGE_MAX_CHARS).unwrap_or(Cow::Borrowed(""))
 }
 
+pub(crate) fn status_message_is_persistent(status: &str) -> bool {
+    let lowered = status.to_ascii_lowercase();
+    [
+        "could not",
+        "failed",
+        "failure",
+        "error",
+        "denied",
+        "unable",
+    ]
+    .iter()
+    .any(|marker| lowered.contains(marker))
+}
+
 pub(crate) fn status_language_label<'a>(
     buffer: &TextBuffer,
     plugin_languages: &'a PluginLanguageRegistry,
@@ -231,6 +254,22 @@ pub(crate) fn status_language_label<'a>(
 fn status_language_display_label(language: &str) -> Cow<'_, str> {
     normalize_status_bar_text(language, STATUS_LANGUAGE_MAX_CHARS)
         .unwrap_or(Cow::Borrowed("PlainText"))
+}
+
+fn encoding_status_label(buffer: &TextBuffer, binary_preview: bool) -> &'static str {
+    if binary_preview {
+        let first_line_prefix = buffer
+            .line_content_prefix(0, crate::file_decode::UTF16_LABEL_DETECT_CHARS)
+            .unwrap_or_default();
+        if let Some(label) = crate::file_decode::utf16_unsupported_label(&first_line_prefix) {
+            return label;
+        }
+        return "binary";
+    }
+    if buffer.line_starts_with(0, "\u{FEFF}") {
+        return "UTF-8 BOM";
+    }
+    "UTF-8"
 }
 
 fn language_id_status_label(language: LanguageId) -> &'static str {
@@ -357,9 +396,11 @@ fn push_diagnostic_count(summary: &mut String, count: usize, singular: &str, plu
 mod tests {
     use super::{
         STATUS_LANGUAGE_MAX_CHARS, STATUS_MESSAGE_MAX_CHARS, StatusBarDiskChangeState,
-        diagnostics_status_label, diagnostics_status_tooltip, language_line_status_label,
-        one_based_status_position, status_bar_message, status_language_label,
+        diagnostics_status_label, diagnostics_status_tooltip, encoding_status_label,
+        language_line_status_label, one_based_status_position, status_bar_message,
+        status_language_label,
     };
+    use crate::file_decode::UTF16_UNSUPPORTED_NOTICE_LE;
     use crate::{
         KuroyaApp,
         app_startup_context::AppStartupContext,
@@ -489,6 +530,21 @@ mod tests {
         assert_eq!(one_based_status_position(0), 1);
         assert_eq!(one_based_status_position(41), 42);
         assert_eq!(one_based_status_position(usize::MAX), usize::MAX);
+    }
+
+    #[test]
+    fn encoding_status_label_reports_utf8_bom_utf16_and_binary() {
+        let plain = TextBuffer::from_text(1, None, "fn main() {}\n".to_owned());
+        assert_eq!(encoding_status_label(&plain, false), "UTF-8");
+
+        let bom = TextBuffer::from_text(2, None, "\u{FEFF}fn main() {}\n".to_owned());
+        assert_eq!(encoding_status_label(&bom, false), "UTF-8 BOM");
+
+        let utf16 = TextBuffer::from_text(3, None, UTF16_UNSUPPORTED_NOTICE_LE.to_owned());
+        assert_eq!(encoding_status_label(&utf16, true), "UTF-16 LE");
+
+        let binary = TextBuffer::from_text(4, None, "ok\0\n".to_owned());
+        assert_eq!(encoding_status_label(&binary, true), "binary");
     }
 
     #[test]

@@ -17,6 +17,44 @@ pub(super) fn handle_vim_visual_pending_key_event(
     suppress_text: Option<char>,
 ) -> Option<VimKeyResult> {
     match (pending_key, key) {
+        (
+            EditorVimPendingKey::VisualLine {
+                anchor,
+                cursor,
+                count,
+            },
+            key,
+        ) => Some(handle_vim_visual_line_key_event(
+            buffer,
+            key,
+            modifiers,
+            mode,
+            pending,
+            unnamed_register,
+            last_change,
+            anchor,
+            cursor,
+            count,
+            indent_unit,
+            suppress_text,
+        )),
+        (
+            EditorVimPendingKey::VisualLineGo {
+                anchor,
+                cursor,
+                count,
+            },
+            key,
+        ) => Some(handle_vim_visual_line_go_key_event(
+            buffer,
+            key,
+            modifiers,
+            pending,
+            anchor,
+            cursor,
+            count,
+            suppress_text,
+        )),
         (EditorVimPendingKey::VisualCharacter { anchor, cursor }, key) => {
             Some(handle_vim_visual_character_key_event(
                 buffer,
@@ -80,6 +118,18 @@ pub(super) fn handle_vim_visual_pending_key_event(
         )),
         (EditorVimPendingKey::VisualCharacterReplace { anchor, cursor }, key) => {
             Some(handle_vim_visual_character_replace_key_event(
+                buffer,
+                key,
+                modifiers,
+                pending,
+                last_change,
+                anchor,
+                cursor,
+                suppress_text,
+            ))
+        }
+        (EditorVimPendingKey::VisualLineReplace { anchor, cursor }, key) => {
+            Some(handle_vim_visual_line_replace_key_event(
                 buffer,
                 key,
                 modifiers,

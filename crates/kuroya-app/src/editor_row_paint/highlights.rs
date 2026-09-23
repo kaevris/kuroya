@@ -7,6 +7,8 @@ use crate::{
 use eframe::egui::{self, Color32, Stroke, pos2};
 use std::{collections::BTreeSet, ops::Range};
 
+const DOCUMENT_HIGHLIGHT_TINT_ALPHA: u8 = 60;
+
 pub(super) fn paint_row_highlights(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -101,7 +103,7 @@ pub(super) fn paint_row_highlights(
             line_text,
             row.tab_width,
             range,
-            document_highlight_color(*kind),
+            document_highlight_fill(*kind),
         );
     }
 
@@ -163,7 +165,6 @@ fn sorted_range_spans_before_snapshot_end<'a, T>(
     &spans[..end]
 }
 
-// Returns the original start index plus the visible slice for start-sorted, non-overlapping ranges.
 fn sorted_non_overlapping_range_spans_for_snapshot<'a, T>(
     spans: &'a [T],
     snapshot_range: &Range<usize>,
@@ -343,7 +344,14 @@ fn paint_diagnostic_tag_strikethrough(
 }
 
 fn translucent_highlight(color: Color32, alpha: u8) -> Color32 {
-    Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha)
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+}
+
+fn document_highlight_fill(kind: Option<u8>) -> Color32 {
+    translucent_highlight(
+        document_highlight_color(kind),
+        DOCUMENT_HIGHLIGHT_TINT_ALPHA,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,9 +463,9 @@ pub(crate) fn unicode_highlight_kind(
 
 fn unicode_highlight_color(kind: UnicodeHighlightKind) -> Color32 {
     match kind {
-        UnicodeHighlightKind::Invisible => Color32::from_rgb(107, 76, 42),
-        UnicodeHighlightKind::Ambiguous => Color32::from_rgb(100, 79, 35),
-        UnicodeHighlightKind::NonBasicAscii => Color32::from_rgb(65, 70, 94),
+        UnicodeHighlightKind::Invisible => Color32::from_rgba_unmultiplied(107, 76, 42, 60),
+        UnicodeHighlightKind::Ambiguous => Color32::from_rgba_unmultiplied(100, 79, 35, 60),
+        UnicodeHighlightKind::NonBasicAscii => Color32::from_rgba_unmultiplied(65, 70, 94, 60),
     }
 }
 
@@ -644,10 +652,12 @@ fn is_thai_character(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        UnicodeHighlightKind, deprecated_diagnostic_tag_ranges_for_snapshot,
+        Color32, DOCUMENT_HIGHLIGHT_TINT_ALPHA, UnicodeHighlightKind,
+        deprecated_diagnostic_tag_ranges_for_snapshot, document_highlight_fill,
         range_overlaps_snapshot, selection_corner_radius, selection_range_for_snapshot,
         selection_visual_columns_for_snapshot, sorted_non_overlapping_range_spans_for_snapshot,
-        sorted_range_spans_before_snapshot_end, unicode_highlight_kind, unicode_highlight_ranges,
+        sorted_range_spans_before_snapshot_end, translucent_highlight, unicode_highlight_color,
+        unicode_highlight_kind, unicode_highlight_ranges,
     };
     use crate::editor_pane_support::DiagnosticTagKind;
     use kuroya_core::Selection;
@@ -924,5 +934,60 @@ mod tests {
         assert!(range_overlaps_snapshot(&(4..6), &(5..10)));
         assert!(range_overlaps_snapshot(&(8..12), &(5..10)));
         assert!(!range_overlaps_snapshot(&(10..12), &(5..10)));
+    }
+
+    #[test]
+    fn translucent_highlight_uses_straight_alpha_channels() {
+        let source = Color32::from_rgb(110, 116, 130);
+
+        assert_eq!(
+            translucent_highlight(source, 96),
+            Color32::from_rgba_unmultiplied(110, 116, 130, 96)
+        );
+
+        assert_ne!(
+            translucent_highlight(source, 96),
+            Color32::from_rgba_premultiplied(110, 116, 130, 96)
+        );
+    }
+
+    #[test]
+    fn unicode_highlight_colors_are_translucent_straight_alpha_tints() {
+        let opaque_sources = [
+            (
+                UnicodeHighlightKind::Invisible,
+                Color32::from_rgb(107, 76, 42),
+            ),
+            (
+                UnicodeHighlightKind::Ambiguous,
+                Color32::from_rgb(100, 79, 35),
+            ),
+            (
+                UnicodeHighlightKind::NonBasicAscii,
+                Color32::from_rgb(65, 70, 94),
+            ),
+        ];
+
+        for (kind, opaque) in opaque_sources {
+            let tinted = unicode_highlight_color(kind);
+
+            assert_eq!(tinted.a(), 60);
+            assert_eq!(
+                tinted,
+                Color32::from_rgba_unmultiplied(opaque.r(), opaque.g(), opaque.b(), 60)
+            );
+            assert_ne!(
+                tinted,
+                Color32::from_rgba_premultiplied(opaque.r(), opaque.g(), opaque.b(), 60)
+            );
+        }
+    }
+
+    #[test]
+    fn document_highlight_fill_tints_the_opaque_theme_box() {
+        let fill = document_highlight_fill(None);
+
+        assert_eq!(fill.a(), DOCUMENT_HIGHLIGHT_TINT_ALPHA);
+        assert_ne!(fill, Color32::from_rgb(48, 56, 72));
     }
 }

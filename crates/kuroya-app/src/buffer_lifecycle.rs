@@ -81,6 +81,7 @@ impl KuroyaApp {
     pub(crate) fn mark_buffer_changed(&mut self, id: BufferId) {
         self.buffer_find_cache.clear_for_buffer(id);
         self.editor_bracket_overlay_cache.clear_for_buffer(id);
+        self.editor_row_render_cache.clear_for_buffer(id);
         self.minimap_line_length_cache.clear_for_buffer(id);
         self.minimap_section_header_cache.clear_for_buffer(id);
         self.diff_cache.remove(&id);

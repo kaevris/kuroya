@@ -2,6 +2,7 @@ use crate::preference_panels::sections::{
     SETTINGS_TARGET_TERMINAL_COLOR, SettingsHighlightState, bounded_settings_singleline_input,
     bounded_settings_text_edit_width, guarded_f32_drag_value, settings_target_heading,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::{
     DEFAULT_TERMINAL_MINIMUM_CONTRAST_RATIO, EditorSettings, MAX_TERMINAL_BELL_DURATION_MS,
@@ -32,10 +33,8 @@ pub(super) fn render_color_feedback_settings_with_highlight(
         .spacing([18.0, 10.0])
         .show(ui, |ui| {
             ui.label("Bold ANSI colors");
-            ui.checkbox(
-                &mut draft.terminal_draw_bold_text_in_bright_colors,
-                "Use bright colors",
-            );
+            ui_switch(ui, &mut draft.terminal_draw_bold_text_in_bright_colors)
+                .on_hover_text("Use bright colors");
             ui.end_row();
 
             ui.label("Minimum contrast");
@@ -72,7 +71,7 @@ pub(super) fn render_color_feedback_settings_with_highlight(
             ui.end_row();
 
             ui.label("Visual bell");
-            ui.checkbox(&mut draft.terminal_enable_bell, "Flash on bell");
+            ui_switch(ui, &mut draft.terminal_enable_bell).on_hover_text("Flash on bell");
             ui.end_row();
 
             ui.label("Bell duration");
@@ -84,10 +83,8 @@ pub(super) fn render_color_feedback_settings_with_highlight(
             ui.end_row();
 
             ui.label("Exit alert");
-            ui.checkbox(
-                &mut draft.terminal_show_exit_alert,
-                "Show non-zero exit message",
-            );
+            ui_switch(ui, &mut draft.terminal_show_exit_alert)
+                .on_hover_text("Show non-zero exit message");
             ui.end_row();
         });
 }

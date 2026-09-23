@@ -2,13 +2,15 @@ use eframe::egui::{Key, Modifiers};
 use kuroya_core::TextBuffer;
 
 use super::super::motion::{
-    vim_apply_char_find, vim_move_counted_line_first_non_whitespace,
-    vim_move_next_line_first_non_whitespace, vim_move_next_paragraph,
-    vim_move_previous_line_first_non_whitespace, vim_move_previous_paragraph,
-    vim_move_space_backward, vim_move_space_forward, vim_move_to_line_column, vim_move_to_line_end,
-    vim_move_to_matching_bracket,
+    vim_apply_char_find_repeat, vim_line_first_non_whitespace_char,
+    vim_move_counted_line_first_non_whitespace, vim_move_next_line_first_non_whitespace,
+    vim_move_next_paragraph, vim_move_previous_line_first_non_whitespace,
+    vim_move_previous_paragraph, vim_move_space_backward, vim_move_space_forward,
+    vim_move_to_line_column, vim_move_to_line_end, vim_move_to_matching_bracket,
+    vim_next_word_start,
 };
 use super::super::search::{vim_repeat_last_search, vim_search_word_under_cursor};
+use super::super::state::vim_set_previous_context_mark;
 use super::super::{
     EditorVimCharFind, VimKeyResult, no_text_modifiers, vim_go_to_line, vim_line_column_motion_key,
 };
@@ -25,18 +27,26 @@ pub(super) fn handle_vim_direct_motion_key(
     match key {
         Key::Semicolon if !modifiers.shift => {
             if let Some(last) = last_char_find {
-                vim_apply_char_find(buffer, count_value, last.motion, last.target);
+                vim_apply_char_find_repeat(buffer, count_value, last.motion, last.target);
             }
             Some(VimKeyResult::handled(suppress_text))
         }
         Key::Comma if !modifiers.shift => {
             if let Some(last) = last_char_find {
-                vim_apply_char_find(buffer, count_value, last.motion.reversed(), last.target);
+                vim_apply_char_find_repeat(
+                    buffer,
+                    count_value,
+                    last.motion.reversed(),
+                    last.target,
+                );
             }
             Some(VimKeyResult::handled(suppress_text))
         }
         Key::H if !modifiers.shift => {
             for _ in 0..count_value {
+                if buffer.cursor_position().column == 0 {
+                    break;
+                }
                 buffer.move_left();
             }
             Some(VimKeyResult::handled(suppress_text))
@@ -75,6 +85,11 @@ pub(super) fn handle_vim_direct_motion_key(
         }
         Key::L if !modifiers.shift => {
             for _ in 0..count_value {
+                let position = buffer.cursor_position();
+                let line_content_end = buffer.line_content_end_char(position.line);
+                if buffer.cursor() + 1 >= line_content_end {
+                    break;
+                }
                 buffer.move_right();
             }
             Some(VimKeyResult::handled(suppress_text))
@@ -84,9 +99,11 @@ pub(super) fn handle_vim_direct_motion_key(
             Some(VimKeyResult::handled(suppress_text))
         }
         Key::W if !modifiers.shift => {
+            let mut cursor = buffer.cursor();
             for _ in 0..count_value {
-                buffer.move_word_right();
+                cursor = vim_next_word_start(buffer, cursor);
             }
+            buffer.set_single_cursor(cursor);
             Some(VimKeyResult::handled(suppress_text))
         }
         Key::W if modifiers.shift => {
@@ -175,8 +192,14 @@ pub(super) fn handle_vim_direct_motion_key(
             match count {
                 Some(line) => vim_go_to_line(buffer, line),
                 None => {
-                    let last_line = buffer.len_lines().saturating_sub(1);
-                    let cursor = buffer.line_column_to_char(last_line, 0);
+                    vim_set_previous_context_mark(buffer);
+
+                    let mut last_line = buffer.len_lines().saturating_sub(1);
+                    if last_line > 0 && buffer.line(last_line).is_some_and(|line| line.is_empty()) {
+                        last_line -= 1;
+                    }
+
+                    let cursor = vim_line_first_non_whitespace_char(buffer, last_line);
                     buffer.set_single_cursor(cursor);
                 }
             }

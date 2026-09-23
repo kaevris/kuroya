@@ -18,7 +18,7 @@ const WORKSPACE_SYMBOL_QUERY_LABEL_SUFFIX: &str = "`";
 const WORKSPACE_SYMBOL_QUERY_LABEL_FALLBACK: &str = "<empty>";
 const WORKSPACE_SYMBOL_RESULT_COUNT_LABELS: [&str; 17] = [
     "0 results",
-    "1 results",
+    "1 result",
     "2 results",
     "3 results",
     "4 results",
@@ -43,17 +43,20 @@ impl KuroyaApp {
         let mut open = None;
 
         egui::Window::new("Workspace Symbols")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 108.0,
+            ))
             .collapsible(false)
-            .resizable(true)
+            .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 84.0])
-            .default_size([660.0, 380.0])
+            .default_width(660.0)
             .show(ctx, |ui| {
                 let mut query_changed = false;
                 ui.horizontal(|ui| {
                     let response = ui.add(
                         TextEdit::singleline(&mut self.workspace_symbol_query)
                             .hint_text("Search symbols")
-                            .desired_width(f32::INFINITY),
+                            .desired_width(400.0),
                     );
                     response.request_focus();
                     query_changed = response.changed();
@@ -392,6 +395,10 @@ mod tests {
         assert!(matches!(
             workspace_symbol_result_count_label(0),
             Cow::Borrowed("0 results")
+        ));
+        assert!(matches!(
+            workspace_symbol_result_count_label(1),
+            Cow::Borrowed("1 result")
         ));
         assert!(matches!(
             workspace_symbol_result_count_label(16),

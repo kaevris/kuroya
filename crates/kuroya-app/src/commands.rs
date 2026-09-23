@@ -51,6 +51,7 @@ pub(crate) fn command_label(command: &Command) -> String {
         Command::OpenActiveFileLatestLocalHistory => {
             "Open Latest Local History Snapshot".to_owned()
         }
+        Command::OpenLocalHistoryBrowser => "Browse Local History".to_owned(),
         Command::SaveWorkspaceSnapshot => "Save Workspace Snapshot".to_owned(),
         Command::RestoreLatestWorkspaceSnapshot => "Restore Latest Workspace Snapshot".to_owned(),
         Command::ToggleReadOnly => "Toggle Read Only".to_owned(),
@@ -240,7 +241,7 @@ pub(crate) fn command_label(command: &Command) -> String {
         Command::FormatDocument => "Format Document".to_owned(),
         Command::RequestCodeActions => "Code Actions".to_owned(),
         Command::ToggleProjectSearch => "Project Search".to_owned(),
-        Command::CycleProjectSearchPlacement => "Cycle Project Search Placement".to_owned(),
+        Command::CycleProjectSearchPlacement => "Legacy Project Search Placement".to_owned(),
         Command::NextProjectSearchResult => "Next Project Search Result".to_owned(),
         Command::PreviousProjectSearchResult => "Previous Project Search Result".to_owned(),
         Command::ToggleDiagnosticsPanel => "Diagnostics".to_owned(),

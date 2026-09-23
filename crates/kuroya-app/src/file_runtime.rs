@@ -70,6 +70,25 @@ impl KuroyaApp {
             FileJumpColumnEncoding::Char,
             true,
             true,
+            None,
+        );
+    }
+
+    pub(crate) fn open_file_selection_at_known_openable(
+        &mut self,
+        path: PathBuf,
+        line: usize,
+        column: usize,
+        selection_length: usize,
+    ) {
+        self.open_file_at_with_encoding_and_openability(
+            path,
+            line,
+            column,
+            FileJumpColumnEncoding::Char,
+            true,
+            true,
+            Some(selection_length),
         );
     }
 
@@ -88,6 +107,7 @@ impl KuroyaApp {
             column_encoding,
             record_history,
             false,
+            None,
         );
     }
 
@@ -99,6 +119,7 @@ impl KuroyaApp {
         column_encoding: FileJumpColumnEncoding,
         record_history: bool,
         target_known_openable: bool,
+        selection_length: Option<usize>,
     ) {
         let mut target = classify_open_file_at_target(
             &path,
@@ -133,14 +154,25 @@ impl KuroyaApp {
                 ..
             } => {
                 self.set_active_buffer(id);
-                self.apply_file_jump_with_encoding(id, line, column, column_encoding);
+                self.apply_file_jump_with_encoding_and_selection(
+                    id,
+                    line,
+                    column,
+                    column_encoding,
+                    selection_length,
+                );
                 self.status = format!("Jumped to {status_path_label}:{line}:{target_column}");
             }
             OpenFileAtTarget::Pending => {
                 let status = format!("Already opening {}", runtime_status_path_label_cow(&path));
                 self.pending_active_path = Some(path.clone());
-                self.pending_file_jump =
-                    Some(file_jump_for_path(path, line, column, column_encoding));
+                self.pending_file_jump = Some(file_jump_for_path(
+                    path,
+                    line,
+                    column,
+                    column_encoding,
+                    selection_length,
+                ));
                 self.status = status;
             }
             OpenFileAtTarget::Spawn => {
@@ -149,6 +181,7 @@ impl KuroyaApp {
                     line,
                     column,
                     column_encoding,
+                    selection_length,
                 ));
                 self.spawn_file_load_task(path, true);
             }
@@ -344,10 +377,14 @@ fn file_jump_for_path(
     line: usize,
     column: usize,
     column_encoding: FileJumpColumnEncoding,
+    selection_length: Option<usize>,
 ) -> FileJump {
-    match column_encoding {
-        FileJumpColumnEncoding::Char => FileJump::char(path, line, column),
-        FileJumpColumnEncoding::LspUtf16 => FileJump::lsp_utf16(path, line, column),
+    match (column_encoding, selection_length) {
+        (FileJumpColumnEncoding::Char, Some(selection_length)) => {
+            FileJump::char_selection(path, line, column, selection_length)
+        }
+        (FileJumpColumnEncoding::Char, None) => FileJump::char(path, line, column),
+        (FileJumpColumnEncoding::LspUtf16, _) => FileJump::lsp_utf16(path, line, column),
     }
 }
 

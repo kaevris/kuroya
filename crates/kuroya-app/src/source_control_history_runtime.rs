@@ -17,6 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 impl KuroyaApp {
     pub(crate) fn begin_git_history_panel(&mut self) {
         self.source_control_history_open = true;
+        self.git_panel_open_generation += 1;
         self.source_control_history_query.clear();
         self.source_control_history_selected = 0;
         self.source_control_history_has_more = false;
@@ -358,16 +359,18 @@ pub(crate) fn source_control_filtered_history_indices(
     query: &str,
     now_seconds: i64,
 ) -> Vec<usize> {
-    if source_control_history_query_is_empty(query) {
+    let Some(terms) = source_control_history_filter_terms(query) else {
         let mut indices = Vec::with_capacity(commits.len());
         indices.extend(0..commits.len());
         return indices;
-    }
+    };
 
-    let terms = query.split_whitespace();
     let mut indices = Vec::with_capacity(commits.len());
     for (index, commit) in commits.iter().enumerate() {
-        if source_control_history_matches_terms(commit, terms.clone(), now_seconds) {
+        if terms
+            .iter()
+            .all(|term| source_control_history_matches_term(commit, *term, now_seconds))
+        {
             indices.push(index);
         }
     }
@@ -378,29 +381,114 @@ fn source_control_history_query_is_empty(query: &str) -> bool {
     query.split_whitespace().next().is_none()
 }
 
-fn source_control_history_matches_terms<'a>(
-    commit: &GitCommitSummary,
-    mut terms: std::str::SplitWhitespace<'a>,
-    now_seconds: i64,
-) -> bool {
-    let mut age = None;
-    terms.all(|term| source_control_history_matches_term(commit, term, now_seconds, &mut age))
+fn source_control_history_filter_terms(
+    query: &str,
+) -> Option<Vec<SourceControlHistoryFilterTerm<'_>>> {
+    let mut terms = query.split_whitespace();
+    let first = terms.next()?;
+    let mut parsed = Vec::with_capacity(1 + terms.size_hint().0);
+    parsed.push(SourceControlHistoryFilterTerm::parse(first));
+    parsed.extend(terms.map(SourceControlHistoryFilterTerm::parse));
+    Some(parsed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceControlHistoryFilterScope {
+    Oid,
+    Message,
+    Author,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceControlHistoryFilterTerm<'a> {
+    Plain(&'a str),
+    Scoped {
+        scope: SourceControlHistoryFilterScope,
+        value: &'a str,
+    },
+}
+
+impl<'a> SourceControlHistoryFilterTerm<'a> {
+    fn parse(term: &'a str) -> Self {
+        source_control_history_scoped_filter_term(term)
+            .map(|(scope, value)| Self::Scoped { scope, value })
+            .unwrap_or(Self::Plain(term))
+    }
+}
+
+fn source_control_history_scoped_filter_term(
+    term: &str,
+) -> Option<(SourceControlHistoryFilterScope, &str)> {
+    let (scope, value) = term.split_once(':')?;
+    let scope = if scope.eq_ignore_ascii_case("oid") {
+        SourceControlHistoryFilterScope::Oid
+    } else if scope.eq_ignore_ascii_case("message") {
+        SourceControlHistoryFilterScope::Message
+    } else if scope.eq_ignore_ascii_case("author") {
+        SourceControlHistoryFilterScope::Author
+    } else {
+        return None;
+    };
+    Some((scope, value))
 }
 
 fn source_control_history_matches_term(
     commit: &GitCommitSummary,
+    term: SourceControlHistoryFilterTerm<'_>,
+    now_seconds: i64,
+) -> bool {
+    match term {
+        SourceControlHistoryFilterTerm::Scoped { scope, value } => {
+            !value.is_empty()
+                && match scope {
+                    SourceControlHistoryFilterScope::Oid => {
+                        ascii_case_insensitive_contains(&commit.oid, value)
+                            || ascii_case_insensitive_contains(&commit.short_oid, value)
+                    }
+                    SourceControlHistoryFilterScope::Message => {
+                        ascii_case_insensitive_contains(&commit.summary, value)
+                    }
+                    SourceControlHistoryFilterScope::Author => {
+                        ascii_case_insensitive_contains(&commit.author, value)
+                    }
+                }
+        }
+        SourceControlHistoryFilterTerm::Plain(term) => {
+            ascii_case_insensitive_contains(&commit.oid, term)
+                || ascii_case_insensitive_contains(&commit.short_oid, term)
+                || ascii_case_insensitive_contains(&commit.summary, term)
+                || ascii_case_insensitive_contains(&commit.author, term)
+                || source_control_history_age_is_within_term(commit, term, now_seconds)
+        }
+    }
+}
+
+fn source_control_history_age_is_within_term(
+    commit: &GitCommitSummary,
     term: &str,
     now_seconds: i64,
-    age: &mut Option<String>,
 ) -> bool {
-    ascii_case_insensitive_contains(&commit.oid, term)
-        || ascii_case_insensitive_contains(&commit.short_oid, term)
-        || ascii_case_insensitive_contains(&commit.summary, term)
-        || ascii_case_insensitive_contains(&commit.author, term)
-        || ascii_case_insensitive_contains(
-            age.get_or_insert_with(|| source_control_commit_age_label_at(commit, now_seconds)),
-            term,
-        )
+    let Some(max_age_seconds) = source_control_history_age_term_seconds(term) else {
+        return false;
+    };
+    now_seconds.saturating_sub(commit.time_seconds) <= max_age_seconds
+}
+
+fn source_control_history_age_term_seconds(term: &str) -> Option<i64> {
+    let (unit_start, _) = term.char_indices().next_back()?;
+    let (amount, unit) = term.split_at(unit_start);
+    if amount.is_empty() || !amount.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let unit_seconds = match unit {
+        "s" | "S" => 1,
+        "m" | "M" => 60,
+        "h" | "H" => 60 * 60,
+        "d" | "D" => 24 * 60 * 60,
+        "w" | "W" => 7 * 24 * 60 * 60,
+        _ => return None,
+    };
+    amount.parse::<i64>().ok()?.checked_mul(unit_seconds)
 }
 
 pub(crate) fn source_control_commit_age_label_at(
@@ -859,6 +947,100 @@ mod tests {
             Vec::<usize>::new()
         );
         assert_eq!(app.source_control_history_selected, 0);
+    }
+
+    #[test]
+    fn history_filter_scoped_terms_restrict_matching_to_one_field() {
+        let commits = vec![commit("aaaaaaaa", "Add search panel", 10)];
+
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "author:kuroya", 60),
+            vec![0]
+        );
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "AUTHOR:Test", 60),
+            vec![0]
+        );
+        assert!(source_control_filtered_history_indices(&commits, "author:search", 60).is_empty());
+
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "message:SEARCH", 60),
+            vec![0]
+        );
+        assert!(source_control_filtered_history_indices(&commits, "message:kuroya", 60).is_empty());
+
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "oid:aaaaaaaa", 60),
+            vec![0]
+        );
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "oid:00000000", 60),
+            vec![0]
+        );
+        assert!(source_control_filtered_history_indices(&commits, "oid:kuroya", 60).is_empty());
+
+        assert!(source_control_filtered_history_indices(&commits, "scope:search", 60).is_empty());
+        assert!(source_control_filtered_history_indices(&commits, "author:", 60).is_empty());
+    }
+
+    #[test]
+    fn history_filter_plain_age_terms_match_commits_within_the_duration() {
+        let now = 7 * 24 * 60 * 60;
+        let commits = vec![
+            commit("aaaaaaaa", "just committed", now - 30),
+            commit("bbbbbbbb", "hour old", now - 60 * 60),
+            commit("cccccccc", "day old", now - 24 * 60 * 60),
+            commit("dddddddd", "week old", 0),
+        ];
+
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "30s", now),
+            vec![0]
+        );
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "1h", now),
+            vec![0, 1]
+        );
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "1H", now),
+            vec![0, 1]
+        );
+
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "1d", now),
+            vec![0, 1, 2]
+        );
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "1w", now),
+            vec![0, 1, 2, 3]
+        );
+
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "author:Kuroya 1h", now),
+            vec![0, 1]
+        );
+
+        assert!(source_control_filtered_history_indices(&commits, "2x", now).is_empty());
+    }
+
+    #[test]
+    fn history_filter_no_longer_matches_rendered_age_labels() {
+        let now = 90;
+
+        let commits = vec![commit("aaaaaaaa", "Fix scrollback", 0)];
+
+        assert!(source_control_filtered_history_indices(&commits, "1m", now).is_empty());
+        assert!(source_control_filtered_history_indices(&commits, "1m ago", now).is_empty());
+        assert!(source_control_filtered_history_indices(&commits, "just now", now).is_empty());
+
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "5m", now),
+            vec![0]
+        );
+        assert_eq!(
+            source_control_filtered_history_indices(&commits, "scrollback", now),
+            vec![0]
+        );
     }
 
     #[test]

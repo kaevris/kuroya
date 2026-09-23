@@ -14,6 +14,7 @@ pub(super) fn handle_vim_direct_insert_transition_key(
     mode: &mut EditorVimMode,
     pending: &mut Option<EditorVimPendingKey>,
     last_change: &mut Option<EditorVimLastChange>,
+    count_value: usize,
     suppress_text: Option<char>,
 ) -> Option<VimKeyResult> {
     match key {
@@ -24,9 +25,14 @@ pub(super) fn handle_vim_direct_insert_transition_key(
                 vim_record_insert_change(
                     last_change,
                     EditorVimRepeatAction::InsertLineFirstNonWhitespace,
+                    count_value,
                 );
             } else {
-                vim_record_insert_change(last_change, EditorVimRepeatAction::InsertAtCursor);
+                vim_record_insert_change(
+                    last_change,
+                    EditorVimRepeatAction::InsertAtCursor,
+                    count_value,
+                );
             }
             *pending = None;
             *mode = EditorVimMode::Insert;
@@ -36,10 +42,18 @@ pub(super) fn handle_vim_direct_insert_transition_key(
             vim_collapse_selection_for_insert(buffer);
             if modifiers.shift {
                 buffer.move_line_end();
-                vim_record_insert_change(last_change, EditorVimRepeatAction::InsertLineEnd);
+                vim_record_insert_change(
+                    last_change,
+                    EditorVimRepeatAction::InsertLineEnd,
+                    count_value,
+                );
             } else {
                 buffer.move_right();
-                vim_record_insert_change(last_change, EditorVimRepeatAction::AppendAfterCursor);
+                vim_record_insert_change(
+                    last_change,
+                    EditorVimRepeatAction::AppendAfterCursor,
+                    count_value,
+                );
             }
             *pending = None;
             *mode = EditorVimMode::Insert;
@@ -62,7 +76,7 @@ pub(super) fn handle_vim_direct_insert_transition_key(
                 } else {
                     EditorVimRepeatAction::OpenLineBelow
                 },
-                1,
+                count_value,
                 suppress_text,
             ))
         }

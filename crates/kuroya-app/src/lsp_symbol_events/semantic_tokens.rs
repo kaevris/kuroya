@@ -118,7 +118,7 @@ mod tests {
             vec![
                 token(1, 1, 5, "function"),
                 token(2, 2, 3, "variable"),
-                token(1, 1, 6, "overflow"),
+                token(1, 1, 6, "multi-line"),
                 token(2, 5, 1, "at-end"),
                 token(3, 1, 1, "missing"),
             ],
@@ -126,7 +126,11 @@ mod tests {
 
         assert_eq!(
             tokens,
-            vec![token(1, 1, 5, "function"), token(2, 2, 3, "variable")]
+            vec![
+                token(1, 1, 5, "function"),
+                token(2, 2, 3, "variable"),
+                token(1, 1, 6, "multi-line")
+            ]
         );
     }
 

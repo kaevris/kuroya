@@ -1,3 +1,4 @@
+use super::super::state::vim_set_previous_context_mark;
 use super::matching::{vim_is_buffer_word_char, vim_search_word_target};
 use super::repeat::vim_repeat_last_search_in_direction;
 use super::state::vim_set_last_search;
@@ -144,6 +145,8 @@ fn vim_search_word(
     else {
         return false;
     };
+
+    vim_set_previous_context_mark(buffer);
     buffer.set_single_cursor(target);
     true
 }

@@ -8,6 +8,7 @@ use crate::{
     path_clipboard::{PathCopyKind, copy_path_to_clipboard},
     status_bar::items::git_status_count_badge_label,
     ui_icons::{IconKind, draw_icon, icon_button},
+    ui_text::count_label,
 };
 use eframe::egui::{
     self, Align, Color32, Rect, Response, RichText, Sense, Stroke, StrokeKind, TextStyle, Ui, pos2,
@@ -425,11 +426,15 @@ impl KuroyaApp {
                                                 ui.close();
                                             }
                                             if ui.button("Split Right").clicked() {
-                                                self.split_buffer_right(id);
+                                                self.split_buffer_right_from_tab_menu(id);
                                                 ui.close();
                                             }
                                             if ui.button("Reset Split Widths").clicked() {
                                                 self.reset_pane_weights();
+                                                ui.close();
+                                            }
+                                            if ui.button("Reopen Closed File").clicked() {
+                                                self.command_bus.push(Command::ReopenClosedFile);
                                                 ui.close();
                                             }
                                             if ui.button("Close").clicked() {
@@ -438,6 +443,10 @@ impl KuroyaApp {
                                             }
                                             if ui.button("Close Others").clicked() {
                                                 self.close_other_buffers(id);
+                                                ui.close();
+                                            }
+                                            if ui.button("Close All").clicked() {
+                                                self.close_all_buffers();
                                                 ui.close();
                                             }
                                         }
@@ -489,6 +498,34 @@ impl KuroyaApp {
             rows.push(self.prepare_buffer_tab_row_with_cache(buffer, &mut cache, git_entries));
         }
         rows
+    }
+
+    pub(crate) fn close_all_buffers(&mut self) {
+        let mut closed = 0;
+        let mut pending = Vec::new();
+        let has_pending_close_buffers = !self.pending_close_buffers.is_empty();
+        let mut index = 0;
+        while index < self.buffers.len() {
+            let buffer = &self.buffers[index];
+            let id = buffer.id();
+            if buffer.is_dirty() {
+                if self.dirty_close_buffer != Some(id)
+                    && (!has_pending_close_buffers || !self.pending_close_buffers.contains(&id))
+                {
+                    pending.push(id);
+                }
+                index += 1;
+            } else {
+                self.force_close_buffer(id);
+                closed += 1;
+            }
+        }
+        self.pending_close_buffers.extend(pending);
+        if !self.pending_close_buffers.is_empty() {
+            self.begin_next_pending_close();
+        } else if closed > 0 {
+            self.status = format!("Closed {}", count_label(closed, "buffer", "buffers"));
+        }
     }
 
     #[cfg(test)]

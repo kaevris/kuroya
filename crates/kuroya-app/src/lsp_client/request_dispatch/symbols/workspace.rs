@@ -1,10 +1,10 @@
 mod dispatch;
 mod pending;
 
-use crate::lsp_client::pending::PendingLspRequest;
+use crate::lsp_client::pending::PendingLspRequests;
 use dispatch::dispatch_workspace_symbols;
 use kuroya_core::BufferId;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 use tokio::process::ChildStdin;
 
 pub(super) async fn dispatch_workspace_symbols_request(
@@ -13,7 +13,7 @@ pub(super) async fn dispatch_workspace_symbols_request(
     query: String,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     dispatch_workspace_symbols(id, path, query, writer, next_request_id, pending_requests).await
 }

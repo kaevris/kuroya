@@ -42,6 +42,8 @@ impl KuroyaApp {
     }
 
     pub(crate) fn set_active_buffer(&mut self, id: BufferId) {
+        self.vim_discard_half_typed_sequence();
+        self.close_stale_vim_insert_undo_group(id);
         self.clear_completion_popup_for_inactive_buffer(id);
         let pane_id = self.pane_id_for_activation(id);
         self.active_pane = pane_id;
@@ -57,6 +59,8 @@ impl KuroyaApp {
     }
 
     pub(crate) fn set_active_buffer_in_pane(&mut self, pane_id: PaneId, id: BufferId) {
+        self.vim_discard_half_typed_sequence();
+        self.close_stale_vim_insert_undo_group(id);
         self.clear_completion_popup_for_inactive_buffer(id);
         self.active_pane = pane_id;
         self.focused_pane = Some(pane_id);
@@ -241,6 +245,113 @@ mod tests {
         assert_eq!(app.active, Some(1));
         assert_eq!(app.panes[0].active, Some(1));
         assert!(app.status.starts_with("Active tab:"));
+    }
+
+    #[test]
+    fn set_active_buffer_discards_half_typed_vim_sequence() {
+        use crate::editor_vim_key_events::{
+            EditorVimMode, EditorVimPendingKey, EditorVimRegister, EditorVimRegisterKind,
+            vim_command_input_text_for_test, vim_search_input_text_for_test,
+        };
+
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root.clone());
+        app.buffers
+            .push(TextBuffer::from_text(1, None, "one".to_owned()));
+        app.buffers
+            .push(TextBuffer::from_text(2, None, "two".to_owned()));
+        app.active = Some(1);
+        app.panes[0].active = Some(1);
+        app.editor_vim_mode = EditorVimMode::Insert;
+        app.editor_vim_pending_key = Some(EditorVimPendingKey::DeleteMotionCount {
+            operator_count: 1,
+            motion_count: 2,
+        });
+        app.editor_vim_unnamed_register = Some(EditorVimRegister {
+            text: "yanked".to_owned(),
+            kind: EditorVimRegisterKind::Characterwise,
+        });
+        crate::editor_vim_key_events::vim_set_search_input_text_for_test("query");
+        crate::editor_vim_key_events::vim_set_command_input_text_for_test("s/a/b");
+
+        app.set_active_buffer(2);
+
+        assert_eq!(app.editor_vim_pending_key, None);
+        assert_eq!(vim_search_input_text_for_test(), "");
+        assert_eq!(vim_command_input_text_for_test(), "");
+
+        assert_eq!(app.editor_vim_mode, EditorVimMode::Insert);
+        assert_eq!(
+            app.editor_vim_unnamed_register,
+            Some(EditorVimRegister {
+                text: "yanked".to_owned(),
+                kind: EditorVimRegisterKind::Characterwise,
+            })
+        );
+        assert_eq!(app.active, Some(2));
+    }
+
+    #[test]
+    fn set_active_buffer_in_pane_discards_half_typed_vim_sequence() {
+        use crate::editor_vim_key_events::{EditorVimPendingKey, vim_search_input_text_for_test};
+
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root.clone());
+        app.buffers
+            .push(TextBuffer::from_text(1, None, "one".to_owned()));
+        app.buffers
+            .push(TextBuffer::from_text(2, None, "two".to_owned()));
+        app.active = Some(1);
+        app.panes[0].active = Some(1);
+        app.editor_vim_pending_key = Some(EditorVimPendingKey::Count(3));
+        crate::editor_vim_key_events::vim_set_search_input_text_for_test("query");
+
+        app.set_active_buffer_in_pane(1, 2);
+
+        assert_eq!(app.editor_vim_pending_key, None);
+        assert_eq!(vim_search_input_text_for_test(), "");
+        assert_eq!(app.active, Some(2));
+    }
+
+    #[test]
+    fn set_active_buffer_ends_insert_undo_group_opened_on_previous_buffer() {
+        use crate::editor_vim_key_events::EditorVimMode;
+        use eframe::egui::{Context, Event, Key, Modifiers};
+
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root.clone());
+        app.buffers
+            .push(TextBuffer::from_text(1, None, "one".to_owned()));
+        app.buffers
+            .push(TextBuffer::from_text(2, None, "two".to_owned()));
+        app.active = Some(1);
+        app.panes[0].active = Some(1);
+        app.focused_pane = Some(1);
+        app.settings.vim_keybindings = true;
+
+        let ctx = Context::default();
+        ctx.input_mut(|input| {
+            input.events.push(Event::Key {
+                key: Key::O,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            });
+        });
+        app.handle_editor_input(&ctx, 1, 1);
+
+        assert_eq!(app.editor_vim_mode, EditorVimMode::Insert);
+        assert_eq!(app.editor_vim_insert_undo_group_buffer, Some(1));
+
+        app.set_active_buffer(2);
+
+        assert_eq!(app.editor_vim_insert_undo_group_buffer, None);
+        let buffer_one = app.buffer_mut(1).expect("buffer 1 remains loaded");
+        assert_eq!(buffer_one.text(), "one\n");
+        assert_eq!(buffer_one.undo_entry_count(), 1);
+        assert!(buffer_one.undo());
+        assert_eq!(buffer_one.text(), "one");
     }
 
     fn app_for_test(root: PathBuf) -> KuroyaApp {

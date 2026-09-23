@@ -2,8 +2,9 @@ use crate::lsp_completion_resolve::CompletionResolveIntent;
 use kuroya_core::{
     BufferId, Diagnostic, LspCallHierarchyCall, LspCallHierarchyItem, LspCodeAction, LspCodeLens,
     LspCompletionItem, LspDefinition, LspDocumentHighlight, LspDocumentSymbol, LspFoldingRange,
-    LspInlayHint, LspReference, LspRequestId, LspSemanticToken, LspSignatureHelp, LspTextEdit,
-    LspTypeHierarchyItem, LspWorkDoneProgress, LspWorkspaceDocumentChange, LspWorkspaceSymbol,
+    LspInlayHint, LspPrepareRename, LspReference, LspRequestId, LspSemanticToken, LspSignatureHelp,
+    LspTextEdit, LspTypeHierarchyItem, LspWorkDoneProgress, LspWorkspaceDocumentChange,
+    LspWorkspaceSymbol,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -131,6 +132,16 @@ pub(crate) enum LspUiEvent {
         line: usize,
         column: usize,
         references: Option<Vec<LspReference>>,
+        error: Option<String>,
+    },
+
+    PrepareRenameResult {
+        id: BufferId,
+        path: PathBuf,
+        version: u64,
+        line: usize,
+        column: usize,
+        range: Option<LspPrepareRename>,
         error: Option<String>,
     },
     RenameResult {
@@ -288,6 +299,12 @@ pub(crate) enum LspUiEvent {
         generation: u64,
     },
     ServerStopped {
+        language: String,
+        root: PathBuf,
+        generation: u64,
+    },
+
+    ServerUnavailable {
         language: String,
         root: PathBuf,
         generation: u64,

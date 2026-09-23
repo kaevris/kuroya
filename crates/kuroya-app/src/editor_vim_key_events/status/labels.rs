@@ -1,5 +1,6 @@
 use std::fmt::Write as _;
 
+use super::super::state::vim_named_register_label;
 use super::super::{
     EditorVimCaseConversion, EditorVimCharFindMotion, EditorVimNamedRegister,
     EditorVimOperatorGoKind, EditorVimTextObjectScope,
@@ -39,7 +40,6 @@ pub(super) fn push_register_prefix(label: &mut String, register: EditorVimNamedR
     label.push('"');
     label.push(vim_named_register_label(register));
 }
-
 pub(super) fn push_text_object_prefix(
     label: &mut String,
     operator_count: usize,
@@ -109,20 +109,5 @@ pub(super) fn push_operator_go_label(label: &mut String, operator: EditorVimOper
             push_register_prefix(label, register);
             label.push('y');
         }
-    }
-}
-
-fn vim_named_register_label(register: EditorVimNamedRegister) -> char {
-    if register.index == 26 {
-        return '_';
-    }
-    let label = u8::try_from(register.index)
-        .ok()
-        .and_then(|index| (index < 26).then_some((b'a' + index) as char))
-        .unwrap_or('?');
-    if register.append {
-        label.to_ascii_uppercase()
-    } else {
-        label
     }
 }

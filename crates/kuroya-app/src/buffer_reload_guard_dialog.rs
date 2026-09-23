@@ -18,6 +18,9 @@ impl KuroyaApp {
         let mut window_open = true;
 
         egui::Window::new("Reload File")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 24.0,
+            ))
             .open(&mut window_open)
             .collapsible(false)
             .resizable(false)

@@ -497,10 +497,7 @@ fn plugin_command_contributions_are_runnable(plugin: &PluginDescriptor) -> bool 
 }
 
 fn plugin_command_runtime_capabilities_are_supported(capabilities: &PluginCapabilities) -> bool {
-    !capabilities.workspace_read
-        && !capabilities.workspace_write
-        && !capabilities.process_spawn
-        && !capabilities.network
+    !capabilities.process_spawn && !capabilities.network
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -713,10 +710,14 @@ fn parse_friendly_theme_settings_toml(value: &toml::Value) -> anyhow::Result<The
 
     let mut theme = ThemeSettings::default();
     if let Some(name) = root.get("name") {
-        theme.name = name
+        let name = name
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("theme name must be a string"))?
-            .to_owned();
+            .ok_or_else(|| anyhow::anyhow!("theme name must be a string"))?;
+
+        let sanitized = sanitize_display_label(name);
+        if !sanitized.is_empty() {
+            theme.name = sanitized;
+        }
     }
 
     for role in THEME_COLOR_ROLES {
@@ -903,6 +904,7 @@ impl PluginSyntaxRegistry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginManifest {
     #[serde(default = "default_plugin_api_version")]
     pub api_version: String,
@@ -920,6 +922,7 @@ pub struct PluginManifest {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginCapabilities {
     #[serde(default)]
     pub commands: bool,
@@ -940,6 +943,7 @@ pub struct PluginCapabilities {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginContributions {
     #[serde(default)]
     pub commands: Vec<PluginCommandContribution>,
@@ -952,6 +956,7 @@ pub struct PluginContributions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginCommandContribution {
     pub id: String,
     pub title: String,
@@ -960,6 +965,7 @@ pub struct PluginCommandContribution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginLanguageContribution {
     pub id: String,
     #[serde(default)]
@@ -969,6 +975,7 @@ pub struct PluginLanguageContribution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginThemeContribution {
     pub id: String,
     pub label: String,
@@ -976,6 +983,7 @@ pub struct PluginThemeContribution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PluginSyntaxContribution {
     pub language: String,
     pub path: PathBuf,
@@ -1094,22 +1102,37 @@ fn discover_workspace_plugins_with_limits(
         });
     }
 
-    let mut seen_plugin_ids = BTreeSet::new();
+    let mut seen_plugin_ids: BTreeMap<String, PathBuf> = BTreeMap::new();
     for root in roots {
         match load_plugin_manifest(&root) {
             Ok(plugin) => {
-                if !seen_plugin_ids.insert(plugin.manifest.id.clone()) {
+                if let Some(entry) = &plugin.manifest.entry
+                    && !entry.is_file()
+                {
                     discovery.errors.push(PluginDiscoveryError {
                         root,
-                        error: format!("plugin id {} is duplicated", plugin.manifest.id),
+                        error: format!("plugin entry {} is missing", entry.display()),
+                    });
+                    continue;
+                }
+                if let Some(winner_root) = seen_plugin_ids.get(&plugin.manifest.id) {
+                    discovery.errors.push(PluginDiscoveryError {
+                        root,
+                        error: format!(
+                            "plugin id {} is duplicated (first registered from {})",
+                            plugin.manifest.id,
+                            winner_root.display()
+                        ),
                     });
                 } else {
+                    seen_plugin_ids.insert(plugin.manifest.id.clone(), root.clone());
                     discovery.plugins.push(plugin);
                 }
             }
             Err(error) => discovery.errors.push(PluginDiscoveryError {
                 root,
-                error: error.to_string(),
+
+                error: format!("{error:#}"),
             }),
         }
     }

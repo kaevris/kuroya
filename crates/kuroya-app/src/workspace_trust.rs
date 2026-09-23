@@ -49,6 +49,14 @@ pub(crate) fn trusted_workspace_paths_match(left: &Path, right: &Path) -> bool {
     workspace_trust_path_matches_key(left, &right)
 }
 
+pub(crate) fn workspace_trust_prompt_root(
+    workspace_placeholder: bool,
+    workspace_trusted: bool,
+    root: PathBuf,
+) -> Option<PathBuf> {
+    (!workspace_placeholder && !workspace_trusted).then_some(root)
+}
+
 pub(crate) fn workspace_path_contains_lexically(root: &Path, path: &Path) -> bool {
     let Some(root) = workspace_trust_key(root) else {
         return false;
@@ -256,7 +264,24 @@ fn normalize_workspace_trust_component(component: &OsStr) -> String {
 }
 
 impl KuroyaApp {
+    /// Arms the "trust this workspace?" prompt for the current workspace when
+    /// it is untrusted. Called after startup/session restore and after a
+    /// workspace is opened, so declining keeps the prompt hidden until the
+    /// workspace actually changes.
+    pub(crate) fn arm_workspace_trust_prompt(&mut self) {
+        self.pending_workspace_trust_prompt = workspace_trust_prompt_root(
+            self.workspace_placeholder,
+            self.workspace_trusted,
+            self.workspace.root.clone(),
+        );
+    }
+
+    pub(crate) fn keep_workspace_restricted(&mut self) {
+        self.pending_workspace_trust_prompt = None;
+    }
+
     pub(crate) fn trust_current_workspace(&mut self) {
+        self.pending_workspace_trust_prompt = None;
         self.trusted_workspaces =
             trust_workspace(&self.trusted_workspaces, self.workspace.root.clone());
         self.workspace_trusted = true;
@@ -908,6 +933,89 @@ mod tests {
         assert!(unrelated_rx.try_recv().is_err());
 
         std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn workspace_trust_prompt_arms_only_for_untrusted_non_placeholder_roots() {
+        let root = PathBuf::from("workspace");
+
+        assert_eq!(
+            workspace_trust_prompt_root(false, false, root.clone()),
+            Some(root)
+        );
+        assert_eq!(
+            workspace_trust_prompt_root(false, true, PathBuf::new()),
+            None
+        );
+        assert_eq!(
+            workspace_trust_prompt_root(true, false, PathBuf::new()),
+            None
+        );
+        assert_eq!(
+            workspace_trust_prompt_root(true, true, PathBuf::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn arm_workspace_trust_prompt_follows_current_workspace_trust_state() {
+        let root = PathBuf::from("workspace");
+        let mut app = source_control_app_for_test(root.clone(), false);
+
+        app.arm_workspace_trust_prompt();
+        assert_eq!(app.pending_workspace_trust_prompt, Some(root.clone()));
+
+        app.workspace_trusted = true;
+        app.arm_workspace_trust_prompt();
+        assert_eq!(app.pending_workspace_trust_prompt, None);
+
+        app.workspace_trusted = false;
+        app.workspace_placeholder = true;
+        app.arm_workspace_trust_prompt();
+        assert_eq!(app.pending_workspace_trust_prompt, None);
+    }
+
+    #[test]
+    fn trust_current_workspace_clears_prompt_and_reenables_restricted_features() {
+        let root = temp_workspace("trust-prompt-reenable");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = source_control_app_for_test(root.clone(), false);
+        let app_state_path = root.join("app-state.json");
+        app.app_state_path_override = Some(app_state_path.clone());
+        app.pending_workspace_trust_prompt = Some(root.clone());
+
+        app.trust_current_workspace();
+
+        assert!(app.workspace_trusted);
+        assert!(app.pending_workspace_trust_prompt.is_none());
+        assert!(workspace_is_trusted(&app.trusted_workspaces, &root));
+        assert_eq!(app.workspace_plugins_in_flight_request_id, Some(1));
+        assert_eq!(app.workspace_tasks_in_flight_request_id, Some(1));
+        let saved = fs::read_to_string(&app_state_path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert!(
+            saved["trusted_workspaces"]
+                .as_array()
+                .expect("trusted workspaces array")
+                .iter()
+                .any(|path| path.as_str() == Some(root.to_string_lossy().as_ref()))
+        );
+
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn keep_workspace_restricted_clears_prompt_without_trusting() {
+        let root = PathBuf::from("workspace");
+        let mut app = source_control_app_for_test(root.clone(), false);
+        app.pending_workspace_trust_prompt = Some(root);
+
+        app.keep_workspace_restricted();
+
+        assert!(app.pending_workspace_trust_prompt.is_none());
+        assert!(!app.workspace_trusted);
+        assert!(app.trusted_workspaces.is_empty());
     }
 
     #[test]

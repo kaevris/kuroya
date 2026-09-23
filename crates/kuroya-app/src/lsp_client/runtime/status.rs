@@ -1,4 +1,4 @@
-use crate::lsp_runtime::{lsp_read_error_status_message, lsp_stopped_status_message};
+use crate::lsp_runtime::{lsp_read_error_status_message, lsp_stopped_status_message_with_detail};
 use crate::ui_event_channel::Sender;
 use crate::{lsp_ui_events::LspUiEvent, ui_events::UiEvent};
 use std::path::Path;
@@ -25,6 +25,7 @@ pub(super) fn send_lsp_stopped_status(
     language: &str,
     root: &Path,
     generation: u64,
+    detail: Option<&str>,
     ui_tx: &Sender<UiEvent>,
 ) {
     let language_key = language.to_owned();
@@ -35,7 +36,7 @@ pub(super) fn send_lsp_stopped_status(
             language: language_key.clone(),
             root: root_path.clone(),
             generation,
-            message: lsp_stopped_status_message(language),
+            message: lsp_stopped_status_message_with_detail(language, detail),
         }),
     );
     let _ = crate::ui_event_channel::send_critical_ui_event(
@@ -73,7 +74,7 @@ mod tests {
         let status_tx = tx.clone();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let sender = thread::spawn(move || {
-            send_lsp_stopped_status("rust", &PathBuf::from("workspace"), 7, &status_tx);
+            send_lsp_stopped_status("rust", &PathBuf::from("workspace"), 7, None, &status_tx);
             done_tx.send(()).unwrap();
         });
 
@@ -144,7 +145,7 @@ mod tests {
             "language-fragment-".repeat(LSP_LANGUAGE_LABEL_MAX_CHARS)
         );
 
-        send_lsp_stopped_status(&language, &PathBuf::from("workspace"), 7, &tx);
+        send_lsp_stopped_status(&language, &PathBuf::from("workspace"), 7, None, &tx);
 
         let status_event = rx.try_recv().expect("status event should be queued");
         let UiEvent::Lsp(LspUiEvent::Status {
@@ -170,6 +171,26 @@ mod tests {
                     && root == Path::new("workspace")
                     && generation == 7
         ));
+    }
+
+    #[test]
+    fn stopped_status_sanitizes_exit_detail_into_bounded_message() {
+        let (tx, rx) = ui_event_channel();
+        let detail = format!(
+            "exit code 1\nsecond line \u{2066}{}",
+            "detail-fragment-".repeat(40)
+        );
+
+        send_lsp_stopped_status("rust", &PathBuf::from("workspace"), 7, Some(&detail), &tx);
+
+        let status_event = rx.try_recv().expect("stopped status should be queued");
+        let UiEvent::Lsp(LspUiEvent::Status { message, .. }) = status_event else {
+            panic!("expected LSP status event");
+        };
+        assert!(message.starts_with("rust LSP stopped ("), "{message}");
+        assert_display_safe(&message);
+        assert!(message.contains("..."));
+        assert!(message.chars().count() <= LSP_STATUS_MESSAGE_MAX_CHARS);
     }
 
     fn assert_display_safe(value: &str) {

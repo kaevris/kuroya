@@ -21,6 +21,7 @@ pub(crate) struct FileJump {
     pub(crate) line: usize,
     pub(crate) column: usize,
     pub(crate) column_encoding: FileJumpColumnEncoding,
+    pub(crate) selection_length: Option<usize>,
 }
 
 impl FileJump {
@@ -30,6 +31,22 @@ impl FileJump {
             line,
             column,
             column_encoding: FileJumpColumnEncoding::Char,
+            selection_length: None,
+        }
+    }
+
+    pub(crate) fn char_selection(
+        path: PathBuf,
+        line: usize,
+        column: usize,
+        selection_length: usize,
+    ) -> Self {
+        Self {
+            path,
+            line,
+            column,
+            column_encoding: FileJumpColumnEncoding::Char,
+            selection_length: Some(selection_length),
         }
     }
 
@@ -39,6 +56,7 @@ impl FileJump {
             line,
             column,
             column_encoding: FileJumpColumnEncoding::LspUtf16,
+            selection_length: None,
         }
     }
 }
@@ -52,6 +70,7 @@ pub(crate) enum FileJumpColumnEncoding {
 #[derive(Debug, Clone)]
 pub(crate) enum PendingWorkspaceSwitch {
     Confirm { target: PathBuf },
+    ConfirmHomeDirectory { target: PathBuf },
     Saving { target: PathBuf, ids: Vec<BufferId> },
 }
 
@@ -61,7 +80,7 @@ impl PendingWorkspaceSwitch {
         is_valid: impl FnMut(BufferId) -> bool,
     ) -> bool {
         match self {
-            Self::Confirm { .. } => false,
+            Self::Confirm { .. } | Self::ConfirmHomeDirectory { .. } => false,
             Self::Saving { ids, .. } => prune_invalid_buffer_ids(ids, is_valid),
         }
     }

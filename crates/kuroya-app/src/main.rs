@@ -12,6 +12,9 @@ mod app_state;
 mod app_tabs;
 mod app_update;
 mod app_update_overlays;
+mod background_image;
+mod background_image_animation;
+mod background_image_runtime;
 mod buffer_close_guard_dialog;
 mod buffer_close_lifecycle;
 mod buffer_find;
@@ -42,6 +45,7 @@ mod diagnostic_location;
 mod diagnostic_navigation;
 mod diagnostics_panel;
 mod diagnostics_runtime;
+mod discord_presence;
 mod editor_bracket_overlay_cache;
 mod editor_buffer_context_actions;
 mod editor_clipboard_context_actions;
@@ -67,6 +71,7 @@ mod editor_readonly;
 mod editor_row_gutter;
 mod editor_row_overlays;
 mod editor_row_paint;
+mod editor_row_render_cache;
 mod editor_selection_clipboard_runtime;
 mod editor_suggest;
 mod editor_tabs;
@@ -100,6 +105,7 @@ mod font_loading;
 mod font_typography;
 mod fonts;
 mod fs_watcher;
+mod fuzzy;
 mod git_diff_state;
 mod git_diff_view;
 mod goto_line_overlay;
@@ -115,6 +121,7 @@ mod keybindings_panel_actions;
 mod keybindings_runtime;
 mod large_file_mode;
 mod layout;
+mod local_history_browser;
 mod local_history_runtime;
 mod lsp_actions;
 mod lsp_call_hierarchy_popup;
@@ -130,6 +137,7 @@ mod lsp_disk_edit_actions;
 mod lsp_edit_events;
 mod lsp_edit_requests;
 mod lsp_edits;
+mod lsp_enable_prompt;
 mod lsp_event_handler;
 mod lsp_folding_runtime;
 mod lsp_hover_cache;
@@ -172,6 +180,7 @@ mod persistence_models;
 mod persistence_session;
 mod persistence_storage;
 mod persistence_workspace_snapshots;
+mod picker_ui;
 mod plugin_activation_runtime;
 mod plugin_command_runtime;
 mod popup_buttons;
@@ -210,8 +219,10 @@ mod source_control_runtime;
 mod source_control_smart_commit_dialog;
 mod source_control_stash_panel;
 mod source_control_stash_runtime;
+mod startup_arguments;
 mod startup_tasks;
 mod status_bar;
+mod status_toasts;
 mod symbols_panel;
 mod syntax;
 mod syntax_cache;
@@ -236,6 +247,7 @@ mod ui_icon_shapes;
 mod ui_icons;
 mod ui_scrollbars;
 mod ui_state;
+mod ui_switch;
 mod ui_text;
 mod update_checker;
 mod virtual_diff_runtime;
@@ -256,6 +268,7 @@ use eframe::egui::ViewportBuilder;
 pub(crate) use app_state::KuroyaApp;
 
 fn main() -> eframe::Result {
+    let startup_target = startup_arguments::resolve_startup_target();
     let mut viewport = ViewportBuilder::default()
         .with_title("Kuroya")
         .with_app_id("kuroya")
@@ -276,7 +289,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Kuroya",
         native_options,
-        Box::new(|cc| match KuroyaApp::new(cc) {
+        Box::new(move |cc| match KuroyaApp::new(cc, startup_target) {
             Ok(app) => Ok(Box::new(app) as Box<dyn eframe::App>),
             Err(error) => Err(Box::new(std::io::Error::other(error.to_string()))
                 as Box<dyn std::error::Error + Send + Sync>),

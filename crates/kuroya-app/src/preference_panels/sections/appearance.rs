@@ -4,17 +4,19 @@ use crate::{
     preference_panels::sections::{
         SETTINGS_DISPLAY_TEXT_MAX_CHARS, SETTINGS_TARGET_APPEARANCE, SettingsHighlightState,
         bounded_settings_display_text, bounded_settings_multiline_join,
-        bounded_settings_text_edit_width, settings_target_block,
+        bounded_settings_text_edit_width, settings_switch, settings_target_block,
     },
     theme::{
         THEME_DISPLAY_LABEL_MAX_CHARS, THEME_REFERENCE_LABEL_MAX_CHARS, built_in_themes,
         plugin_theme_display_label_bounded, theme_display_label,
     },
+    ui_icons::{IconKind, icon_button},
 };
 use eframe::egui;
 use kuroya_core::{
+    EditorBackgroundImageFit, EditorBackgroundImagePosition, EditorBackgroundImageScope,
     EditorSettings, PluginThemeRegistration, PluginThemeRegistry, ThemeSettings,
-    load_plugin_theme_settings, load_theme_settings_from_path,
+    clamp_editor_background_image_dim, load_plugin_theme_settings, load_theme_settings_from_path,
 };
 use std::path::{Path, PathBuf};
 
@@ -53,6 +55,8 @@ pub(super) fn render_appearance_settings_with_highlight(
     clear_editor_font: &mut bool,
     choose_ui_font: &mut bool,
     clear_ui_font: &mut bool,
+    choose_background_image: &mut bool,
+    clear_background_image: &mut bool,
     status: &mut Option<String>,
     highlight: &mut SettingsHighlightState<'_>,
 ) {
@@ -68,6 +72,8 @@ pub(super) fn render_appearance_settings_with_highlight(
             clear_editor_font,
             choose_ui_font,
             clear_ui_font,
+            choose_background_image,
+            clear_background_image,
             status,
         );
     });
@@ -84,6 +90,8 @@ fn render_appearance_settings_content(
     clear_editor_font: &mut bool,
     choose_ui_font: &mut bool,
     clear_ui_font: &mut bool,
+    choose_background_image: &mut bool,
+    clear_background_image: &mut bool,
     status: &mut Option<String>,
 ) {
     ui.label(egui::RichText::new("Theme").strong());
@@ -115,6 +123,225 @@ fn render_appearance_settings_content(
             render_font_file_picker(ui, ui_font_path, choose_ui_font, clear_ui_font);
             ui.end_row();
         });
+
+    ui.add_space(12.0);
+    ui.label(egui::RichText::new("Editor background").strong());
+    render_editor_background_settings(ui, draft, choose_background_image, clear_background_image);
+}
+
+fn render_editor_background_settings(
+    ui: &mut egui::Ui,
+    draft: &mut EditorSettings,
+    choose_background_image: &mut bool,
+    clear_background_image: &mut bool,
+) {
+    let has_image = draft
+        .background_image_path
+        .as_deref()
+        .is_some_and(|path| !path.trim().is_empty());
+    let controls_enabled =
+        editor_background_controls_enabled(draft.background_image_enabled, has_image);
+
+    egui::Grid::new("settings_appearance_editor_background_grid")
+        .num_columns(2)
+        .spacing([18.0, 10.0])
+        .show(ui, |ui| {
+            ui.label("Enabled");
+            settings_switch(
+                ui,
+                &mut draft.background_image_enabled,
+                "Editor background image",
+            )
+            .on_hover_text("Editor background image");
+            ui.end_row();
+
+            ui.label("Image");
+            render_background_image_file_picker(
+                ui,
+                draft.background_image_path.as_deref(),
+                choose_background_image,
+                clear_background_image,
+            );
+            ui.end_row();
+
+            ui.label("Area");
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                egui::ComboBox::from_id_salt("settings_appearance_editor_background_scope")
+                    .selected_text(editor_background_image_scope_label(
+                        draft.background_image_scope,
+                    ))
+                    .width(bounded_settings_text_edit_width(
+                        ui.available_width(),
+                        180.0,
+                    ))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut draft.background_image_scope,
+                            EditorBackgroundImageScope::Editor,
+                            "Editor only",
+                        );
+                        ui.selectable_value(
+                            &mut draft.background_image_scope,
+                            EditorBackgroundImageScope::FullApp,
+                            "Full app",
+                        );
+                    });
+            });
+            ui.end_row();
+
+            ui.label("Dim");
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                let mut percent =
+                    clamp_editor_background_image_dim(draft.background_image_dim) * 100.0;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut percent, 0.0..=100.0)
+                            .suffix("%")
+                            .step_by(1.0),
+                    )
+                    .changed()
+                {
+                    draft.background_image_dim = percent / 100.0;
+                }
+            });
+            ui.end_row();
+
+            ui.label("Scaling");
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                egui::ComboBox::from_id_salt("settings_appearance_editor_background_fit")
+                    .selected_text(editor_background_image_fit_label(
+                        draft.background_image_fit,
+                    ))
+                    .width(bounded_settings_text_edit_width(
+                        ui.available_width(),
+                        180.0,
+                    ))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut draft.background_image_fit,
+                            EditorBackgroundImageFit::Cover,
+                            "Cover",
+                        );
+                        ui.selectable_value(
+                            &mut draft.background_image_fit,
+                            EditorBackgroundImageFit::Contain,
+                            "Contain",
+                        );
+                        ui.selectable_value(
+                            &mut draft.background_image_fit,
+                            EditorBackgroundImageFit::Stretch,
+                            "Stretch",
+                        );
+                    });
+            });
+            ui.end_row();
+
+            ui.label("Vertical position");
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                egui::ComboBox::from_id_salt("settings_appearance_editor_background_position")
+                    .selected_text(editor_background_image_position_label(
+                        draft.background_image_position,
+                    ))
+                    .width(bounded_settings_text_edit_width(
+                        ui.available_width(),
+                        180.0,
+                    ))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut draft.background_image_position,
+                            EditorBackgroundImagePosition::Top,
+                            "Top",
+                        );
+                        ui.selectable_value(
+                            &mut draft.background_image_position,
+                            EditorBackgroundImagePosition::Center,
+                            "Center",
+                        );
+                        ui.selectable_value(
+                            &mut draft.background_image_position,
+                            EditorBackgroundImagePosition::Bottom,
+                            "Bottom",
+                        );
+                    });
+            });
+            ui.end_row();
+        });
+}
+
+fn render_background_image_file_picker(
+    ui: &mut egui::Ui,
+    current: Option<&str>,
+    choose_file: &mut bool,
+    clear_file: &mut bool,
+) {
+    let selected = current.map(str::trim).filter(|path| !path.is_empty());
+    let selected_display = selected.map(|path| {
+        bounded_settings_display_text(
+            path,
+            SETTINGS_DISPLAY_TEXT_MAX_CHARS,
+            "Editor background image",
+        )
+    });
+    let text = egui::RichText::new(selected_display.as_deref().unwrap_or("No image selected"))
+        .monospace()
+        .color(if selected.is_some() {
+            ui.visuals().text_color()
+        } else {
+            ui.visuals().weak_text_color()
+        });
+
+    ui.horizontal(|ui| {
+        let button_side = ui.spacing().interact_size.y.max(34.0);
+        let actions_width = button_side * 2.0 + ui.spacing().item_spacing.x * 2.0;
+        let label_width = (ui.available_width() - actions_width).clamp(48.0, 260.0);
+        let response = ui.add_sized(
+            [label_width, ui.spacing().interact_size.y],
+            egui::Label::new(text).truncate(),
+        );
+        if let Some(selected_display) = selected_display {
+            response.on_hover_text(selected_display);
+        }
+
+        if icon_button(ui, IconKind::FolderOpen, "Choose image").clicked() {
+            *choose_file = true;
+        }
+        if ui
+            .add_enabled_ui(selected.is_some(), |ui| {
+                icon_button(ui, IconKind::Close, "Clear image")
+            })
+            .inner
+            .clicked()
+        {
+            *clear_file = true;
+        }
+    });
+}
+
+fn editor_background_controls_enabled(enabled: bool, has_image: bool) -> bool {
+    enabled && has_image
+}
+
+fn editor_background_image_fit_label(fit: EditorBackgroundImageFit) -> &'static str {
+    match fit {
+        EditorBackgroundImageFit::Cover => "Cover",
+        EditorBackgroundImageFit::Contain => "Contain",
+        EditorBackgroundImageFit::Stretch => "Stretch",
+    }
+}
+
+fn editor_background_image_scope_label(scope: EditorBackgroundImageScope) -> &'static str {
+    match scope {
+        EditorBackgroundImageScope::Editor => "Editor only",
+        EditorBackgroundImageScope::FullApp => "Full app",
+    }
+}
+
+fn editor_background_image_position_label(position: EditorBackgroundImagePosition) -> &'static str {
+    match position {
+        EditorBackgroundImagePosition::Top => "Top",
+        EditorBackgroundImagePosition::Center => "Center",
+        EditorBackgroundImagePosition::Bottom => "Bottom",
+    }
 }
 
 fn render_theme_combo(
@@ -391,7 +618,14 @@ fn render_font_file_picker(
 
 #[cfg(test)]
 mod tests {
-    use super::{custom_theme_option, parse_custom_theme_paths_input};
+    use super::{
+        custom_theme_option, editor_background_controls_enabled, editor_background_image_fit_label,
+        editor_background_image_position_label, editor_background_image_scope_label,
+        parse_custom_theme_paths_input,
+    };
+    use kuroya_core::{
+        EditorBackgroundImageFit, EditorBackgroundImagePosition, EditorBackgroundImageScope,
+    };
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -423,5 +657,49 @@ mod tests {
             Path::new("workspace").join(".kuroya/themes/night.toml")
         );
         assert_eq!(option.label, "night");
+    }
+
+    #[test]
+    fn editor_background_controls_require_an_enabled_image() {
+        assert!(!editor_background_controls_enabled(false, false));
+        assert!(!editor_background_controls_enabled(false, true));
+        assert!(!editor_background_controls_enabled(true, false));
+        assert!(editor_background_controls_enabled(true, true));
+    }
+
+    #[test]
+    fn editor_background_combo_labels_cover_all_values() {
+        assert_eq!(
+            editor_background_image_fit_label(EditorBackgroundImageFit::Cover),
+            "Cover"
+        );
+        assert_eq!(
+            editor_background_image_fit_label(EditorBackgroundImageFit::Contain),
+            "Contain"
+        );
+        assert_eq!(
+            editor_background_image_fit_label(EditorBackgroundImageFit::Stretch),
+            "Stretch"
+        );
+        assert_eq!(
+            editor_background_image_scope_label(EditorBackgroundImageScope::Editor),
+            "Editor only"
+        );
+        assert_eq!(
+            editor_background_image_scope_label(EditorBackgroundImageScope::FullApp),
+            "Full app"
+        );
+        assert_eq!(
+            editor_background_image_position_label(EditorBackgroundImagePosition::Top),
+            "Top"
+        );
+        assert_eq!(
+            editor_background_image_position_label(EditorBackgroundImagePosition::Center),
+            "Center"
+        );
+        assert_eq!(
+            editor_background_image_position_label(EditorBackgroundImagePosition::Bottom),
+            "Bottom"
+        );
     }
 }

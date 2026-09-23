@@ -1,19 +1,33 @@
-use crate::{ProjectIndex, text_match::AsciiCaseInsensitiveMatcher};
+use crate::{
+    ProjectIndex,
+    buffer::regex_query_is_line_local,
+    settings::{DEFAULT_PROJECT_SEARCH_MAX_FILE_SIZE_MB, DEFAULT_PROJECT_SEARCH_MAX_RESULTS},
+    text_match::AsciiCaseInsensitiveMatcher,
+};
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
-use std::time::UNIX_EPOCH;
+use std::io;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt::{self, Write as _},
     fs,
-    io::{self, Read},
+    io::Read,
     path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::{Duration, UNIX_EPOCH},
 };
 
 const MAX_SEARCH_PREVIEW_CHARS: usize = 240;
 const SEARCH_PREVIEW_CONTEXT_CHARS: usize = 96;
 const SEARCH_FILE_CHUNK_SIZE: usize = 256;
+const SEARCH_STREAM_BUFFER_BYTES: usize = 16 * 1024;
 const SEARCH_CANCEL_LINE_INTERVAL: usize = 64;
 const SEARCH_CANCEL_MATCH_INTERVAL: usize = 64;
 const SEARCH_CANCEL_BYTE_INTERVAL: usize = 16 * 1024;
@@ -25,6 +39,12 @@ const MAX_SEARCH_GLOB_PATTERNS: usize = 1024;
 const MAX_SEARCH_GLOB_PATTERN_BYTES: usize = 4096;
 const GLOB_ERROR_PATTERN_MAX_CHARS: usize = 120;
 const GLOB_ERROR_DETAIL_MAX_CHARS: usize = 240;
+const MIN_PROJECT_SEARCH_WORKER_THREADS: usize = 2;
+const MAX_PROJECT_SEARCH_WORKER_THREADS: usize = 8;
+const PROJECT_SEARCH_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const PROJECT_SEARCH_CANCEL_SPIN_ITERATIONS: usize = 256;
+const REGEX_MULTILINE_QUERY_ERROR: &str =
+    "Invalid regular expression: pattern must match within a single line";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchOptions {
@@ -33,6 +53,7 @@ pub struct SearchOptions {
     pub max_results: usize,
     pub case_sensitive: bool,
     pub whole_word: bool,
+    pub regex: bool,
     pub include_globs: Vec<String>,
     pub exclude_globs: Vec<String>,
 }
@@ -41,10 +62,11 @@ impl Default for SearchOptions {
     fn default() -> Self {
         Self {
             query: String::new(),
-            max_file_bytes: 2 * 1024 * 1024,
-            max_results: 500,
+            max_file_bytes: DEFAULT_PROJECT_SEARCH_MAX_FILE_SIZE_MB * 1024 * 1024,
+            max_results: DEFAULT_PROJECT_SEARCH_MAX_RESULTS,
             case_sensitive: false,
             whole_word: false,
+            regex: false,
             include_globs: Vec::new(),
             exclude_globs: Vec::new(),
         }
@@ -129,6 +151,101 @@ pub struct SearchProgress {
     pub stats: SearchStats,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ProjectSearchMetadataCache {
+    entries: Arc<Mutex<HashMap<PathBuf, CachedProjectSearchMetadata>>>,
+}
+
+impl ProjectSearchMetadataCache {
+    pub fn clear(&self) {
+        self.with_entries(|entries| entries.clear());
+    }
+
+    pub fn len(&self) -> usize {
+        self.with_entries(|entries| entries.len())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn get(
+        &self,
+        path: &Path,
+        max_file_bytes: u64,
+        signature: SearchFileMetadataSignature,
+    ) -> Option<ProjectSearchFileMetadataState> {
+        self.with_entries(|entries| {
+            entries.get(path).and_then(|entry| {
+                (entry.max_file_bytes == max_file_bytes && entry.signature == signature)
+                    .then_some(entry.state)
+            })
+        })
+    }
+
+    fn insert(
+        &self,
+        path: &Path,
+        max_file_bytes: u64,
+        signature: SearchFileMetadataSignature,
+        state: ProjectSearchFileMetadataState,
+    ) {
+        self.with_entries(|entries| {
+            entries.insert(
+                path.to_path_buf(),
+                CachedProjectSearchMetadata {
+                    max_file_bytes,
+                    signature,
+                    state,
+                },
+            );
+        });
+    }
+
+    fn with_entries<T>(
+        &self,
+        use_entries: impl FnOnce(&mut HashMap<PathBuf, CachedProjectSearchMetadata>) -> T,
+    ) -> T {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        use_entries(&mut entries)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedProjectSearchMetadata {
+    max_file_bytes: u64,
+    signature: SearchFileMetadataSignature,
+    state: ProjectSearchFileMetadataState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SearchFileMetadataSignature {
+    len: u64,
+    modified_nanos: u128,
+    created_nanos: u128,
+}
+
+impl SearchFileMetadataSignature {
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        Self {
+            len: metadata.len(),
+            modified_nanos: metadata_modified_nanos(metadata),
+            created_nanos: metadata_created_nanos(metadata),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectSearchFileMetadataState {
+    Searchable,
+    TooLarge,
+    BinaryOrInvalid,
+    Unreadable,
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Default)]
 struct ProjectSearchIndex {
@@ -153,6 +270,7 @@ struct ProjectSearchIndexedFileSignature {
     created_nanos: u128,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 enum ProjectSearchIndexedFileContent {
     Text {
@@ -263,12 +381,51 @@ pub fn search_project_with_cancel_and_progress(
     is_cancelled: impl Fn() -> bool,
     mut on_progress: impl FnMut(SearchProgress),
 ) -> Option<SearchResult> {
+    search_project_with_optional_metadata_cache_and_progress(
+        index,
+        options,
+        None,
+        is_cancelled,
+        &mut on_progress,
+    )
+}
+
+pub fn search_project_with_metadata_cache_and_progress(
+    index: &ProjectIndex,
+    options: &SearchOptions,
+    metadata_cache: &ProjectSearchMetadataCache,
+    is_cancelled: impl Fn() -> bool,
+    mut on_progress: impl FnMut(SearchProgress),
+) -> Option<SearchResult> {
+    search_project_with_optional_metadata_cache_and_progress(
+        index,
+        options,
+        Some(metadata_cache),
+        is_cancelled,
+        &mut on_progress,
+    )
+}
+
+fn search_project_with_optional_metadata_cache_and_progress(
+    index: &ProjectIndex,
+    options: &SearchOptions,
+    metadata_cache: Option<&ProjectSearchMetadataCache>,
+    is_cancelled: impl Fn() -> bool,
+    on_progress: &mut dyn FnMut(SearchProgress),
+) -> Option<SearchResult> {
     let prepared = match PreparedProjectSearch::new_with_cancel(options, &is_cancelled)? {
         Ok(Some(prepared)) => prepared,
         Ok(None) => return Some(SearchResult::default()),
         Err(error) => return Some(search_error_result(error)),
     };
-    search_project_prepared(index, options, &prepared, &is_cancelled, &mut on_progress)
+    search_project_prepared(
+        index,
+        options,
+        &prepared,
+        metadata_cache,
+        &is_cancelled,
+        on_progress,
+    )
 }
 
 #[cfg(test)]
@@ -345,79 +502,319 @@ impl<'a> PreparedProjectSearch<'a> {
         if is_cancelled() {
             return None;
         }
-        Some(Ok(Some(Self::from_parts(
-            needle,
-            options.case_sensitive,
+        let line_needle =
+            match LineSearchNeedle::prepare(needle, options.case_sensitive, options.regex) {
+                Ok(line_needle) => line_needle,
+                Err(error) => return Some(Err(error)),
+            };
+        Some(Ok(Some(Self {
+            line_needle,
             include_globs,
             exclude_globs,
-        ))))
+        })))
     }
+}
 
-    fn from_parts(
-        needle: &'a str,
-        case_sensitive: bool,
-        include_globs: Option<GlobSet>,
-        exclude_globs: Option<GlobSet>,
-    ) -> Self {
-        Self {
-            line_needle: LineSearchNeedle::new(needle, case_sensitive),
-            include_globs,
-            exclude_globs,
-        }
-    }
+struct ProjectScannedFile {
+    matches: Vec<SearchMatch>,
+    consumed_matches: usize,
+    stats: SearchStats,
+}
+
+enum ProjectSearchWorkerMessage {
+    File {
+        file_index: usize,
+        scanned: ProjectScannedFile,
+    },
+    Done {
+        chunk_index: usize,
+        cancelled: bool,
+    },
+}
+
+struct ProjectSearchChunkJob<'a> {
+    chunk_index: usize,
+    file_offset: usize,
+    files: &'a [PathBuf],
+    root: &'a Path,
+    line_needle: &'a LineSearchNeedle<'a>,
+    options: &'a SearchOptions,
+    include_globs: Option<&'a GlobSet>,
+    exclude_globs: Option<&'a GlobSet>,
+    metadata_cache: Option<&'a ProjectSearchMetadataCache>,
+    worker_cancelled: &'a AtomicBool,
+    stop_spawning: &'a AtomicBool,
+    sender: mpsc::Sender<ProjectSearchWorkerMessage>,
+}
+
+fn project_search_worker_thread_count() -> usize {
+    thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1)
+        .clamp(
+            MIN_PROJECT_SEARCH_WORKER_THREADS,
+            MAX_PROJECT_SEARCH_WORKER_THREADS,
+        )
 }
 
 fn search_project_prepared(
     index: &ProjectIndex,
     options: &SearchOptions,
     prepared: &PreparedProjectSearch<'_>,
+    metadata_cache: Option<&ProjectSearchMetadataCache>,
     is_cancelled: &dyn Fn() -> bool,
     on_progress: &mut dyn FnMut(SearchProgress),
 ) -> Option<SearchResult> {
-    let context = ProjectSearchContext {
-        root: index.root(),
-        #[cfg(test)]
-        indexed_max_file_bytes: effective_search_file_byte_limit(options.max_file_bytes),
-        line_needle: &prepared.line_needle,
-        options,
-        include_globs: prepared.include_globs.as_ref(),
-        exclude_globs: prepared.exclude_globs.as_ref(),
-        is_cancelled,
-    };
+    if (is_cancelled)() {
+        return None;
+    }
+
+    let files = index.files();
+    let worker_count = project_search_worker_thread_count();
+    let chunk_size = files.len().div_ceil(worker_count).max(1);
+
+    let worker_cancelled = Arc::new(AtomicBool::new(false));
+    let stop_spawning = Arc::new(AtomicBool::new(false));
+    let (sender, receiver) = mpsc::channel();
 
     let mut result_budget = SearchResultBudget::new(options.max_results);
     let mut stats = SearchStats::default();
+    let mut progress_stats = SearchStats::default();
     let mut truncated = false;
     let mut matches = Vec::with_capacity(result_budget.limit().min(1024));
     let mut emitted_matches = 0usize;
-    for files in index.files().chunks(SEARCH_FILE_CHUNK_SIZE) {
-        if (context.is_cancelled)() {
-            return None;
+    let mut outcome = None;
+
+    thread::scope(|scope| {
+        let mut spawned_chunks = 0usize;
+        for chunk_index in 0..worker_count {
+            let chunk_start = chunk_index * chunk_size;
+            if chunk_start >= files.len() {
+                break;
+            }
+            let chunk_end = (chunk_start + chunk_size).min(files.len());
+            spawned_chunks += 1;
+            let job = ProjectSearchChunkJob {
+                chunk_index,
+                file_offset: chunk_start,
+                files: &files[chunk_start..chunk_end],
+                root: index.root(),
+                line_needle: &prepared.line_needle,
+                options,
+                include_globs: prepared.include_globs.as_ref(),
+                exclude_globs: prepared.exclude_globs.as_ref(),
+                metadata_cache,
+                worker_cancelled: &worker_cancelled,
+                stop_spawning: &stop_spawning,
+                sender: sender.clone(),
+            };
+            scope.spawn(move || run_project_search_chunk(job));
         }
-        if result_budget.is_exhausted() {
-            truncated = true;
-            break;
+
+        drop(sender);
+
+        let mut chunk_done = vec![false; spawned_chunks];
+        let mut done_chunks = 0usize;
+        let mut pending: HashMap<usize, ProjectScannedFile> = HashMap::new();
+        let mut next_file_index = 0usize;
+        let mut merging_complete = files.is_empty();
+        let mut cancelled = false;
+
+        while done_chunks < spawned_chunks {
+            if !cancelled {
+                for _ in 0..PROJECT_SEARCH_CANCEL_SPIN_ITERATIONS {
+                    if (is_cancelled)() {
+                        worker_cancelled.store(true, Ordering::Relaxed);
+                        cancelled = true;
+                        break;
+                    }
+                }
+            }
+            if worker_cancelled.load(Ordering::Relaxed) {
+                cancelled = true;
+            }
+            match receiver.recv_timeout(PROJECT_SEARCH_CANCEL_POLL_INTERVAL) {
+                Ok(ProjectSearchWorkerMessage::File {
+                    file_index,
+                    scanned,
+                }) => {
+                    pending.insert(file_index, scanned);
+                }
+                Ok(ProjectSearchWorkerMessage::Done {
+                    chunk_index,
+                    cancelled: worker_cancel,
+                }) => {
+                    if !chunk_done[chunk_index] {
+                        chunk_done[chunk_index] = true;
+                        done_chunks += 1;
+                    }
+                    cancelled |= worker_cancel;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+
+            while !cancelled && !merging_complete && next_file_index < files.len() {
+                let chunk_index = next_file_index / chunk_size;
+                if chunk_index >= spawned_chunks {
+                    merging_complete = true;
+                    break;
+                }
+                let scanned = match pending.remove(&next_file_index) {
+                    Some(scanned) => scanned,
+                    None => {
+                        if chunk_done[chunk_index] {
+                            next_file_index += 1;
+                            continue;
+                        }
+                        break;
+                    }
+                };
+                next_file_index += 1;
+
+                stats.merge(scanned.stats);
+                progress_stats.merge(scanned.stats);
+                let mut consumed = scanned.consumed_matches;
+                let mut scanned_matches = scanned.matches.into_iter();
+                while consumed > 0 {
+                    consumed -= 1;
+                    match result_budget.consume_match() {
+                        SearchMatchBudget::Collect => {
+                            matches.push(
+                                scanned_matches
+                                    .next()
+                                    .expect("worker collected every consumed match"),
+                            );
+                        }
+                        SearchMatchBudget::HiddenTruncation | SearchMatchBudget::Exhausted => break,
+                    }
+                }
+                let file_local_truncated =
+                    result_budget.is_exhausted() && scanned.consumed_matches > 0;
+                if result_budget.is_exhausted() {
+                    truncated = true;
+
+                    stop_spawning.store(true, Ordering::Relaxed);
+                    merging_complete = true;
+                }
+                if should_emit_file_search_progress(
+                    progress_stats,
+                    scanned.stats.matched_files > 0,
+                    file_local_truncated,
+                ) {
+                    emit_project_search_progress(
+                        &matches,
+                        &mut emitted_matches,
+                        progress_stats,
+                        truncated,
+                        on_progress,
+                    );
+                    progress_stats = SearchStats::default();
+                }
+            }
+            if next_file_index >= files.len() {
+                merging_complete = true;
+            }
+            if merging_complete {
+                pending.clear();
+            }
         }
-        let result = search_project_path_chunk(&context, files, &mut result_budget, &mut matches)?;
-        stats.merge(result.stats);
-        truncated |= result.truncated;
+
+        if worker_cancelled.load(Ordering::Relaxed) {
+            cancelled = true;
+        }
+
+        if cancelled {
+            outcome = None;
+            return;
+        }
+        truncated |= matches.len() > options.max_results;
+        matches.truncate(options.max_results);
         emit_project_search_progress(
             &matches,
             &mut emitted_matches,
-            result.stats,
+            progress_stats,
             truncated,
             on_progress,
         );
-    }
-    truncated |= matches.len() > options.max_results;
-    matches.truncate(options.max_results);
+        outcome = Some(SearchResult {
+            matches,
+            truncated,
+            error: None,
+            stats,
+        });
+    });
 
-    Some(SearchResult {
-        matches,
-        truncated,
-        error: None,
-        stats,
-    })
+    outcome
+}
+
+fn run_project_search_chunk(job: ProjectSearchChunkJob<'_>) {
+    let ProjectSearchChunkJob {
+        chunk_index,
+        file_offset,
+        files,
+        root,
+        line_needle,
+        options,
+        include_globs,
+        exclude_globs,
+        metadata_cache,
+        worker_cancelled,
+        stop_spawning,
+        sender,
+    } = job;
+    let is_cancelled = || worker_cancelled.load(Ordering::Relaxed);
+    let mut scratch = ProjectSearchScratch::new();
+    let mut worker_budget = SearchResultBudget::new(options.max_results);
+    let mut cancelled = false;
+
+    for (offset, path) in files.iter().enumerate() {
+        if is_cancelled() {
+            cancelled = true;
+            break;
+        }
+        if stop_spawning.load(Ordering::Relaxed) || worker_budget.is_exhausted() {
+            break;
+        }
+        if !path_allowed_by_globs(root, path, include_globs, exclude_globs) {
+            continue;
+        }
+
+        let mut file_matches = Vec::new();
+        let mut file_budget = worker_budget.clone();
+        let budget_before = file_budget.remaining_until_truncation;
+        let file_result = match search_project_live_file(ProjectSearchLiveFileSearch {
+            path,
+            line_needle,
+            options,
+            metadata_cache,
+            result_budget: &mut file_budget,
+            matches: &mut file_matches,
+            is_cancelled: &is_cancelled,
+            scratch: &mut scratch,
+        }) {
+            Some(file_result) => file_result,
+            None => {
+                cancelled = true;
+                break;
+            }
+        };
+        worker_budget = file_budget;
+        let consumed_matches =
+            budget_before.saturating_sub(worker_budget.remaining_until_truncation);
+        let _ = sender.send(ProjectSearchWorkerMessage::File {
+            file_index: file_offset + offset,
+            scanned: ProjectScannedFile {
+                matches: file_matches,
+                consumed_matches,
+                stats: file_result.stats,
+            },
+        });
+    }
+    let _ = sender.send(ProjectSearchWorkerMessage::Done {
+        chunk_index,
+        cancelled,
+    });
 }
 
 fn emit_project_search_progress(
@@ -454,7 +851,6 @@ fn search_project_index_prepared(
 ) -> Option<SearchResult> {
     let context = ProjectSearchContext {
         root: index.root(),
-        #[cfg(test)]
         indexed_max_file_bytes: index.max_file_bytes(),
         line_needle: &prepared.line_needle,
         options,
@@ -629,7 +1025,6 @@ fn current_indexed_file_signature(path: &Path) -> Option<ProjectSearchIndexedFil
         .map(|metadata| ProjectSearchIndexedFileSignature::from_metadata(&metadata))
 }
 
-#[cfg(test)]
 fn metadata_modified_nanos(metadata: &fs::Metadata) -> u128 {
     metadata
         .modified()
@@ -639,7 +1034,6 @@ fn metadata_modified_nanos(metadata: &fs::Metadata) -> u128 {
         .unwrap_or_default()
 }
 
-#[cfg(test)]
 fn metadata_created_nanos(metadata: &fs::Metadata) -> u128 {
     metadata
         .created()
@@ -649,13 +1043,14 @@ fn metadata_created_nanos(metadata: &fs::Metadata) -> u128 {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 struct SearchChunkResult {
     truncated: bool,
     stats: SearchStats,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SearchResultBudget {
     visible_limit: usize,
     remaining_visible: usize,
@@ -699,15 +1094,33 @@ impl SearchResultBudget {
     }
 }
 
+#[cfg(test)]
 struct ProjectSearchContext<'a, 'needle> {
     root: &'a Path,
-    #[cfg(test)]
     indexed_max_file_bytes: u64,
     line_needle: &'a LineSearchNeedle<'needle>,
     options: &'a SearchOptions,
     include_globs: Option<&'a GlobSet>,
     exclude_globs: Option<&'a GlobSet>,
     is_cancelled: &'a dyn Fn() -> bool,
+}
+
+struct ProjectSearchScratch {
+    read_buffer: Vec<u8>,
+    line_buffer: Vec<u8>,
+}
+
+impl ProjectSearchScratch {
+    fn new() -> Self {
+        Self {
+            read_buffer: vec![0; SEARCH_STREAM_BUFFER_BYTES],
+            line_buffer: Vec::with_capacity(SEARCH_STREAM_BUFFER_BYTES),
+        }
+    }
+
+    fn clear_file_state(&mut self) {
+        self.line_buffer.clear();
+    }
 }
 
 #[cfg(test)]
@@ -734,41 +1147,8 @@ fn search_project_index_chunk(
             FileSearchOutcome::Cancelled => return None,
         };
         stats.merge(result.stats);
-        truncated |= result.local_truncated;
 
-        if result_budget.is_exhausted() {
-            truncated = true;
-            break;
-        }
-    }
-
-    Some(SearchChunkResult { truncated, stats })
-}
-
-fn search_project_path_chunk(
-    context: &ProjectSearchContext<'_, '_>,
-    files: &[PathBuf],
-    result_budget: &mut SearchResultBudget,
-    matches: &mut Vec<SearchMatch>,
-) -> Option<SearchChunkResult> {
-    let mut truncated = false;
-    let mut stats = SearchStats::default();
-
-    for path in files {
-        if (context.is_cancelled)() {
-            return None;
-        }
-        if result_budget.is_exhausted() {
-            truncated = true;
-            break;
-        }
-        let result = match search_project_path_file(context, path, result_budget, matches) {
-            FileSearchOutcome::Searched(result) => result,
-            FileSearchOutcome::Skipped => continue,
-            FileSearchOutcome::Cancelled => return None,
-        };
-        stats.merge(result.stats);
-        truncated |= result.local_truncated;
+        truncated |= result_budget.is_exhausted();
 
         if result_budget.is_exhausted() {
             truncated = true;
@@ -781,10 +1161,10 @@ fn search_project_path_chunk(
 
 #[derive(Debug)]
 struct FileSearchResult {
-    local_truncated: bool,
     stats: SearchStats,
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 enum FileSearchOutcome {
     Searched(FileSearchResult),
@@ -792,6 +1172,7 @@ enum FileSearchOutcome {
     Cancelled,
 }
 
+#[cfg(test)]
 impl FileSearchOutcome {
     fn from_result(result: Option<FileSearchResult>) -> Self {
         match result {
@@ -802,10 +1183,9 @@ impl FileSearchOutcome {
 }
 
 impl FileSearchResult {
-    fn searched(matched_file: bool, local_truncated: bool) -> Self {
+    fn searched(matched_file: bool) -> Self {
         let matched_files = usize::from(matched_file);
         Self {
-            local_truncated,
             stats: SearchStats {
                 searched_files: 1,
                 matched_files,
@@ -844,43 +1224,78 @@ impl FileSearchResult {
     }
 
     fn skipped(stats: SearchStats) -> Self {
-        Self {
-            local_truncated: false,
-            stats,
+        Self { stats }
+    }
+
+    fn metadata_state(&self) -> Option<ProjectSearchFileMetadataState> {
+        if self.stats.skipped_large_files > 0 {
+            Some(ProjectSearchFileMetadataState::TooLarge)
+        } else if self.stats.skipped_binary_files > 0 {
+            Some(ProjectSearchFileMetadataState::BinaryOrInvalid)
+        } else if self.stats.skipped_unreadable_files > 0 {
+            Some(ProjectSearchFileMetadataState::Unreadable)
+        } else if self.stats.searched_files > 0 {
+            Some(ProjectSearchFileMetadataState::Searchable)
+        } else {
+            None
         }
     }
 }
 
-fn search_project_path_file(
-    context: &ProjectSearchContext<'_, '_>,
+fn cached_file_result_for_state(state: ProjectSearchFileMetadataState) -> Option<FileSearchResult> {
+    match state {
+        ProjectSearchFileMetadataState::Searchable => None,
+        ProjectSearchFileMetadataState::TooLarge => Some(FileSearchResult::skipped_large()),
+        ProjectSearchFileMetadataState::BinaryOrInvalid => Some(FileSearchResult::skipped_binary()),
+        ProjectSearchFileMetadataState::Unreadable => Some(FileSearchResult::skipped_unreadable()),
+    }
+}
+
+fn store_file_metadata_state(
+    metadata_cache: Option<&ProjectSearchMetadataCache>,
     path: &Path,
-    result_budget: &mut SearchResultBudget,
-    matches: &mut Vec<SearchMatch>,
-) -> FileSearchOutcome {
-    if !path_allowed_by_globs(
-        context.root,
-        path,
-        context.include_globs,
-        context.exclude_globs,
-    ) {
-        return FileSearchOutcome::Skipped;
+    max_file_bytes: u64,
+    signature: SearchFileMetadataSignature,
+    state: ProjectSearchFileMetadataState,
+) {
+    if let Some(metadata_cache) = metadata_cache {
+        metadata_cache.insert(path, max_file_bytes, signature, state);
     }
-    if (context.is_cancelled)() {
-        return FileSearchOutcome::Cancelled;
-    }
-    let content = read_live_search_file_content(path, context.options.max_file_bytes);
-    if (context.is_cancelled)() {
-        return FileSearchOutcome::Cancelled;
-    }
-    FileSearchOutcome::from_result(search_project_file_content(
-        path,
-        &content,
-        context.line_needle,
-        context.options,
-        result_budget,
-        matches,
-        context.is_cancelled,
-    ))
+}
+
+struct SearchFileMetadataCheck {
+    metadata: fs::Metadata,
+    signature: SearchFileMetadataSignature,
+    cached_state: Option<ProjectSearchFileMetadataState>,
+}
+
+fn check_search_file_metadata(
+    path: &Path,
+    max_file_bytes: u64,
+    metadata_cache: Option<&ProjectSearchMetadataCache>,
+) -> Result<SearchFileMetadataCheck, FileSearchResult> {
+    let metadata = fs::metadata(path).map_err(|_| FileSearchResult::skipped_unreadable())?;
+    let signature = SearchFileMetadataSignature::from_metadata(&metadata);
+    let cached_state = metadata_cache.and_then(|cache| cache.get(path, max_file_bytes, signature));
+    Ok(SearchFileMetadataCheck {
+        metadata,
+        signature,
+        cached_state,
+    })
+}
+
+fn progress_stats_file_count(stats: SearchStats) -> usize {
+    stats.searched_files.saturating_add(stats.skipped_files())
+}
+
+fn should_emit_file_search_progress(
+    progress_stats: SearchStats,
+    file_matched: bool,
+    file_local_truncated: bool,
+) -> bool {
+    file_matched
+        || file_local_truncated
+        || progress_stats_file_count(progress_stats) >= SEARCH_FILE_CHUNK_SIZE
 }
 
 #[cfg(test)]
@@ -962,6 +1377,7 @@ fn indexed_search_file_is_stale(file: &ProjectSearchIndexedFile) -> bool {
     current_indexed_file_signature(&file.path) != file.signature
 }
 
+#[cfg(test)]
 fn read_live_search_file_content(
     path: &Path,
     max_file_bytes: u64,
@@ -977,6 +1393,7 @@ fn read_live_search_file_content(
     }
 }
 
+#[cfg(test)]
 fn search_project_file_content(
     path: &Path,
     content: &ProjectSearchIndexedFileContent,
@@ -1013,6 +1430,7 @@ fn search_project_file_content(
     }
 }
 
+#[cfg(test)]
 fn search_text_file(
     path: &Path,
     text: &str,
@@ -1022,63 +1440,379 @@ fn search_text_file(
     matches: &mut Vec<SearchMatch>,
     is_cancelled: &dyn Fn() -> bool,
 ) -> Option<FileSearchResult> {
-    let mut matched_file = false;
-    let mut local_truncated = false;
-    let mut cancelled = false;
-    let mut matches_since_cancel_check = 0usize;
+    let mut state = TextFileSearchState::default();
     'lines: for (line_idx, line) in text.lines().enumerate() {
-        if line_idx % SEARCH_CANCEL_LINE_INTERVAL == 0 && is_cancelled() {
+        if line_idx.is_multiple_of(SEARCH_CANCEL_LINE_INTERVAL) && is_cancelled() {
             return None;
         }
-        let mut column_counter = SearchLineColumnCounter::new(line);
-        let line_scan = for_each_line_match_with_cancel(
-            line,
+        let mut line_search = TextLineSearch {
+            path,
             line_needle,
-            options.whole_word,
+            whole_word: options.whole_word,
+            result_budget,
+            matches,
             is_cancelled,
-            |byte_col| {
-                matches_since_cancel_check = matches_since_cancel_check.saturating_add(1);
-                if matches_since_cancel_check >= SEARCH_CANCEL_MATCH_INTERVAL {
-                    matches_since_cancel_check = 0;
-                    if is_cancelled() {
-                        cancelled = true;
-                        return false;
-                    }
-                }
-                match result_budget.consume_match() {
-                    SearchMatchBudget::Collect => {}
-                    SearchMatchBudget::HiddenTruncation => {
-                        matched_file = true;
-                        local_truncated = true;
-                        return false;
-                    }
-                    SearchMatchBudget::Exhausted => {
-                        local_truncated = true;
-                        return false;
-                    }
-                }
-                matched_file = true;
-                let column = column_counter.column_for_byte(byte_col);
-                matches.push(SearchMatch {
-                    path: path.to_path_buf(),
-                    line: line_idx.saturating_add(1),
-                    column,
-                    preview: search_preview(line, byte_col),
-                });
-                true
-            },
-        );
+            state: &mut state,
+        };
+        let line_scan = search_text_line(line_idx, line, &mut line_search);
         if !matches!(line_scan, LineMatchScan::Completed) {
             if matches!(line_scan, LineMatchScan::Cancelled) {
                 return None;
             }
-            if cancelled {
+            if state.cancelled {
                 return None;
             }
             break 'lines;
         }
     }
-    Some(FileSearchResult::searched(matched_file, local_truncated))
+    Some(FileSearchResult::searched(state.matched_file))
+}
+
+#[derive(Debug, Default)]
+struct TextFileSearchState {
+    matched_file: bool,
+    cancelled: bool,
+    matches_since_cancel_check: usize,
+}
+
+struct TextLineSearch<'a, 'needle> {
+    path: &'a Path,
+    line_needle: &'a LineSearchNeedle<'needle>,
+    whole_word: bool,
+    result_budget: &'a mut SearchResultBudget,
+    matches: &'a mut Vec<SearchMatch>,
+    is_cancelled: &'a dyn Fn() -> bool,
+    state: &'a mut TextFileSearchState,
+}
+
+fn search_text_line(
+    line_idx: usize,
+    line: &str,
+    search: &mut TextLineSearch<'_, '_>,
+) -> LineMatchScan {
+    let mut column_counter = SearchLineColumnCounter::new(line);
+    for_each_line_match_with_cancel(
+        line,
+        search.line_needle,
+        search.whole_word,
+        search.is_cancelled,
+        |byte_col| {
+            search.state.matches_since_cancel_check =
+                search.state.matches_since_cancel_check.saturating_add(1);
+            if search.state.matches_since_cancel_check >= SEARCH_CANCEL_MATCH_INTERVAL {
+                search.state.matches_since_cancel_check = 0;
+                if (search.is_cancelled)() {
+                    search.state.cancelled = true;
+                    return false;
+                }
+            }
+            match search.result_budget.consume_match() {
+                SearchMatchBudget::Collect => {}
+                SearchMatchBudget::HiddenTruncation => {
+                    search.state.matched_file = true;
+                    return false;
+                }
+                SearchMatchBudget::Exhausted => {
+                    return false;
+                }
+            }
+            search.state.matched_file = true;
+            let column = column_counter.column_for_byte(byte_col);
+            search.matches.push(SearchMatch {
+                path: search.path.to_path_buf(),
+                line: line_idx.saturating_add(1),
+                column,
+                preview: search_preview(line, byte_col),
+            });
+            true
+        },
+    )
+}
+
+struct ProjectSearchLiveFileSearch<'a, 'needle> {
+    path: &'a Path,
+    line_needle: &'a LineSearchNeedle<'needle>,
+    options: &'a SearchOptions,
+    metadata_cache: Option<&'a ProjectSearchMetadataCache>,
+    result_budget: &'a mut SearchResultBudget,
+    matches: &'a mut Vec<SearchMatch>,
+    is_cancelled: &'a dyn Fn() -> bool,
+    scratch: &'a mut ProjectSearchScratch,
+}
+
+fn search_project_live_file(
+    search: ProjectSearchLiveFileSearch<'_, '_>,
+) -> Option<FileSearchResult> {
+    let ProjectSearchLiveFileSearch {
+        path,
+        line_needle,
+        options,
+        metadata_cache,
+        result_budget,
+        matches,
+        is_cancelled,
+        scratch,
+    } = search;
+    let max_file_bytes = effective_search_file_byte_limit(options.max_file_bytes);
+    let metadata_check = match check_search_file_metadata(path, max_file_bytes, metadata_cache) {
+        Ok(metadata_check) => metadata_check,
+        Err(result) => return Some(result),
+    };
+    if let Some(result) = metadata_check
+        .cached_state
+        .and_then(cached_file_result_for_state)
+    {
+        return Some(result);
+    }
+    if metadata_check.metadata.is_file() && metadata_check.metadata.len() > max_file_bytes {
+        store_file_metadata_state(
+            metadata_cache,
+            path,
+            max_file_bytes,
+            metadata_check.signature,
+            ProjectSearchFileMetadataState::TooLarge,
+        );
+        return Some(FileSearchResult::skipped_large());
+    }
+
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => {
+            store_file_metadata_state(
+                metadata_cache,
+                path,
+                max_file_bytes,
+                metadata_check.signature,
+                ProjectSearchFileMetadataState::Unreadable,
+            );
+            return Some(file_search_result_from_open_error(path, max_file_bytes));
+        }
+    };
+
+    let result = search_streaming_text_file(StreamingTextFileSearch {
+        path,
+        file: &mut file,
+        max_file_bytes,
+        line_needle,
+        whole_word: options.whole_word,
+        result_budget,
+        matches,
+        is_cancelled,
+        scratch,
+    });
+    if let Some(result) = &result
+        && let Some(state) = result.metadata_state()
+    {
+        store_file_metadata_state(
+            metadata_cache,
+            path,
+            max_file_bytes,
+            metadata_check.signature,
+            state,
+        );
+    }
+    result
+}
+
+fn file_search_result_from_open_error(path: &Path, max_file_bytes: u64) -> FileSearchResult {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() > max_file_bytes => {
+            FileSearchResult::skipped_large()
+        }
+        _ => FileSearchResult::skipped_unreadable(),
+    }
+}
+
+struct StreamingTextFileSearch<'a, 'needle> {
+    path: &'a Path,
+    file: &'a mut fs::File,
+    max_file_bytes: u64,
+    line_needle: &'a LineSearchNeedle<'needle>,
+    whole_word: bool,
+    result_budget: &'a mut SearchResultBudget,
+    matches: &'a mut Vec<SearchMatch>,
+    is_cancelled: &'a dyn Fn() -> bool,
+    scratch: &'a mut ProjectSearchScratch,
+}
+
+fn search_streaming_text_file(search: StreamingTextFileSearch<'_, '_>) -> Option<FileSearchResult> {
+    let StreamingTextFileSearch {
+        path,
+        file,
+        max_file_bytes,
+        line_needle,
+        whole_word,
+        result_budget,
+        matches,
+        is_cancelled,
+        scratch,
+    } = search;
+    scratch.clear_file_state();
+    let mut bytes_read = 0u64;
+    let mut line_idx = 0usize;
+    let mut state = TextFileSearchState::default();
+    let mut local_budget = result_budget.clone();
+    let mut local_matches = Vec::new();
+    let mut search_stopped = false;
+
+    loop {
+        if is_cancelled() {
+            return None;
+        }
+
+        let read_limit = max_file_bytes.saturating_add(1).saturating_sub(bytes_read);
+        if read_limit == 0 {
+            return Some(FileSearchResult::skipped_large());
+        }
+        let read_cap = usize::try_from(read_limit)
+            .unwrap_or(usize::MAX)
+            .min(scratch.read_buffer.len());
+        let read_len = match file.read(&mut scratch.read_buffer[..read_cap]) {
+            Ok(read_len) => read_len,
+            Err(_) => return Some(FileSearchResult::skipped_unreadable()),
+        };
+
+        if read_len == 0 {
+            if !scratch.line_buffer.is_empty() {
+                if search_stopped {
+                    if !streamed_line_is_valid_utf8(scratch, false) {
+                        return Some(FileSearchResult::skipped_binary());
+                    }
+                } else {
+                    let mut line_search = TextLineSearch {
+                        path,
+                        line_needle,
+                        whole_word,
+                        result_budget: &mut local_budget,
+                        matches: &mut local_matches,
+                        is_cancelled,
+                        state: &mut state,
+                    };
+                    match search_streamed_line(line_idx, false, scratch, &mut line_search) {
+                        StreamedLineSearch::Completed => {}
+                        StreamedLineSearch::StopFile => {}
+                        StreamedLineSearch::Cancelled => return None,
+                        StreamedLineSearch::BinaryOrInvalid => {
+                            return Some(FileSearchResult::skipped_binary());
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
+        bytes_read = bytes_read.saturating_add(u64::try_from(read_len).unwrap_or(u64::MAX));
+        if bytes_read > max_file_bytes {
+            return Some(FileSearchResult::skipped_large());
+        }
+
+        if scratch.read_buffer[..read_len].contains(&0) {
+            return Some(FileSearchResult::skipped_binary());
+        }
+
+        let mut chunk_start = 0usize;
+        while let Some(relative_newline) = scratch.read_buffer[chunk_start..read_len]
+            .iter()
+            .position(|byte| *byte == b'\n')
+        {
+            let newline = chunk_start.saturating_add(relative_newline);
+            scratch
+                .line_buffer
+                .extend_from_slice(&scratch.read_buffer[chunk_start..newline]);
+            if search_stopped {
+                if !streamed_line_is_valid_utf8(scratch, true) {
+                    return Some(FileSearchResult::skipped_binary());
+                }
+            } else {
+                let mut line_search = TextLineSearch {
+                    path,
+                    line_needle,
+                    whole_word,
+                    result_budget: &mut local_budget,
+                    matches: &mut local_matches,
+                    is_cancelled,
+                    state: &mut state,
+                };
+                match search_streamed_line(line_idx, true, scratch, &mut line_search) {
+                    StreamedLineSearch::Completed => {}
+                    StreamedLineSearch::StopFile => {
+                        search_stopped = true;
+                    }
+                    StreamedLineSearch::Cancelled => return None,
+                    StreamedLineSearch::BinaryOrInvalid => {
+                        return Some(FileSearchResult::skipped_binary());
+                    }
+                }
+            }
+            scratch.line_buffer.clear();
+            line_idx = line_idx.saturating_add(1);
+            chunk_start = newline.saturating_add(1);
+        }
+        scratch
+            .line_buffer
+            .extend_from_slice(&scratch.read_buffer[chunk_start..read_len]);
+    }
+
+    commit_streamed_file_search(result_budget, matches, local_budget, &mut local_matches);
+    Some(FileSearchResult::searched(state.matched_file))
+}
+
+fn commit_streamed_file_search(
+    result_budget: &mut SearchResultBudget,
+    matches: &mut Vec<SearchMatch>,
+    local_budget: SearchResultBudget,
+    local_matches: &mut Vec<SearchMatch>,
+) {
+    *result_budget = local_budget;
+    matches.append(local_matches);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamedLineSearch {
+    Completed,
+    StopFile,
+    Cancelled,
+    BinaryOrInvalid,
+}
+
+fn search_streamed_line(
+    line_idx: usize,
+    line_ended_by_newline: bool,
+    scratch: &ProjectSearchScratch,
+    search: &mut TextLineSearch<'_, '_>,
+) -> StreamedLineSearch {
+    if line_idx.is_multiple_of(SEARCH_CANCEL_LINE_INTERVAL) && (search.is_cancelled)() {
+        return StreamedLineSearch::Cancelled;
+    }
+    let line_bytes = streamed_line_bytes(&scratch.line_buffer, line_ended_by_newline);
+    let Ok(line) = std::str::from_utf8(line_bytes) else {
+        return StreamedLineSearch::BinaryOrInvalid;
+    };
+    match search_text_line(line_idx, line, search) {
+        LineMatchScan::Completed => StreamedLineSearch::Completed,
+        LineMatchScan::Cancelled => StreamedLineSearch::Cancelled,
+        LineMatchScan::Stopped if search.state.cancelled => StreamedLineSearch::Cancelled,
+        LineMatchScan::Stopped => StreamedLineSearch::StopFile,
+    }
+}
+
+fn streamed_line_bytes(line: &[u8], line_ended_by_newline: bool) -> &[u8] {
+    if line_ended_by_newline && line.ends_with(b"\r") {
+        &line[..line.len().saturating_sub(1)]
+    } else {
+        line
+    }
+}
+
+fn streamed_line_is_valid_utf8(
+    scratch: &ProjectSearchScratch,
+    line_ended_by_newline: bool,
+) -> bool {
+    std::str::from_utf8(streamed_line_bytes(
+        &scratch.line_buffer,
+        line_ended_by_newline,
+    ))
+    .is_ok()
 }
 
 struct SearchLineColumnCounter<'a> {
@@ -1146,6 +1880,7 @@ fn char_count_fast(text: &str) -> usize {
     first_non_ascii + text[first_non_ascii..].chars().count()
 }
 
+#[cfg(test)]
 enum SearchTextRead {
     Text(String),
     TooLarge,
@@ -1153,6 +1888,7 @@ enum SearchTextRead {
     Unreadable,
 }
 
+#[cfg(test)]
 fn read_searchable_text(path: &Path, max_file_bytes: u64) -> SearchTextRead {
     let max_file_bytes = effective_search_file_byte_limit(max_file_bytes);
     let mut file = match fs::File::open(path) {
@@ -1166,6 +1902,7 @@ fn read_searchable_text(path: &Path, max_file_bytes: u64) -> SearchTextRead {
     read_searchable_text_with_metadata(&mut file, max_file_bytes, &metadata)
 }
 
+#[cfg(test)]
 fn search_text_open_error(path: &Path, max_file_bytes: u64) -> SearchTextRead {
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_file() && metadata.len() > max_file_bytes => {
@@ -1175,6 +1912,7 @@ fn search_text_open_error(path: &Path, max_file_bytes: u64) -> SearchTextRead {
     }
 }
 
+#[cfg(test)]
 fn read_searchable_text_with_metadata(
     file: &mut fs::File,
     max_file_bytes: u64,
@@ -1199,6 +1937,7 @@ fn read_searchable_text_with_metadata(
     }
 }
 
+#[cfg(test)]
 fn read_file_prefix(file: &mut fs::File, max_file_bytes: u64) -> io::Result<Vec<u8>> {
     let limit = max_file_bytes.saturating_add(1);
     let capacity = usize::try_from(limit.min(64 * 1024)).unwrap_or(64 * 1024);
@@ -1422,10 +2161,11 @@ fn path_allowed_by_globs(
     true
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum LineSearchNeedle<'a> {
     CaseSensitive(&'a str),
     CaseInsensitive(AsciiCaseInsensitiveMatcher<'a>),
+    Regex(Regex),
 }
 
 impl<'a> LineSearchNeedle<'a> {
@@ -1437,10 +2177,23 @@ impl<'a> LineSearchNeedle<'a> {
         }
     }
 
+    fn prepare(needle: &'a str, case_sensitive: bool, regex: bool) -> Result<Self, String> {
+        if regex {
+            Ok(Self::Regex(build_search_line_regex(
+                needle,
+                case_sensitive,
+            )?))
+        } else {
+            Ok(Self::new(needle, case_sensitive))
+        }
+    }
+
     fn len(&self) -> usize {
         match self {
             Self::CaseSensitive(needle) => needle.len(),
             Self::CaseInsensitive(matcher) => matcher.needle_len(),
+
+            Self::Regex(_) => 0,
         }
     }
 
@@ -1456,8 +2209,25 @@ impl<'a> LineSearchNeedle<'a> {
                     .map(|offset| search_from + offset)
             }
             Self::CaseInsensitive(matcher) => matcher.find_from(haystack, search_from),
+            Self::Regex(_) => None,
         }
     }
+}
+
+fn build_search_line_regex(query: &str, case_sensitive: bool) -> Result<Regex, String> {
+    if !regex_query_is_line_local(query) {
+        return Err(REGEX_MULTILINE_QUERY_ERROR.to_owned());
+    }
+
+    RegexBuilder::new(query)
+        .case_insensitive(!case_sensitive)
+        .build()
+        .map_err(|error| {
+            format!(
+                "Invalid regular expression: {}",
+                sanitize_glob_error_text(&error.to_string(), GLOB_ERROR_DETAIL_MAX_CHARS)
+            )
+        })
 }
 
 #[cfg(test)]
@@ -1515,6 +2285,15 @@ where
     F: FnMut(usize) -> bool,
     C: FnMut() -> bool,
 {
+    if let LineSearchNeedle::Regex(regex) = needle {
+        return for_each_regex_line_match_with_cancel(
+            line,
+            regex,
+            whole_word,
+            is_cancelled,
+            on_match,
+        );
+    }
     let needle_len = needle.len();
     if needle_len == 0 {
         return LineMatchScan::Completed;
@@ -1549,6 +2328,38 @@ where
             return LineMatchScan::Stopped;
         }
         search_from = end.max(start + 1);
+    }
+    LineMatchScan::Completed
+}
+
+fn for_each_regex_line_match_with_cancel<F, C>(
+    line: &str,
+    regex: &Regex,
+    whole_word: bool,
+    mut is_cancelled: C,
+    mut on_match: F,
+) -> LineMatchScan
+where
+    F: FnMut(usize) -> bool,
+    C: FnMut() -> bool,
+{
+    let mut whole_word_matcher = SearchLineWholeWordMatcher::new(line, whole_word);
+    let mut matches_since_cancel_check = 0usize;
+    for matched in regex.find_iter(line) {
+        if matched.is_empty() {
+            continue;
+        }
+        matches_since_cancel_check = matches_since_cancel_check.saturating_add(1);
+        if matches_since_cancel_check >= SEARCH_CANCEL_MATCH_INTERVAL {
+            matches_since_cancel_check = 0;
+            if is_cancelled() {
+                return LineMatchScan::Cancelled;
+            }
+        }
+        if whole_word_matcher.is_match(matched.start(), matched.end()) && !on_match(matched.start())
+        {
+            return LineMatchScan::Stopped;
+        }
     }
     LineMatchScan::Completed
 }

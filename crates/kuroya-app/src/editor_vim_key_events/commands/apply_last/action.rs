@@ -69,7 +69,8 @@ pub(super) fn vim_apply_repeat_action(
         | EditorVimRepeatAction::OpenLineAbove
         | EditorVimRepeatAction::OpenLineBelow
         | EditorVimRepeatAction::OutdentLines
-        | EditorVimRepeatAction::ReplaceForwardChars(_) => {
+        | EditorVimRepeatAction::ReplaceForwardChars(_)
+        | EditorVimRepeatAction::Substitute { .. } => {
             vim_apply_edit_repeat_action(buffer, action, count, indent_unit)
         }
         EditorVimRepeatAction::PutAfter

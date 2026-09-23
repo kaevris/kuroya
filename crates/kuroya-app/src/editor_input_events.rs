@@ -12,9 +12,11 @@ use crate::{
     },
     editor_vim_key_events::{
         EditorVimMode, handle_vim_editor_key_event_with_settings_and_indent,
+        vim_clear_command_input, vim_clear_marks, vim_clear_named_registers,
+        vim_clear_search_input, vim_clear_searches, vim_collapse_multi_cursor_selection,
         vim_collapse_selection_for_insert, vim_events_include_mutation_with_settings,
-        vim_record_insert_replay_key_with_auto_indent, vim_record_inserted_text,
-        vim_text_after_suppression,
+        vim_record_insert_replay_key_with_auto_indent_for_buffer,
+        vim_record_inserted_text_for_buffer, vim_text_after_suppression,
     },
     transient_state::EditorImePreedit,
     workspace_state::PaneId,
@@ -256,7 +258,6 @@ fn push_editor_input_event_from_egui_event(
                 classified.includes_mutation
             } else {
                 if matches!(event, Event::Key { pressed: true, .. }) {
-                    // A filtered printable key is a new input action, not a paste/IME echo.
                     *pending_text_echo = None;
                 }
                 false
@@ -409,6 +410,10 @@ impl KuroyaApp {
         pane_id: PaneId,
         buffer_id: BufferId,
     ) {
+        if self.focused_pane == Some(pane_id) && !self.editor_accepts_text_input(ctx, pane_id) {
+            self.vim_discard_half_typed_sequence();
+            return;
+        }
         if !self.editor_accepts_text_input(ctx, pane_id) {
             return;
         }
@@ -523,7 +528,11 @@ impl KuroyaApp {
                     }
                     if inserted {
                         if vim_keybindings {
-                            vim_record_inserted_text(&mut self.editor_vim_last_change, text);
+                            vim_record_inserted_text_for_buffer(
+                                &mut self.editor_vim_last_change,
+                                buffer_id,
+                                text,
+                            );
                         }
                         if let Some(snapshot) = snippet_snapshot {
                             if let Some(after) = snippet_after_edit {
@@ -562,8 +571,10 @@ impl KuroyaApp {
                     );
                 }
                 EditorInputEvent::ImePreedit(text) => {
-                    self.set_editor_ime_preedit(buffer_id, text);
-                    keep_cursor_visible = true;
+                    if !vim_keybindings || self.editor_vim_mode.accepts_text_input() {
+                        self.set_editor_ime_preedit(buffer_id, text);
+                        keep_cursor_visible = true;
+                    }
                 }
                 EditorInputEvent::ImeClearPreedit => {
                     self.clear_editor_ime_preedit_for_buffer(buffer_id);
@@ -613,7 +624,11 @@ impl KuroyaApp {
                     show_paste_selector |= inserted && selector_visible;
                     if inserted {
                         if vim_keybindings {
-                            vim_record_inserted_text(&mut self.editor_vim_last_change, text);
+                            vim_record_inserted_text_for_buffer(
+                                &mut self.editor_vim_last_change,
+                                buffer_id,
+                                text,
+                            );
                         }
                         if let Some(snapshot) = snippet_snapshot {
                             if let Some(after) = snippet_after_edit {
@@ -646,9 +661,13 @@ impl KuroyaApp {
                         let mut next_pending = self.editor_vim_pending_key;
                         let mut next_last_char_find = self.editor_vim_last_char_find;
                         let mut next_unnamed_register = self.editor_vim_unnamed_register.take();
-                        let mut next_last_change = self.editor_vim_last_change.take();
+
+                        let mut next_last_change = self.editor_vim_last_change.remove(&buffer_id);
                         let vim_settings = self.settings.vim.clone();
                         let vim_result = self.buffer_mut(buffer_id).map(|buffer| {
+                            if !previous_mode.accepts_text_input() {
+                                vim_collapse_multi_cursor_selection(buffer);
+                            }
                             handle_vim_editor_key_event_with_settings_and_indent(
                                 buffer,
                                 key,
@@ -666,7 +685,13 @@ impl KuroyaApp {
                         self.editor_vim_pending_key = next_pending;
                         self.editor_vim_last_char_find = next_last_char_find;
                         self.editor_vim_unnamed_register = next_unnamed_register;
-                        self.editor_vim_last_change = next_last_change;
+                        if let Some(last_change) = next_last_change {
+                            self.editor_vim_last_change.insert(buffer_id, last_change);
+                        }
+
+                        self.editor_vim_insert_undo_group_buffer =
+                            matches!(self.editor_vim_mode, EditorVimMode::Insert)
+                                .then_some(buffer_id);
                         if let Some(result) = vim_result
                             && result.handled
                         {
@@ -679,6 +704,9 @@ impl KuroyaApp {
                             changed |= result.changed;
                             if previous_mode != self.editor_vim_mode {
                                 self.status = editor_vim_mode_status(self.editor_vim_mode);
+                                if !self.editor_vim_mode.accepts_text_input() {
+                                    self.clear_editor_ime_preedit_for_buffer(buffer_id);
+                                }
                             }
                             if result.changed {
                                 self.clear_editor_ime_preedit_for_buffer(buffer_id);
@@ -707,8 +735,9 @@ impl KuroyaApp {
                     );
                     changed |= key_changed;
                     if key_changed && vim_insert_mode {
-                        vim_record_insert_replay_key_with_auto_indent(
+                        vim_record_insert_replay_key_with_auto_indent_for_buffer(
                             &mut self.editor_vim_last_change,
+                            buffer_id,
                             key,
                             modifiers,
                             auto_indent,
@@ -773,6 +802,7 @@ impl KuroyaApp {
             && !self.goto_line_open
             && !self.command_palette
             && !self.workspace_symbols_open
+            && !self.local_history_browser_open
             && !self.open_workspace_picker_in_flight
             && !self.open_workspace_open
             && !self.save_as_open
@@ -798,6 +828,48 @@ impl KuroyaApp {
 
     fn set_editor_ime_preedit(&mut self, buffer_id: BufferId, text: String) {
         self.ime_preedit = Some(EditorImePreedit { buffer_id, text });
+    }
+
+    pub(crate) fn vim_discard_half_typed_sequence(&mut self) {
+        if self.editor_vim_pending_key.take().is_some() {
+            vim_clear_search_input();
+            vim_clear_command_input();
+        }
+    }
+
+    pub(crate) fn close_stale_vim_insert_undo_group(&mut self, active_buffer_id: BufferId) {
+        let Some(session_buffer) = self.editor_vim_insert_undo_group_buffer.take() else {
+            return;
+        };
+        if session_buffer == active_buffer_id {
+            self.editor_vim_insert_undo_group_buffer = Some(session_buffer);
+            return;
+        }
+        if let Some(buffer) = self.buffer_mut(session_buffer) {
+            buffer.end_undo_group();
+        }
+    }
+
+    pub(crate) fn close_vim_insert_undo_group(&mut self) {
+        if let Some(session_buffer) = self.editor_vim_insert_undo_group_buffer.take()
+            && let Some(buffer) = self.buffer_mut(session_buffer)
+        {
+            buffer.end_undo_group();
+        }
+    }
+
+    pub(crate) fn vim_reset_session_state(&mut self) {
+        self.editor_vim_mode = EditorVimMode::Normal;
+        self.editor_vim_pending_key = None;
+        self.editor_vim_last_char_find = None;
+        self.editor_vim_unnamed_register = None;
+        self.editor_vim_last_change.clear();
+        self.close_vim_insert_undo_group();
+        vim_clear_named_registers();
+        vim_clear_marks();
+        vim_clear_searches();
+        vim_clear_search_input();
+        vim_clear_command_input();
     }
 
     fn clear_editor_ime_preedit_for_buffer(&mut self, buffer_id: BufferId) {

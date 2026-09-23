@@ -1,10 +1,10 @@
 mod dispatch;
 mod pending;
 
-use crate::lsp_client::pending::PendingLspRequest;
+use crate::lsp_client::pending::PendingLspRequests;
 use dispatch::dispatch_folding_ranges;
 use kuroya_core::BufferId;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 use tokio::process::ChildStdin;
 
 pub(super) async fn dispatch_folding_ranges_request(
@@ -13,7 +13,7 @@ pub(super) async fn dispatch_folding_ranges_request(
     version: u64,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     dispatch_folding_ranges(id, path, version, writer, next_request_id, pending_requests).await
 }

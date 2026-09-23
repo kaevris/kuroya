@@ -210,6 +210,8 @@ fn normal_mode_period_replays_insert_enter_and_tab() {
         &mut last_change,
     );
     assert!(escape.handled);
+
+    buffer.set_single_cursor(buffer.len_chars());
     let repeat = handle_vim_editor_key_event_with_repeat_state(
         &mut buffer,
         Key::Period,

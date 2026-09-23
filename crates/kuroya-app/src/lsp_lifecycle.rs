@@ -106,12 +106,47 @@ pub(crate) fn lsp_server_config_for_buffer<'a>(
     plugin_languages: &'a PluginLanguageRegistry,
     buffer: &'a TextBuffer,
 ) -> Option<(&'a LspServerConfig, Cow<'a, str>)> {
+    lsp_server_configs_for_buffer(configs, plugin_languages, buffer)
+        .into_iter()
+        .next()
+}
+
+pub(crate) fn lsp_server_configs_for_buffer<'a>(
+    configs: &'a [LspServerConfig],
+    plugin_languages: &'a PluginLanguageRegistry,
+    buffer: &'a TextBuffer,
+) -> Vec<(&'a LspServerConfig, Cow<'a, str>)> {
     let language = lsp_language_id_for_buffer(configs, plugin_languages, buffer);
-    let config = configs
+    let mut matches: Vec<(&'a LspServerConfig, Cow<'a, str>)> = configs
         .iter()
-        .find(|config| config.language == language.as_ref())
-        .or_else(|| server_config_for_language(configs, buffer.language()))?;
-    Some((config, language))
+        .filter(|config| config.language == language.as_ref())
+        .map(|config| (config, language.clone()))
+        .collect();
+    if matches.is_empty()
+        && let Some(primary) = server_config_for_language(configs, buffer.language())
+    {
+        matches.extend(
+            configs
+                .iter()
+                .filter(|config| config.language == primary.language)
+                .map(|config| (config, language.clone())),
+        );
+    }
+    let mut seen_identities: Vec<(&str, &str, &[String])> = Vec::with_capacity(matches.len());
+    matches.retain(|(config, _)| {
+        let identity = (
+            config.language.as_str(),
+            config.command.as_str(),
+            config.args.as_slice(),
+        );
+        if seen_identities.contains(&identity) {
+            false
+        } else {
+            seen_identities.push(identity);
+            true
+        }
+    });
+    matches
 }
 
 pub(crate) fn lsp_language_id_for_buffer<'a>(

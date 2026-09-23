@@ -5,7 +5,7 @@ fn load_or_create_migrates_legacy_settings_schema_atomically() {
     let path = temp_settings_path("migrate");
     let root = path.parent().unwrap().parent().unwrap().to_path_buf();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, "font_size = 15.0\n").unwrap();
+    fs::write(&path, "schema_version = 1\nfont_size = 15.0\n").unwrap();
 
     let settings = EditorSettings::load_or_create(&path).unwrap();
 
@@ -23,7 +23,7 @@ fn load_or_create_migrates_legacy_settings_schema_atomically() {
 fn settings_schema_version_preflight_preserves_validation() {
     assert_eq!(
         settings_schema_version_from_toml("font_size = 15.0\n").unwrap(),
-        0
+        SETTINGS_SCHEMA_VERSION
     );
 
     let text = format!(
@@ -55,7 +55,7 @@ fn settings_schema_version_preflight_preserves_validation() {
 
     assert_eq!(
         settings_schema_version_from_toml("schema_version = \"1\"\n").unwrap(),
-        0
+        SETTINGS_SCHEMA_VERSION
     );
 }
 
@@ -266,9 +266,10 @@ fn load_or_create_with_recovery_defaults_invalid_line_numbers_without_quarantine
     let path = temp_settings_path("recover-invalid-line-numbers");
     let root = path.parent().unwrap().parent().unwrap().to_path_buf();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
+
     fs::write(
         &path,
-        "font_size = 15.0\nline_numbers = \"visible\"\n[theme]\nname = \"Graphite\"\n",
+        "schema_version = 1\nfont_size = 15.0\nline_numbers = \"visible\"\n[theme]\nname = \"Graphite\"\n",
     )
     .unwrap();
 
@@ -314,7 +315,7 @@ fn load_or_create_with_recovery_quarantines_invalid_schema_versions() {
 }
 
 #[test]
-fn load_or_create_with_recovery_quarantines_future_schema_versions() {
+fn load_or_create_with_recovery_keeps_future_schema_versions_for_newer_builds() {
     let path = temp_settings_path("recover-future-schema-version");
     let root = path.parent().unwrap().parent().unwrap().to_path_buf();
     let future_version = SETTINGS_SCHEMA_VERSION + 1;
@@ -327,20 +328,40 @@ fn load_or_create_with_recovery_quarantines_future_schema_versions() {
     let loaded = EditorSettings::load_or_create_with_recovery(&path).unwrap();
 
     assert_eq!(loaded.settings, EditorSettings::default());
-    let quarantined = loaded
-        .quarantined_path
-        .expect("future schema file is moved");
-    assert_eq!(fs::read_to_string(&quarantined).unwrap(), text);
-    assert_eq!(
-        EditorSettings::load_or_create(&path).unwrap(),
-        EditorSettings::default()
+    assert_eq!(loaded.quarantined_path, None);
+    assert_eq!(loaded.future_schema_version, Some(future_version));
+    let status = loaded
+        .future_schema_version_status()
+        .expect("future schema status is set");
+    assert!(
+        status.contains("newer version of Kuroya")
+            && status.contains(&format!("schema {future_version}"))
+            && status.contains("uses them as defaults"),
+        "{status}"
     );
+
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    let sibling_count = fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.contains(".corrupt."))
+        })
+        .count();
+    assert_eq!(
+        sibling_count, 0,
+        "future schema file must not be quarantined"
+    );
+    assert_no_setting_temps(&path);
 
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn load_or_create_with_recovery_quarantines_future_schema_before_known_recovery() {
+fn load_or_create_with_recovery_keeps_future_schema_before_known_recovery() {
     let path = temp_settings_path("recover-future-schema-with-invalid-line-numbers");
     let root = path.parent().unwrap().parent().unwrap().to_path_buf();
     let future_version = SETTINGS_SCHEMA_VERSION + 1;
@@ -353,14 +374,33 @@ fn load_or_create_with_recovery_quarantines_future_schema_before_known_recovery(
     let loaded = EditorSettings::load_or_create_with_recovery(&path).unwrap();
 
     assert_eq!(loaded.settings, EditorSettings::default());
-    let quarantined = loaded
-        .quarantined_path
-        .expect("future schema file is moved");
-    assert_eq!(fs::read_to_string(&quarantined).unwrap(), text);
+    assert_eq!(loaded.quarantined_path, None);
+    assert_eq!(loaded.future_schema_version, Some(future_version));
+
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_or_create_with_recovery_keeps_missing_schema_version_settings_unmigrated() {
+    let path = temp_settings_path("missing-schema-version-no-migration");
+    let root = path.parent().unwrap().parent().unwrap().to_path_buf();
+    let text = "terminal_tabs_location = \"right\"\nterminal_copy_on_selection = false\n";
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, text).unwrap();
+
+    let loaded = EditorSettings::load_or_create_with_recovery(&path).unwrap();
+
+    assert_eq!(loaded.quarantined_path, None);
+    assert_eq!(loaded.future_schema_version, None);
     assert_eq!(
-        EditorSettings::load_or_create(&path).unwrap(),
-        EditorSettings::default()
+        loaded.settings.terminal_tabs_location,
+        TerminalTabsLocation::Right
     );
+    assert!(!loaded.settings.terminal_copy_on_selection);
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    assert_no_setting_temps(&path);
 
     fs::remove_dir_all(root).unwrap();
 }

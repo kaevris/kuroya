@@ -1,3 +1,4 @@
+use crate::lsp_client::pending::PendingLspRequests;
 mod code_lenses;
 mod document;
 mod folding;
@@ -5,15 +6,14 @@ mod inlay_hints;
 mod semantic_tokens;
 mod workspace;
 
-use crate::lsp_client::{commands::LspClientCommand, pending::PendingLspRequest};
-use std::collections::HashMap;
+use crate::lsp_client::commands::LspClientCommand;
 use tokio::process::ChildStdin;
 
 pub(super) async fn handle_symbol_request_command(
     command: LspClientCommand,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     match command {
         LspClientCommand::DocumentSymbols { id, path, version } => {

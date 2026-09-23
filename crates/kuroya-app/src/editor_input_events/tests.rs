@@ -132,7 +132,7 @@ fn normal_text_input_replaces_selection_and_leaves_no_highlighted_range() {
     }];
 
     assert_eq!(app.find_matches_for_buffer_index(0), vec![0..5]);
-    assert_eq!(app.buffer_find_cache.cached_buffer_id_for_test(), Some(1));
+    assert_eq!(app.buffer_find_cache.cached_buffer_ids_for_test(), vec![1]);
     app.buffer_find_open = false;
 
     let ctx = Context::default();
@@ -143,7 +143,11 @@ fn normal_text_input_replaces_selection_and_leaves_no_highlighted_range() {
     let buffer = app.buffer(1).expect("buffer remains loaded");
     assert_eq!(buffer.text(), "x beta");
     assert_eq!(buffer.selections(), &[Selection::caret(1)]);
-    assert_eq!(app.buffer_find_cache.cached_buffer_id_for_test(), None);
+    assert!(
+        app.buffer_find_cache
+            .cached_buffer_ids_for_test()
+            .is_empty()
+    );
     assert!(app.document_highlights_path.is_none());
     assert!(app.document_highlights.is_empty());
 
@@ -1611,6 +1615,283 @@ fn normalized_ime_preedit_text_sanitizes_and_bounds_input() {
             .count(),
         256
     );
+}
+
+#[test]
+fn focused_editor_context_switch_discards_half_typed_vim_sequence() {
+    use crate::editor_vim_key_events::{
+        EditorVimPendingKey, vim_command_input_text_for_test, vim_search_input_text_for_test,
+    };
+
+    let root = PathBuf::from("vim-overlay-pending-test");
+    let mut app = app_for_input_test(root);
+    let buffer = TextBuffer::from_text(1, None, "alpha".to_owned());
+    app.settings.vim_keybindings = true;
+    app.editor_vim_mode = EditorVimMode::Normal;
+    app.editor_vim_pending_key = Some(EditorVimPendingKey::DeleteMotionCount {
+        operator_count: 1,
+        motion_count: 2,
+    });
+    crate::editor_vim_key_events::vim_set_search_input_text_for_test("query");
+    crate::editor_vim_key_events::vim_set_command_input_text_for_test("s/a/b");
+    app.buffers.push(buffer);
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+    app.settings_panel_open = true;
+
+    let ctx = Context::default();
+    ctx.input_mut(|input| {
+        input.events.push(Event::Key {
+            key: Key::J,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+    });
+
+    app.handle_editor_input(&ctx, 1, 1);
+
+    assert_eq!(app.editor_vim_pending_key, None);
+    assert_eq!(vim_search_input_text_for_test(), "");
+    assert_eq!(vim_command_input_text_for_test(), "");
+    assert_eq!(
+        app.buffer(1).map(TextBuffer::text),
+        Some("alpha".to_owned())
+    );
+}
+
+#[test]
+fn vim_pending_operator_does_not_apply_after_buffer_switch() {
+    let root = PathBuf::from("vim-cross-buffer-pending-test");
+    let mut app = app_for_input_test(root);
+    app.buffers
+        .push(TextBuffer::from_text(1, None, "alpha\nbeta".to_owned()));
+    app.buffers
+        .push(TextBuffer::from_text(2, None, "gamma".to_owned()));
+    app.settings.vim_keybindings = true;
+    app.editor_vim_mode = EditorVimMode::Normal;
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+
+    let ctx = Context::default();
+
+    ctx.input_mut(|input| {
+        input.events.push(Event::Key {
+            key: Key::D,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+    });
+    app.handle_editor_input(&ctx, 1, 1);
+    assert!(app.editor_vim_pending_key.is_some());
+
+    app.set_active_buffer(2);
+
+    ctx.input_mut(|input| input.events.clear());
+
+    ctx.input_mut(|input| {
+        input.events.push(Event::Key {
+            key: Key::J,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+    });
+    app.handle_editor_input(&ctx, 1, 2);
+
+    assert_eq!(app.editor_vim_pending_key, None);
+    assert_eq!(
+        app.buffer(1).map(TextBuffer::text),
+        Some("alpha\nbeta".to_owned())
+    );
+    assert_eq!(
+        app.buffer(2).map(TextBuffer::text),
+        Some("gamma".to_owned())
+    );
+}
+
+#[test]
+fn vim_dot_repeat_is_per_buffer_and_never_replays_across_buffers() {
+    let root = PathBuf::from("vim-cross-buffer-dot-test");
+    let mut app = app_for_input_test(root);
+    app.buffers
+        .push(TextBuffer::from_text(1, None, "alpha".to_owned()));
+    app.buffers
+        .push(TextBuffer::from_text(2, None, "beta".to_owned()));
+    app.settings.vim_keybindings = true;
+    app.editor_vim_mode = EditorVimMode::Normal;
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+
+    let ctx = Context::default();
+
+    ctx.input_mut(|input| {
+        input.events.push(Event::Key {
+            key: Key::X,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+    });
+    app.handle_editor_input(&ctx, 1, 1);
+    assert_eq!(app.buffer(1).map(TextBuffer::text), Some("lpha".to_owned()));
+    assert!(app.editor_vim_last_change.contains_key(&1));
+    ctx.input_mut(|input| input.events.clear());
+
+    app.set_active_buffer(2);
+
+    ctx.input_mut(|input| {
+        input.events.push(Event::Key {
+            key: Key::Period,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+    });
+    app.handle_editor_input(&ctx, 1, 2);
+    assert_eq!(app.buffer(2).map(TextBuffer::text), Some("beta".to_owned()));
+    assert!(!app.editor_vim_last_change.contains_key(&2));
+    ctx.input_mut(|input| input.events.clear());
+
+    app.set_active_buffer(1);
+    ctx.input_mut(|input| {
+        input.events.push(Event::Key {
+            key: Key::Period,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+    });
+    app.handle_editor_input(&ctx, 1, 1);
+    assert_eq!(app.buffer(1).map(TextBuffer::text), Some("pha".to_owned()));
+}
+
+#[test]
+fn vim_normal_key_collapses_multi_cursor_carets_to_the_primary_cursor() {
+    let root = PathBuf::from("vim-multi-cursor-collapse-test");
+    let mut app = app_for_input_test(root);
+    let mut buffer = TextBuffer::from_text(1, None, "abcdef".to_owned());
+    buffer.set_cursors([1, 3]);
+    app.buffers.push(buffer);
+    app.settings.vim_keybindings = true;
+    app.editor_vim_mode = EditorVimMode::Normal;
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+
+    let ctx = Context::default();
+    ctx.input_mut(|input| {
+        input.events.push(Event::Key {
+            key: Key::X,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+    });
+
+    app.handle_editor_input(&ctx, 1, 1);
+
+    let buffer = app.buffer(1).expect("buffer remains loaded");
+    assert_eq!(buffer.text(), "abcef");
+    assert_eq!(buffer.selections(), &[Selection::caret(3)]);
+}
+
+#[test]
+fn ime_preedit_is_not_painted_in_vim_normal_mode() {
+    let root = PathBuf::from("vim-normal-ime-preedit-test");
+    let mut app = app_for_input_test(root);
+    app.buffers
+        .push(TextBuffer::from_text(1, None, "alpha".to_owned()));
+    app.settings.vim_keybindings = true;
+    app.editor_vim_mode = EditorVimMode::Normal;
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+
+    let ctx = Context::default();
+    ctx.input_mut(|input| {
+        input
+            .events
+            .push(Event::Ime(ImeEvent::Preedit("wen".to_owned())));
+    });
+
+    app.handle_editor_input(&ctx, 1, 1);
+
+    assert!(app.ime_preedit.is_none());
+}
+
+#[test]
+fn ime_preedit_keeps_working_in_vim_insert_mode() {
+    let root = PathBuf::from("vim-insert-ime-preedit-test");
+    let mut app = app_for_input_test(root);
+    app.buffers
+        .push(TextBuffer::from_text(1, None, "alpha".to_owned()));
+    app.settings.vim_keybindings = true;
+    app.editor_vim_mode = EditorVimMode::Insert;
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+
+    let ctx = Context::default();
+    ctx.input_mut(|input| {
+        input
+            .events
+            .push(Event::Ime(ImeEvent::Preedit("wen".to_owned())));
+    });
+
+    app.handle_editor_input(&ctx, 1, 1);
+
+    let preedit = app.ime_preedit.expect("preedit is stored in insert mode");
+    assert_eq!(preedit.buffer_id, 1);
+    assert_eq!(preedit.text, "wen");
+}
+
+#[test]
+fn leaving_vim_insert_mode_clears_a_stale_ime_preedit() {
+    let root = PathBuf::from("vim-insert-exit-ime-preedit-test");
+    let mut app = app_for_input_test(root);
+    app.buffers
+        .push(TextBuffer::from_text(1, None, "alpha".to_owned()));
+    app.settings.vim_keybindings = true;
+    app.editor_vim_mode = EditorVimMode::Insert;
+    app.panes[0].active = Some(1);
+    app.active = Some(1);
+    app.focused_pane = Some(1);
+
+    let ctx = Context::default();
+    ctx.input_mut(|input| {
+        input
+            .events
+            .push(Event::Ime(ImeEvent::Preedit("wen".to_owned())));
+    });
+    app.handle_editor_input(&ctx, 1, 1);
+    assert!(app.ime_preedit.is_some());
+    ctx.input_mut(|input| input.events.clear());
+
+    ctx.input_mut(|input| {
+        input.events.push(Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        });
+    });
+    app.handle_editor_input(&ctx, 1, 1);
+
+    assert_eq!(app.editor_vim_mode, EditorVimMode::Normal);
+    assert!(app.ime_preedit.is_none());
 }
 
 fn app_for_input_test(root: PathBuf) -> KuroyaApp {

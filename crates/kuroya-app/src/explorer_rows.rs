@@ -801,6 +801,7 @@ mod tests {
             relative_path: relative_path.clone(),
             is_dir: false,
             depth: 1,
+            ..Default::default()
         };
         let git_decoration = Some(explorer_git_decoration_for_status(GitFileStatus::Modified));
 
@@ -833,6 +834,7 @@ mod tests {
             relative_path: PathBuf::from("src"),
             is_dir: true,
             depth: 0,
+            ..Default::default()
         };
 
         let collapsed = prepare_explorer_row(ExplorerRowPreparationInput {
@@ -861,6 +863,7 @@ mod tests {
             relative_path: PathBuf::from("README.md"),
             is_dir: false,
             depth: 0,
+            ..Default::default()
         };
 
         let row = prepare_explorer_row(ExplorerRowPreparationInput {
@@ -886,6 +889,7 @@ mod tests {
             relative_path,
             is_dir: false,
             depth: 1,
+            ..Default::default()
         };
 
         let row = prepare_explorer_row(ExplorerRowPreparationInput {

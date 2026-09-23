@@ -2,6 +2,7 @@ use crate::preference_panels::sections::{
     SETTINGS_TARGET_TERMINAL_CURSOR, SettingsHighlightState, guarded_f32_drag_value,
     settings_target_heading,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::{
     DEFAULT_TERMINAL_CURSOR_WIDTH, EditorSettings, MAX_TERMINAL_CURSOR_WIDTH,
@@ -52,7 +53,7 @@ pub(super) fn render_cursor_settings_with_highlight(
             ui.end_row();
 
             ui.label("Cursor blinking");
-            ui.checkbox(&mut draft.terminal_cursor_blinking, "Blink when focused");
+            ui_switch(ui, &mut draft.terminal_cursor_blinking).on_hover_text("Blink when focused");
             ui.end_row();
         });
 }

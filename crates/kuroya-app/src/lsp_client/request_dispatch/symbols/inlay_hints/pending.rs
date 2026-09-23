@@ -1,6 +1,7 @@
+use crate::lsp_client::pending::PendingLspRequests;
 use crate::lsp_client::pending::{PendingLspRequest, register_pending_request};
 use kuroya_core::BufferId;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 pub(super) fn register_inlay_hints_request(
     request_id: u64,
@@ -9,7 +10,7 @@ pub(super) fn register_inlay_hints_request(
     version: u64,
     end_line: usize,
     end_character: usize,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) {
     register_pending_request(
         pending_requests,

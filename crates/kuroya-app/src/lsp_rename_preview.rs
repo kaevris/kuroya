@@ -27,12 +27,11 @@ const LSP_RENAME_PREVIEW_MAX_EDITS: usize = 2_000;
 const LSP_RENAME_PREVIEW_MAX_FILES: usize = 512;
 const LSP_RENAME_PREVIEW_MAX_ROWS: usize =
     LSP_RENAME_PREVIEW_MAX_EDITS + LSP_RENAME_PREVIEW_MAX_FILES;
-// The preview version map stores only u64s; this sentinel means the target was unopened.
+
 const LSP_RENAME_PREVIEW_UNOPENED_VERSION: u64 = u64::MAX;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LspRenamePreviewRow {
-    // Raw variants support manually seeded preview state; normal preparation uses cached labels.
     #[cfg(test)]
     Header {
         path: PathBuf,
@@ -95,6 +94,9 @@ impl KuroyaApp {
         let edit_count = self.lsp_rename_preview_edits.len();
 
         egui::Window::new("Rename Preview")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 160.0,
+            ))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 136.0])

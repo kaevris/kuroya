@@ -1,6 +1,5 @@
 use crate::{
     KuroyaApp,
-    editor_vim_key_events::EditorVimMode,
     panel_layout::cycle_panel_placement,
     path_display::{display_error_label_cow, display_path_label_cow},
     workspace_state::settings_path,
@@ -81,11 +80,7 @@ impl KuroyaApp {
                     Ok(()) => {
                         self.settings = settings;
                         self.settings_panel_draft.vim_keybindings = enabled;
-                        self.editor_vim_mode = EditorVimMode::Normal;
-                        self.editor_vim_pending_key = None;
-                        self.editor_vim_last_char_find = None;
-                        self.editor_vim_unnamed_register = None;
-                        self.editor_vim_last_change = None;
+                        self.vim_reset_session_state();
                         self.status = editor_setting_saved_status("Vim Mode", enabled);
                         self.app_state_vim_keybindings = enabled;
                         self.app_state_vim = self.settings.vim.clone();
@@ -151,9 +146,11 @@ impl KuroyaApp {
                 } else {
                     self.close_command_palette();
                     self.close_quick_open();
+                    self.close_project_search();
                     self.begin_workspace_symbols();
                 }
             }
+            Command::OpenLocalHistoryBrowser => self.toggle_local_history_browser(),
             Command::ToggleWorkspaceTasks => {
                 if self.workspace_tasks_open {
                     self.workspace_tasks_open = false;
@@ -163,18 +160,15 @@ impl KuroyaApp {
                 }
             }
             Command::ToggleProjectSearch => {
-                self.project_search = !self.project_search;
                 if self.project_search {
-                    self.project_search_selected = 0;
+                    self.close_project_search();
+                } else {
+                    self.open_project_search();
                 }
             }
             Command::CycleProjectSearchPlacement => {
-                self.status = cycle_panel_placement(
-                    &mut self.project_search,
-                    &mut self.project_search_placement,
-                    "Project Search",
-                );
-                self.project_search_selected = 0;
+                self.open_project_search();
+                self.status = "Project Search uses a single window".to_owned();
             }
             Command::ToggleDiagnosticsPanel => {
                 self.diagnostics_panel = !self.diagnostics_panel;
@@ -273,6 +267,7 @@ impl KuroyaApp {
         } else {
             self.close_quick_open();
             self.close_workspace_symbols(false);
+            self.close_project_search();
             self.command_palette = true;
             self.command_query.clear();
             self.command_selected = 0;
@@ -292,19 +287,34 @@ impl KuroyaApp {
         } else {
             self.close_command_palette();
             self.close_workspace_symbols(false);
+            self.close_project_search();
             self.quick_open = true;
             self.quick_open_query.clear();
             self.quick_open_selected = 0;
         }
     }
 
-    fn close_quick_open(&mut self) {
+    pub(crate) fn close_quick_open(&mut self) {
         self.quick_open = false;
         self.quick_open_query.clear();
         self.quick_open_selected = 0;
     }
 
-    fn close_workspace_symbols(&mut self, update_status: bool) {
+    fn open_project_search(&mut self) {
+        self.close_command_palette();
+        self.close_quick_open();
+        self.close_workspace_symbols(false);
+        self.project_search = true;
+        self.project_search_selected = 0;
+        self.project_search_focus_query = true;
+    }
+
+    pub(crate) fn close_project_search(&mut self) {
+        self.project_search = false;
+        self.project_search_focus_query = false;
+    }
+
+    pub(crate) fn close_workspace_symbols(&mut self, update_status: bool) {
         self.workspace_symbols_open = false;
         self.workspace_symbol_query.clear();
         self.workspace_symbol_submitted_query.clear();
@@ -430,6 +440,7 @@ mod tests {
     use crate::{
         app_startup_context::AppStartupContext,
         command_palette_overlay::CommandPaletteResultsCache,
+        editor_vim_key_events::EditorVimMode,
         path_display::{DISPLAY_ERROR_LABEL_MAX_CHARS, DISPLAY_PATH_LABEL_MAX_CHARS},
         persistence::AppState,
         terminal::TerminalPane,
@@ -445,6 +456,33 @@ mod tests {
         time::{Instant, SystemTime, UNIX_EPOCH},
     };
     use tokio::runtime::Runtime;
+
+    #[test]
+    fn project_search_commands_use_one_mutually_exclusive_window() {
+        let root = temp_root("project-search-query-focus");
+        let mut app = app_for_test(root, EditorSettings::default());
+        app.project_search_selected = 7;
+
+        assert!(app.run_ui_command(&Command::ToggleProjectSearch));
+        assert!(app.project_search);
+        assert!(app.project_search_focus_query);
+        assert_eq!(app.project_search_selected, 0);
+
+        assert!(app.run_ui_command(&Command::ToggleProjectSearch));
+        assert!(!app.project_search);
+        assert!(!app.project_search_focus_query);
+
+        app.quick_open = true;
+        assert!(app.run_ui_command(&Command::CycleProjectSearchPlacement));
+        assert!(app.project_search);
+        assert!(app.project_search_focus_query);
+        assert!(!app.quick_open);
+        assert_eq!(app.status, "Project Search uses a single window");
+
+        assert!(app.run_ui_command(&Command::ToggleQuickOpen));
+        assert!(app.quick_open);
+        assert!(!app.project_search);
+    }
 
     #[test]
     fn editor_setting_toggle_commands_persist_and_sync_panel_draft() {
@@ -481,6 +519,65 @@ mod tests {
         let app_state =
             std::fs::read_to_string(root.join("app-state.json")).expect("app state should save");
         assert!(app_state.contains("\"vim_keybindings\": true"));
+    }
+
+    #[test]
+    fn toggle_vim_mode_resets_the_full_vim_session_state() {
+        use crate::editor_vim_key_events::{
+            EditorVimLastChange, EditorVimPendingKey, EditorVimRepeatAction,
+            vim_command_input_text_for_test, vim_last_search_word_for_test,
+            vim_marks_are_empty_for_test, vim_search_input_text_for_test,
+        };
+
+        let root = temp_root("vim-toggle-resets-session-state");
+        let settings = EditorSettings {
+            vim_keybindings: true,
+            ..EditorSettings::default()
+        };
+        let mut app = app_for_test(root, settings.clone());
+        app.settings = settings;
+        app.buffers
+            .push(TextBuffer::from_text(7, None, "alpha beta".to_owned()));
+        app.editor_vim_mode = EditorVimMode::Insert;
+        app.editor_vim_pending_key = Some(EditorVimPendingKey::CommandInput);
+        app.editor_vim_last_char_find = Some(crate::editor_vim_key_events::EditorVimCharFind {
+            target: 'a',
+            motion: crate::editor_vim_key_events::EditorVimCharFindMotion::FindForward,
+        });
+        app.editor_vim_unnamed_register = Some(crate::editor_vim_key_events::EditorVimRegister {
+            text: "yanked".to_owned(),
+            kind: crate::editor_vim_key_events::EditorVimRegisterKind::Characterwise,
+        });
+        app.editor_vim_last_change.insert(
+            7,
+            EditorVimLastChange {
+                action: EditorVimRepeatAction::DeleteForwardChars,
+                count: 1,
+                insert_replay: Vec::new(),
+            },
+        );
+        {
+            let buffer = app.buffer(7).expect("buffer");
+            crate::editor_vim_key_events::vim_set_last_search_for_test(
+                buffer, "alpha", true, false,
+            );
+        }
+        crate::editor_vim_key_events::vim_set_search_input_text_for_test("query");
+        crate::editor_vim_key_events::vim_set_command_input_text_for_test("s/a/b");
+
+        assert!(app.run_ui_command(&Command::ToggleVimMode));
+
+        assert!(!app.settings.vim_keybindings);
+        assert_eq!(app.editor_vim_mode, EditorVimMode::Normal);
+        assert_eq!(app.editor_vim_pending_key, None);
+        assert_eq!(app.editor_vim_last_char_find, None);
+        assert_eq!(app.editor_vim_unnamed_register, None);
+        assert!(app.editor_vim_last_change.is_empty());
+        assert!(vim_marks_are_empty_for_test());
+        assert_eq!(vim_last_search_word_for_test(7), None);
+        assert_eq!(vim_search_input_text_for_test(), "");
+        assert_eq!(vim_command_input_text_for_test(), "");
+        assert_eq!(app.editor_vim_insert_undo_group_buffer, None);
     }
 
     #[test]

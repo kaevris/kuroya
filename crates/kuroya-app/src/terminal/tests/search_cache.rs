@@ -100,7 +100,8 @@ fn terminal_visible_search_spans_keep_combining_marks_on_cell_boundaries() {
         vec![TerminalVisibleSearchSpan {
             row: 0,
             start_col: 0,
-            end_col: 1
+            end_col: 1,
+            active: false
         }]
     );
 }
@@ -123,12 +124,14 @@ fn terminal_visible_search_spans_map_repeated_combining_mark_matches() {
             TerminalVisibleSearchSpan {
                 row: 0,
                 start_col: 0,
-                end_col: 1
+                end_col: 1,
+                active: false
             },
             TerminalVisibleSearchSpan {
                 row: 0,
                 start_col: 2,
-                end_col: 3
+                end_col: 3,
+                active: false
             }
         ]
     );
@@ -151,7 +154,8 @@ fn terminal_visible_search_spans_cover_wide_cells_at_right_edge() {
         vec![TerminalVisibleSearchSpan {
             row: 0,
             start_col: 0,
-            end_col: 2
+            end_col: 2,
+            active: false
         }]
     );
 }
@@ -226,7 +230,8 @@ fn terminal_search_visible_spans_use_normalized_query() {
         vec![TerminalVisibleSearchSpan {
             row: 0,
             start_col: 0,
-            end_col: 10
+            end_col: 10,
+            active: false
         }]
     );
 }

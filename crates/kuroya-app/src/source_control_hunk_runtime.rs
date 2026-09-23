@@ -329,6 +329,7 @@ impl KuroyaApp {
 
     fn begin_source_control_hunks_for_stage(&mut self, path: PathBuf, stage: GitChangeStage) {
         self.source_control_hunks_open = true;
+        self.git_panel_open_generation += 1;
         self.source_control_hunk_path = Some(path.clone());
         self.source_control_hunk_stage = stage;
         self.source_control_hunk_selected = 0;
@@ -480,7 +481,7 @@ impl KuroyaApp {
             return;
         }
 
-        self.spawn_git_scan();
+        self.spawn_git_scoped_refresh(vec![path.clone()]);
         let status = git_hunk_stage_success_status(&path, hunk_index);
         if source_control_hunk_open_path_matches(
             self.source_control_hunks_open,
@@ -517,7 +518,7 @@ impl KuroyaApp {
             return;
         }
 
-        self.spawn_git_scan();
+        self.spawn_git_scoped_refresh(vec![path.clone()]);
         let status = git_hunk_unstage_success_status(&path, hunk_index);
         if source_control_hunk_open_path_matches(
             self.source_control_hunks_open,
@@ -590,7 +591,7 @@ impl KuroyaApp {
         }
 
         self.spawn_index();
-        self.spawn_git_scan();
+        self.spawn_git_scoped_refresh(vec![path.clone()]);
         let status = git_hunk_discard_success_status(&path, hunk_index);
         if source_control_hunk_open_path_matches(
             self.source_control_hunks_open,

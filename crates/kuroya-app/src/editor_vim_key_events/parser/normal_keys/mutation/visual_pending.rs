@@ -14,6 +14,16 @@ pub(super) fn vim_visual_pending_key_can_mutate(
 ) -> Option<bool> {
     if matches!(
         pending,
+        Some(EditorVimPendingKey::VisualLine { .. } | EditorVimPendingKey::VisualLineGo { .. })
+    ) {
+        return Some(
+            vim_visual_character_delete_key(key, modifiers)
+                || vim_visual_character_indent_key(key, modifiers)
+                || vim_visual_character_outdent_key(key, modifiers),
+        );
+    }
+    if matches!(
+        pending,
         Some(
             EditorVimPendingKey::VisualCharacter { .. }
                 | EditorVimPendingKey::VisualCharacterCount { .. }

@@ -12,10 +12,14 @@ pub(crate) enum EditorVimOperatorMotion {
     },
     CharacterBackward,
     CharacterForward,
+    FirstLine,
+    LastLine,
     LineColumn,
     LineColumnStart,
+    LineDown,
     LineEnd,
     LineFirstNonWhitespace,
+    LineUp,
     MatchingBracket,
     ParagraphBackward,
     ParagraphForward,
@@ -33,6 +37,7 @@ pub(crate) enum EditorVimOperatorMotion {
     WordEnd,
     WordEndBackward,
     WordForward,
+    WordForwardChange,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

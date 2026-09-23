@@ -38,8 +38,10 @@ fn assert_no_setting_temps(path: &Path) {
     assert_eq!(temp_count, 0);
 }
 
+mod discord;
 mod editor;
 mod git_scm;
 mod minimap;
 mod parse_load_save_recovery;
+mod plugins;
 mod terminal;

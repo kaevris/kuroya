@@ -49,6 +49,8 @@ pub(crate) fn render_editor_context_menu(
 ) {
     let git_change_navigation_actions = source_control_path_actions && !diff_patch_actions;
     let merge_conflict_actions = merge_conflict_action_line.is_some();
+    render_context_actions(ui, pending_action, &buffer_history_context_actions());
+    ui.separator();
     if ui.button("Copy").clicked() {
         *pending_action = Some(EditorContextAction::Copy);
         ui.close();
@@ -204,6 +206,8 @@ pub(crate) fn render_editor_context_menu(
         );
     }
     ui.separator();
+    render_context_actions(ui, pending_action, &buffer_path_context_actions());
+    ui.separator();
     render_buffer_edit_context_menu(ui, pending_action);
 }
 
@@ -343,7 +347,7 @@ fn source_file_context_actions(
     compare_saved_actions: bool,
     compare_file_actions: bool,
     compare_with_selected_actions: bool,
-) -> [ContextMenuAction; 17] {
+) -> [ContextMenuAction; 15] {
     [
         ContextMenuAction::new(
             diff_base_file_actions,
@@ -420,13 +424,21 @@ fn source_file_context_actions(
             "Reveal in Source Control",
             EditorContextAction::RevealActiveFileInSourceControl,
         ),
+    ]
+}
+
+fn buffer_history_context_actions() -> [ContextMenuAction; 2] {
+    [
+        ContextMenuAction::new(true, "Undo", EditorContextAction::Undo),
+        ContextMenuAction::new(true, "Redo", EditorContextAction::Redo),
+    ]
+}
+
+fn buffer_path_context_actions() -> [ContextMenuAction; 2] {
+    [
+        ContextMenuAction::new(true, "Copy Path", EditorContextAction::CopyActivePath),
         ContextMenuAction::new(
-            source_control_path_actions,
-            "Copy Path",
-            EditorContextAction::CopyActivePath,
-        ),
-        ContextMenuAction::new(
-            source_control_path_actions,
+            true,
             "Copy Relative Path",
             EditorContextAction::CopyActiveRelativePath,
         ),
@@ -653,6 +665,16 @@ pub(crate) fn file_source_context_action_labels(
 }
 
 #[cfg(test)]
+pub(crate) fn buffer_history_context_action_labels() -> Vec<&'static str> {
+    enabled_context_action_labels(&buffer_history_context_actions())
+}
+
+#[cfg(test)]
+pub(crate) fn buffer_path_context_action_labels() -> Vec<&'static str> {
+    enabled_context_action_labels(&buffer_path_context_actions())
+}
+
+#[cfg(test)]
 pub(crate) fn diff_patch_context_action_labels(
     patch_enabled: bool,
     refresh_enabled: bool,
@@ -690,7 +712,10 @@ pub(crate) fn diff_hunk_context_action_labels(stage: Option<GitChangeStage>) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::source_file_context_actions;
+    use super::{
+        buffer_history_context_actions, buffer_path_context_actions, enabled_context_action_labels,
+        source_file_context_actions,
+    };
     use crate::editor_input::EditorContextAction;
 
     #[test]
@@ -712,12 +737,18 @@ mod tests {
             EditorContextAction::CompareActiveFileWithSelected
         ));
 
-        assert_eq!(actions[16].label, "Copy Relative Path");
-        assert!(actions[16].enabled);
+        assert_eq!(actions[14].label, "Reveal in Source Control");
+        assert!(actions[14].enabled);
         assert!(matches!(
-            actions[16].action,
-            EditorContextAction::CopyActiveRelativePath
+            actions[14].action,
+            EditorContextAction::RevealActiveFileInSourceControl
         ));
+
+        assert!(
+            actions
+                .iter()
+                .all(|action| action.label != "Copy Path" && action.label != "Copy Relative Path")
+        );
     }
 
     #[test]
@@ -727,5 +758,35 @@ mod tests {
         );
 
         assert!(actions.iter().all(|action| !action.enabled));
+    }
+
+    #[test]
+    fn buffer_history_context_actions_render_for_normal_buffers() {
+        let actions = buffer_history_context_actions();
+
+        assert_eq!(
+            enabled_context_action_labels(&actions),
+            vec!["Undo", "Redo"]
+        );
+        assert!(matches!(actions[0].action, EditorContextAction::Undo));
+        assert!(matches!(actions[1].action, EditorContextAction::Redo));
+    }
+
+    #[test]
+    fn buffer_path_context_actions_render_without_git_state() {
+        let actions = buffer_path_context_actions();
+
+        assert_eq!(
+            enabled_context_action_labels(&actions),
+            vec!["Copy Path", "Copy Relative Path"]
+        );
+        assert!(matches!(
+            actions[0].action,
+            EditorContextAction::CopyActivePath
+        ));
+        assert!(matches!(
+            actions[1].action,
+            EditorContextAction::CopyActiveRelativePath
+        ));
     }
 }

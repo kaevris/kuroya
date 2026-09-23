@@ -1,4 +1,5 @@
 use egui::{RichText, Ui};
+use kuroya_core::EditorWordWrap;
 use std::borrow::Cow;
 
 pub(crate) fn render_status_warnings(
@@ -10,6 +11,7 @@ pub(crate) fn render_status_warnings(
     active_read_only: bool,
     active_large_file_mode: bool,
     external_change_count: usize,
+    word_wrap: EditorWordWrap,
 ) {
     if external_change_count > 0 {
         warning_label(
@@ -47,6 +49,17 @@ pub(crate) fn render_status_warnings(
             "Active file is using large file safeguards",
         );
     }
+    if word_wrap_warning_shown(word_wrap) {
+        warning_label(ui, "wrap", word_wrap_warning_tooltip());
+    }
+}
+
+fn word_wrap_warning_shown(word_wrap: EditorWordWrap) -> bool {
+    word_wrap != EditorWordWrap::Off
+}
+
+fn word_wrap_warning_tooltip() -> &'static str {
+    "Word wrap: long lines render over multiple rows; some click positions may be approximate"
 }
 
 fn disk_change_warning_label(
@@ -165,7 +178,27 @@ fn warning_label(ui: &mut Ui, text: impl AsRef<str>, tooltip: impl AsRef<str>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{disk_change_warning_label, disk_change_warning_tooltip};
+    use super::{
+        disk_change_warning_label, disk_change_warning_tooltip, word_wrap_warning_shown,
+        word_wrap_warning_tooltip,
+    };
+    use kuroya_core::EditorWordWrap;
+
+    #[test]
+    fn word_wrap_warning_shows_only_when_wrap_is_not_off() {
+        assert!(!word_wrap_warning_shown(EditorWordWrap::Off));
+        assert!(word_wrap_warning_shown(EditorWordWrap::On));
+        assert!(word_wrap_warning_shown(EditorWordWrap::WordWrapColumn));
+        assert!(word_wrap_warning_shown(EditorWordWrap::Bounded));
+    }
+
+    #[test]
+    fn word_wrap_warning_tooltip_explains_approximate_clicks() {
+        assert_eq!(
+            word_wrap_warning_tooltip(),
+            "Word wrap: long lines render over multiple rows; some click positions may be approximate"
+        );
+    }
 
     #[test]
     fn disk_change_warning_label_uses_singular_and_active_context() {

@@ -29,12 +29,13 @@ fn normal_mode_char_find_backward_delete_motion_deletes_range() {
     }
 
     assert_eq!(mode, EditorVimMode::Normal);
-    assert_eq!(buffer.text(), "abcxf");
+
+    assert_eq!(buffer.text(), "abcx");
     assert_eq!(
         unnamed_register
             .as_ref()
             .map(|register| (register.text.as_str(), register.kind)),
-        Some(("de", EditorVimRegisterKind::Characterwise))
+        Some(("def", EditorVimRegisterKind::Characterwise))
     );
     assert!(pending.is_none());
 }
@@ -71,11 +72,12 @@ fn normal_mode_char_find_backward_yank_motion_is_not_mutation() {
     assert_eq!(mode, EditorVimMode::Normal);
     assert_eq!(buffer.text(), "abcxdef");
     assert_eq!(buffer.cursor(), buffer.line_column_to_char(0, 6));
+
     assert_eq!(
         unnamed_register
             .as_ref()
             .map(|register| (register.text.as_str(), register.kind)),
-        Some(("xde", EditorVimRegisterKind::Characterwise))
+        Some(("xdef", EditorVimRegisterKind::Characterwise))
     );
     assert!(pending.is_none());
     assert!(!vim_events_include_mutation(

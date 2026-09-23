@@ -1,8 +1,5 @@
-use crate::{
-    KuroyaApp, layout::PROJECT_SEARCH_DEFAULT_WIDTH, panel_layout::PanelPlacement,
-    theme::selected_theme_index_with_plugins,
-};
-use kuroya_core::SearchResult;
+use crate::{KuroyaApp, theme::selected_theme_index_with_plugins};
+use kuroya_core::{SearchOptions, SearchResult};
 
 impl KuroyaApp {
     pub(super) fn reset_workspace_dialog_and_search_state(&mut self) {
@@ -63,22 +60,20 @@ impl KuroyaApp {
         self.pending_source_control_protected_branch_commit = None;
         self.pending_source_control_commit_save = None;
         self.pending_source_control_stash_save = None;
-        self.editor_vim_mode = crate::editor_vim_key_events::EditorVimMode::Normal;
-        self.editor_vim_pending_key = None;
-        self.editor_vim_last_char_find = None;
-        self.editor_vim_unnamed_register = None;
-        self.editor_vim_last_change = None;
+        self.vim_reset_session_state();
         self.project_search = false;
-        self.project_search_placement = PanelPlacement::default();
-        self.project_search_width = PROJECT_SEARCH_DEFAULT_WIDTH;
+        self.project_search_focus_query = false;
         self.project_search_query.clear();
         self.project_search_result = SearchResult::default();
         self.project_search_result_query.clear();
         self.project_search_result_index_generation = 0;
         self.project_search_result_case_sensitive = false;
         self.project_search_result_whole_word = false;
+        self.project_search_result_regex = false;
         self.project_search_result_include_globs.clear();
         self.project_search_result_exclude_globs.clear();
+        self.project_search_result_max_file_bytes = SearchOptions::default().max_file_bytes;
+        self.project_search_result_max_results = SearchOptions::default().max_results;
         self.project_search_include.clear();
         self.project_search_exclude.clear();
         self.project_search_recent.clear();

@@ -90,7 +90,6 @@ pub(super) fn settings_read_error_is_not_found(error: &anyhow::Error) -> bool {
         .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
-// Keep schema preflight narrow so large string settings are not materialized twice.
 #[derive(Default, Deserialize)]
 struct SettingsSchemaVersionToml {
     #[serde(
@@ -195,18 +194,26 @@ where
 }
 
 pub(super) fn settings_schema_version_from_toml(text: &str) -> anyhow::Result<u32> {
-    let schema = toml::from_str::<SettingsSchemaVersionToml>(text)?;
-    let Some(version) = schema.schema_version else {
-        return Ok(0);
-    };
-    let version = u32::try_from(version).map_err(|_| {
-        anyhow::anyhow!("settings schema_version must be between 0 and {}", u32::MAX)
-    })?;
+    let version = settings_schema_version_raw_from_toml(text)?;
     anyhow::ensure!(
         version <= SETTINGS_SCHEMA_VERSION,
         "settings schema_version {version} is newer than supported version {SETTINGS_SCHEMA_VERSION}"
     );
     Ok(version)
+}
+
+fn settings_schema_version_raw_from_toml(text: &str) -> anyhow::Result<u32> {
+    let schema = toml::from_str::<SettingsSchemaVersionToml>(text)?;
+    let Some(version) = schema.schema_version else {
+        return Ok(SETTINGS_SCHEMA_VERSION);
+    };
+    u32::try_from(version)
+        .map_err(|_| anyhow::anyhow!("settings schema_version must be between 0 and {}", u32::MAX))
+}
+
+pub(super) fn settings_schema_version_newer_than_supported(text: &str) -> Option<u32> {
+    let version = settings_schema_version_raw_from_toml(text).ok()?;
+    (version > SETTINGS_SCHEMA_VERSION).then_some(version)
 }
 
 pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {

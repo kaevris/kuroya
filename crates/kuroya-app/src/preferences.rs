@@ -16,49 +16,39 @@ use std::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WorkspaceSettingsLoadSource {
+pub(crate) enum AppSettingsLoadSource {
     Loaded,
     MissingDefault,
-    UntrustedSkipped,
 }
 
-impl WorkspaceSettingsLoadSource {
+impl AppSettingsLoadSource {
     pub(crate) fn applies_startup_app_state_fallback(self) -> bool {
-        matches!(self, Self::MissingDefault | Self::UntrustedSkipped)
+        matches!(self, Self::MissingDefault)
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct WorkspaceSettingsLoad {
+pub(crate) struct AppSettingsLoad {
     pub(crate) settings: EditorSettings,
     pub(crate) quarantined_path: Option<PathBuf>,
-    pub(crate) source: WorkspaceSettingsLoadSource,
+    pub(crate) source: AppSettingsLoadSource,
 }
 
-impl WorkspaceSettingsLoad {
+impl AppSettingsLoad {
     fn loaded(loaded: EditorSettingsLoad) -> Self {
         Self {
             settings: loaded.settings,
             quarantined_path: loaded.quarantined_path,
-            source: WorkspaceSettingsLoadSource::Loaded,
+            source: AppSettingsLoadSource::Loaded,
         }
     }
 }
 
-pub(crate) fn load_workspace_settings(
-    root: &Path,
-    workspace_trusted: bool,
-) -> anyhow::Result<WorkspaceSettingsLoad> {
-    if !workspace_trusted {
-        return Ok(default_workspace_settings_load(
-            WorkspaceSettingsLoadSource::UntrustedSkipped,
-        ));
-    }
-
+pub(crate) fn load_app_settings(root: &Path) -> anyhow::Result<AppSettingsLoad> {
     let path = settings_path(root);
     if !path.try_exists()? {
-        return Ok(default_workspace_settings_load(
-            WorkspaceSettingsLoadSource::MissingDefault,
+        return Ok(default_app_settings_load(
+            AppSettingsLoadSource::MissingDefault,
         ));
     }
 
@@ -66,11 +56,11 @@ pub(crate) fn load_workspace_settings(
     if sanitize_vim_settings_for_runtime(&mut loaded.settings.vim) {
         let _ = loaded.settings.save(&path);
     }
-    Ok(WorkspaceSettingsLoad::loaded(loaded))
+    Ok(AppSettingsLoad::loaded(loaded))
 }
 
-fn default_workspace_settings_load(source: WorkspaceSettingsLoadSource) -> WorkspaceSettingsLoad {
-    WorkspaceSettingsLoad {
+fn default_app_settings_load(source: AppSettingsLoadSource) -> AppSettingsLoad {
+    AppSettingsLoad {
         settings: EditorSettings::default(),
         quarantined_path: None,
         source,
@@ -80,15 +70,12 @@ fn default_workspace_settings_load(source: WorkspaceSettingsLoadSource) -> Works
 impl KuroyaApp {
     pub(crate) fn reload_settings(&mut self) {
         let path = settings_path(&self.workspace.root);
-        match load_workspace_settings(&self.workspace.root, self.workspace_trusted) {
+        match load_app_settings(&self.workspace.root) {
             Ok(loaded) => {
                 let source = loaded.source;
+
+                let keep_settings_panel_draft = self.settings_panel_has_pending_inputs();
                 let previous_settings = std::mem::replace(&mut self.settings, loaded.settings);
-                if source == WorkspaceSettingsLoadSource::UntrustedSkipped {
-                    self.apply_app_state_restricted_settings_for_untrusted_reload(
-                        &previous_settings,
-                    );
-                }
                 for buffer in &mut self.buffers {
                     buffer.set_word_separators(self.settings.word_separators.clone());
                 }
@@ -176,38 +163,62 @@ impl KuroyaApp {
                 );
                 self.terminal
                     .set_mouse_wheel_zoom(self.settings.terminal_mouse_wheel_zoom);
-                self.sync_settings_panel_inputs();
+                if keep_settings_panel_draft {
+                } else {
+                    self.sync_settings_panel_inputs();
+                }
                 self.theme_picker_selected = self.selected_theme_picker_index();
                 match source {
-                    WorkspaceSettingsLoadSource::Loaded => {
+                    AppSettingsLoadSource::Loaded => {
                         self.status =
                             settings_reload_status(&path, loaded.quarantined_path.as_deref());
-                        self.sync_app_state_restricted_settings_after_trusted_reload(
-                            &previous_settings,
-                        );
+                        self.sync_app_state_settings_after_reload(&previous_settings);
                     }
-                    WorkspaceSettingsLoadSource::MissingDefault => {
+                    AppSettingsLoadSource::MissingDefault => {
                         self.status = settings_reload_missing_default_status(&path);
                     }
-                    WorkspaceSettingsLoadSource::UntrustedSkipped => {
-                        self.status = settings_reload_skipped_untrusted_status();
-                    }
+                }
+                if keep_settings_panel_draft {
+                    self.status.push_str(SETTINGS_RELOAD_KEPT_DRAFT_NOTE);
                 }
                 self.theme_dirty = true;
                 self.fonts_dirty = true;
                 if previous_settings.vim_keybindings != self.settings.vim_keybindings
                     || previous_settings.vim != self.settings.vim
                 {
-                    self.editor_vim_mode = crate::editor_vim_key_events::EditorVimMode::Normal;
-                    self.editor_vim_pending_key = None;
-                    self.editor_vim_last_char_find = None;
-                    self.editor_vim_unnamed_register = None;
-                    self.editor_vim_last_change = None;
+                    self.vim_reset_session_state();
                 }
                 if previous_settings.read_only != self.settings.read_only {
                     self.sync_global_read_only_buffers();
                 }
+                if previous_settings.plugins != self.settings.plugins {
+                    self.sync_plugin_settings_state();
+                }
+                if previous_settings.discord != self.settings.discord {
+                    self.sync_discord_presence_runtime();
+                }
                 self.sync_lsp_server_settings_after_reload(&previous_settings);
+                let project_index_settings_changed = previous_settings.project_index_max_files
+                    != self.settings.project_index_max_files
+                    || previous_settings.project_index_exclude_globs
+                        != self.settings.project_index_exclude_globs
+                    || previous_settings.project_index_include_hidden_dirs
+                        != self.settings.project_index_include_hidden_dirs;
+                let project_search_settings_changed = previous_settings
+                    .project_search_exclude_globs
+                    != self.settings.project_search_exclude_globs
+                    || previous_settings.project_search_max_file_size_mb
+                        != self.settings.project_search_max_file_size_mb
+                    || previous_settings.project_search_max_results
+                        != self.settings.project_search_max_results;
+                if project_search_settings_changed {
+                    self.invalidate_project_search_requests();
+                    self.project_search_metadata_cache.clear();
+                    self.sync_project_search_after_settings_change();
+                }
+                if project_index_settings_changed {
+                    self.spawn_index();
+                }
                 let git_repository_scan_settings_changed = previous_settings
                     .git_auto_repository_detection
                     != self.settings.git_auto_repository_detection
@@ -226,8 +237,6 @@ impl KuroyaApp {
                     || previous_settings.git_detect_worktrees != self.settings.git_detect_worktrees
                     || previous_settings.git_detect_worktrees_limit
                         != self.settings.git_detect_worktrees_limit
-                    || previous_settings.git_scan_repositories
-                        != self.settings.git_scan_repositories
                     || previous_settings.git_worktree_include_files
                         != self.settings.git_worktree_include_files
                     || previous_settings.git_similarity_threshold
@@ -255,25 +264,12 @@ impl KuroyaApp {
                 } else if git_repository_scan_settings_changed {
                     self.spawn_git_scan();
                 }
+                self.sync_background_image(true);
             }
             Err(error) => {
                 self.status = settings_load_failed_status(error);
             }
         }
-    }
-
-    fn apply_app_state_restricted_settings_for_untrusted_reload(
-        &mut self,
-        previous_settings: &EditorSettings,
-    ) {
-        self.settings.theme = previous_settings.theme.clone();
-        self.settings.custom_theme_paths = previous_settings.custom_theme_paths.clone();
-        self.settings.active_custom_theme_path = previous_settings.active_custom_theme_path.clone();
-        self.settings.editor_font_path = previous_settings.editor_font_path.clone();
-        self.settings.ui_font_path = previous_settings.ui_font_path.clone();
-        self.settings.vim_keybindings = self.app_state_vim_keybindings;
-        self.settings.vim = self.app_state_vim.clone();
-        sanitize_vim_settings_for_runtime(&mut self.settings.vim);
     }
 
     pub(crate) fn sync_settings_panel_inputs(&mut self) {
@@ -295,10 +291,7 @@ impl KuroyaApp {
         self.status = settings_opening_status(&path);
     }
 
-    fn sync_app_state_restricted_settings_after_trusted_reload(
-        &mut self,
-        previous_settings: &EditorSettings,
-    ) {
+    fn sync_app_state_settings_after_reload(&mut self, previous_settings: &EditorSettings) {
         let vim_changed = self.app_state_vim_keybindings != self.settings.vim_keybindings
             || self.app_state_vim != self.settings.vim;
         let appearance_changed =
@@ -316,6 +309,9 @@ impl KuroyaApp {
         }
     }
 }
+
+const SETTINGS_RELOAD_KEPT_DRAFT_NOTE: &str =
+    "; kept unsaved settings changes; external changes loaded for other settings";
 
 fn app_state_appearance_settings_changed(
     previous: &EditorSettings,
@@ -353,13 +349,9 @@ pub(crate) fn settings_reload_status(path: &Path, quarantined_path: Option<&Path
 fn settings_reload_missing_default_status(path: &Path) -> String {
     let path = settings_path_status_label(path);
     format!(
-        "Workspace settings not found at {}; using defaults",
+        "App settings not found at {}; using defaults",
         path.as_ref()
     )
-}
-
-fn settings_reload_skipped_untrusted_status() -> String {
-    "Workspace settings skipped until this workspace is trusted".to_owned()
 }
 
 fn settings_load_failed_status(error: impl Display) -> String {
@@ -406,10 +398,9 @@ fn settings_error_status_label(error: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        KuroyaApp, WorkspaceSettingsLoadSource, load_workspace_settings,
-        settings_create_failed_status, settings_load_failed_status, settings_opening_status,
-        settings_path_status_label, settings_reload_missing_default_status,
-        settings_reload_skipped_untrusted_status, settings_reload_status,
+        AppSettingsLoadSource, KuroyaApp, load_app_settings, settings_create_failed_status,
+        settings_load_failed_status, settings_opening_status, settings_path_status_label,
+        settings_reload_missing_default_status, settings_reload_status,
     };
     use crate::{
         app_startup_context::AppStartupContext,
@@ -419,7 +410,8 @@ mod tests {
         workspace_state::settings_path,
     };
     use kuroya_core::{
-        EditorSettings, EditorVimKeyOverride, EditorVimSettings, TextBuffer, ThemeSettings,
+        EditorSettings, EditorVimKeyOverride, EditorVimSettings, PluginCapabilities,
+        PluginContributions, PluginDescriptor, PluginManifest, TextBuffer, ThemeSettings,
         Workspace,
     };
     use std::{
@@ -541,6 +533,71 @@ mod tests {
     }
 
     #[test]
+    fn reload_settings_keeps_pending_draft_while_settings_panel_is_open() {
+        let root = temp_root("reload-keeps-pending-draft");
+        let settings = settings_path(&root);
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(&settings, "word_separators = \".\"\n").unwrap();
+
+        let mut app = app_for_test(root.clone());
+        app.settings_panel_open = true;
+        app.settings_panel_draft.font_size = 19.0;
+
+        app.reload_settings();
+
+        assert_eq!(app.settings_panel_draft.font_size, 19.0);
+        assert_eq!(app.settings.word_separators, ".");
+        assert!(
+            app.status.contains("kept unsaved settings changes"),
+            "unexpected status: {}",
+            app.status
+        );
+
+        drop(app);
+        remove_root(&root);
+    }
+
+    #[test]
+    fn reload_settings_resyncs_clean_draft_while_settings_panel_is_open() {
+        let root = temp_root("reload-resyncs-clean-draft");
+        let settings = settings_path(&root);
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(&settings, "word_separators = \".\"\n").unwrap();
+
+        let mut app = app_for_test(root.clone());
+        app.settings_panel_open = true;
+
+        app.reload_settings();
+
+        assert_eq!(app.settings_panel_draft, app.settings);
+        assert_eq!(app.status, settings_reload_status(&settings, None));
+
+        drop(app);
+        remove_root(&root);
+    }
+
+    #[test]
+    fn reload_settings_resyncs_pending_draft_when_settings_panel_is_closed() {
+        let root = temp_root("reload-resyncs-closed-panel-draft");
+        let settings = settings_path(&root);
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(&settings, "word_separators = \".\"\n").unwrap();
+
+        let mut app = app_for_test(root.clone());
+        app.settings_panel_open = false;
+        app.settings_panel_draft.font_size = 19.0;
+
+        app.reload_settings();
+
+        assert_eq!(app.settings_panel_draft, app.settings);
+        assert_eq!(app.settings_panel_draft.font_size, app.settings.font_size);
+        assert_eq!(app.status, settings_reload_status(&settings, None));
+
+        drop(app);
+        remove_root(&root);
+    }
+
+    #[test]
     fn reload_settings_updates_open_buffer_word_separators() {
         let root = temp_root("word-separators");
         let settings = settings_path(&root);
@@ -563,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn reload_settings_applies_workspace_vim_keybindings() {
+    fn reload_settings_applies_app_vim_keybindings() {
         let root = temp_root("apply-vim-keybindings");
         let settings = settings_path(&root);
         fs::create_dir_all(settings.parent().unwrap()).unwrap();
@@ -607,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn trusted_reload_updates_app_state_vim_fallback() {
+    fn reload_updates_app_state_vim_copy() {
         let root = temp_root("reload-vim-keeps-app-state-fallback");
         let settings = settings_path(&root);
         fs::create_dir_all(settings.parent().unwrap()).unwrap();
@@ -641,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn load_workspace_settings_persists_runtime_sanitized_vim_settings() {
+    fn load_app_settings_persists_runtime_sanitized_vim_settings() {
         let root = temp_root("load-vim-persists-runtime-sanitize");
         let settings = settings_path(&root);
         fs::create_dir_all(settings.parent().unwrap()).unwrap();
@@ -659,9 +716,9 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = load_workspace_settings(&root, true).unwrap();
+        let loaded = load_app_settings(&root).unwrap();
 
-        assert_eq!(loaded.source, WorkspaceSettingsLoadSource::Loaded);
+        assert_eq!(loaded.source, AppSettingsLoadSource::Loaded);
         assert_eq!(loaded.settings.vim.disabled_bindings, ["<C-n>"]);
         assert_eq!(
             loaded.settings.vim.key_overrides,
@@ -680,8 +737,8 @@ mod tests {
     }
 
     #[test]
-    fn reload_settings_applies_app_state_vim_keybindings_for_untrusted_workspace() {
-        let root = temp_root("untrusted-preserve-vim-keybindings");
+    fn reload_settings_uses_global_app_settings_in_untrusted_workspace() {
+        let root = temp_root("untrusted-loads-app-settings");
         let settings = settings_path(&root);
         fs::create_dir_all(settings.parent().unwrap()).unwrap();
         fs::write(
@@ -701,48 +758,24 @@ mod tests {
 
         app.reload_settings();
 
-        assert!(app.settings.vim_keybindings);
-        assert_eq!(app.settings.vim.disabled_bindings, ["Q", "<C-n>"]);
-        assert_eq!(
-            app.settings.vim.key_overrides,
-            [EditorVimKeyOverride {
-                before: "<Home>".to_owned(),
-                after: "<C-r>".to_owned(),
-                command: None,
-            }]
-        );
-        assert_eq!(
-            app.settings.word_separators,
-            EditorSettings::default().word_separators
-        );
-        assert_eq!(app.status, settings_reload_skipped_untrusted_status());
+        assert!(!app.workspace_trusted);
+        assert!(!app.settings.vim_keybindings);
+        assert!(app.settings.vim.disabled_bindings.is_empty());
+        assert!(app.settings.vim.key_overrides.is_empty());
+        assert_eq!(app.settings.word_separators, ".");
+        assert_eq!(app.status, settings_reload_status(&settings, None));
         remove_root(&root);
     }
 
     #[test]
-    fn load_workspace_settings_uses_defaults_for_untrusted_workspace() {
-        let root = temp_root("untrusted-load-defaults");
-        let settings = settings_path(&root);
-        fs::create_dir_all(settings.parent().unwrap()).unwrap();
-        fs::write(&settings, "word_separators = \".\"\n").unwrap();
-
-        let loaded = load_workspace_settings(&root, false).unwrap();
-
-        assert_eq!(loaded.source, WorkspaceSettingsLoadSource::UntrustedSkipped);
-        assert_eq!(loaded.settings, EditorSettings::default());
-        assert_eq!(loaded.quarantined_path, None);
-        remove_root(&root);
-    }
-
-    #[test]
-    fn load_workspace_settings_uses_defaults_without_creating_missing_workspace_settings() {
-        let root = temp_root("trusted-missing-settings-defaults");
+    fn load_app_settings_uses_defaults_without_creating_missing_file() {
+        let root = temp_root("missing-app-settings-defaults");
         fs::create_dir_all(&root).unwrap();
         let settings = settings_path(&root);
 
-        let loaded = load_workspace_settings(&root, true).unwrap();
+        let loaded = load_app_settings(&root).unwrap();
 
-        assert_eq!(loaded.source, WorkspaceSettingsLoadSource::MissingDefault);
+        assert_eq!(loaded.source, AppSettingsLoadSource::MissingDefault);
         assert_eq!(loaded.settings, EditorSettings::default());
         assert_eq!(loaded.quarantined_path, None);
         assert!(!settings.exists());
@@ -751,8 +784,8 @@ mod tests {
     }
 
     #[test]
-    fn reload_settings_uses_defaults_without_creating_missing_workspace_settings() {
-        let root = temp_root("trusted-missing-reload-defaults");
+    fn reload_settings_uses_defaults_without_creating_missing_app_settings() {
+        let root = temp_root("missing-app-settings-reload-defaults");
         fs::create_dir_all(&root).unwrap();
         let settings = settings_path(&root);
         let mut app = app_for_test(root.clone());
@@ -774,35 +807,11 @@ mod tests {
     }
 
     #[test]
-    fn reload_settings_uses_defaults_for_untrusted_workspace() {
-        let root = temp_root("untrusted-reload-defaults");
-        let settings = settings_path(&root);
-        fs::create_dir_all(settings.parent().unwrap()).unwrap();
-        fs::write(&settings, "word_separators = \".\"\n").unwrap();
-
-        let mut app = app_for_test_with_trust(root.clone(), false);
-        app.settings.word_separators = ".".to_owned();
-
-        app.reload_settings();
-
-        assert_eq!(
-            app.settings.word_separators,
-            EditorSettings::default().word_separators
-        );
-        assert_eq!(app.status, settings_reload_skipped_untrusted_status());
-        remove_root(&root);
-    }
-
-    #[test]
-    fn reload_settings_preserves_app_state_appearance_for_untrusted_workspace() {
-        let root = temp_root("untrusted-reload-preserves-restricted-settings");
-        let settings = settings_path(&root);
-        fs::create_dir_all(settings.parent().unwrap()).unwrap();
-        fs::write(&settings, "word_separators = \".\"\n").unwrap();
-
-        let mut app = app_for_test_with_trust(root.clone(), false);
-        let current_theme = ThemeSettings {
-            name: "Session Light".to_owned(),
+    fn reload_settings_uses_saved_appearance_in_untrusted_workspace() {
+        let root = temp_root("untrusted-loads-saved-appearance");
+        let settings_path = settings_path(&root);
+        let saved_theme = ThemeSettings {
+            name: "Saved Global Theme".to_owned(),
             background: [248, 249, 250],
             panel: [255, 255, 255],
             panel_alt: [238, 241, 245],
@@ -813,35 +822,43 @@ mod tests {
             warning: [161, 104, 24],
             error: [190, 50, 50],
         };
-        let custom_theme_paths = vec![".kuroya/themes/session.toml".to_owned()];
-        let active_custom_theme_path = Some(".kuroya/themes/session.toml".to_owned());
-        let editor_font_path = Some("fonts/editor.ttf".to_owned());
-        let ui_font_path = Some("fonts/ui.ttf".to_owned());
-        app.settings.theme = current_theme.clone();
-        app.settings.custom_theme_paths = custom_theme_paths.clone();
-        app.settings.active_custom_theme_path = active_custom_theme_path.clone();
-        app.settings.editor_font_path = editor_font_path.clone();
-        app.settings.ui_font_path = ui_font_path.clone();
-        app.settings.vim_keybindings = true;
-        app.settings.word_separators = ".".to_owned();
+        let custom_theme_path = root.join("themes/saved.toml").display().to_string();
+        let editor_font_path = root.join("fonts/editor.ttf").display().to_string();
+        let ui_font_path = root.join("fonts/ui.ttf").display().to_string();
+        let saved_settings = EditorSettings {
+            theme: saved_theme.clone(),
+            custom_theme_paths: vec![custom_theme_path.clone()],
+            active_custom_theme_path: Some(custom_theme_path.clone()),
+            editor_font_path: Some(editor_font_path.clone()),
+            ui_font_path: Some(ui_font_path.clone()),
+            ..EditorSettings::default()
+        };
+        saved_settings.save(&settings_path).unwrap();
+
+        let mut app = app_for_test_with_trust(root.clone(), false);
 
         app.reload_settings();
 
-        assert_eq!(app.settings.theme, current_theme);
-        assert_eq!(app.settings.custom_theme_paths, custom_theme_paths);
+        assert!(!app.workspace_trusted);
+        assert_eq!(app.settings.theme, saved_theme);
         assert_eq!(
-            app.settings.active_custom_theme_path,
-            active_custom_theme_path
+            app.settings.custom_theme_paths,
+            std::slice::from_ref(&custom_theme_path)
         );
-        assert_eq!(app.settings.editor_font_path, editor_font_path);
-        assert_eq!(app.settings.ui_font_path, ui_font_path);
-        assert!(!app.settings.vim_keybindings);
         assert_eq!(
-            app.settings.word_separators,
-            EditorSettings::default().word_separators
+            app.settings.active_custom_theme_path.as_deref(),
+            Some(custom_theme_path.as_str())
+        );
+        assert_eq!(
+            app.settings.editor_font_path.as_deref(),
+            Some(editor_font_path.as_str())
+        );
+        assert_eq!(
+            app.settings.ui_font_path.as_deref(),
+            Some(ui_font_path.as_str())
         );
         assert_eq!(app.settings_panel_draft.theme, app.settings.theme);
-        assert_eq!(app.status, settings_reload_skipped_untrusted_status());
+        assert_eq!(app.status, settings_reload_status(&settings_path, None));
         remove_root(&root);
     }
 
@@ -993,6 +1010,44 @@ mod tests {
     }
 
     #[test]
+    fn reload_settings_applies_external_plugin_edits_and_resyncs_discovery() {
+        let root = temp_root("reload-plugin-settings");
+        let settings = settings_path(&root);
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(
+            &settings,
+            "[plugins]\n\
+             enabled = false\n\
+             disabled_ids = [\"external.plugin\"]\n",
+        )
+        .unwrap();
+        let mut app = app_for_test(root.clone());
+        app.plugins.push(test_plugin_descriptor("loaded.plugin"));
+
+        app.reload_settings();
+
+        assert!(!app.settings.plugins.enabled);
+        assert_eq!(app.settings.plugins.disabled_ids, ["external.plugin"]);
+        assert!(app.plugins.is_empty());
+        assert_eq!(app.workspace_plugins_in_flight_request_id, None);
+        assert_eq!(app.settings_panel_draft, app.settings);
+
+        fs::write(
+            &settings,
+            "[plugins]\n\
+             enabled = true\n\
+             disabled_ids = [\"external.plugin\"]\n",
+        )
+        .unwrap();
+
+        app.reload_settings();
+
+        assert!(app.settings.plugins.enabled);
+        assert_eq!(app.workspace_plugins_in_flight_request_id, Some(2));
+        remove_root(&root);
+    }
+
+    #[test]
     fn open_settings_file_creates_missing_settings_and_opens_it() {
         let root = temp_root("open-settings-missing");
         let settings_path = settings_path(&root);
@@ -1040,6 +1095,22 @@ mod tests {
 
     fn app_for_test(root: PathBuf) -> KuroyaApp {
         app_for_test_with_trust(root, true)
+    }
+
+    fn test_plugin_descriptor(id: &str) -> PluginDescriptor {
+        PluginDescriptor {
+            root: PathBuf::from(format!(".kuroya/plugins/{id}")),
+            manifest: PluginManifest {
+                api_version: "1".to_owned(),
+                id: id.to_owned(),
+                name: id.to_owned(),
+                version: "0.1.0".to_owned(),
+                entry: None,
+                activation_events: Vec::new(),
+                capabilities: PluginCapabilities::default(),
+                contributes: PluginContributions::default(),
+            },
+        }
     }
 
     fn app_for_test_with_trust(root: PathBuf, trusted: bool) -> KuroyaApp {

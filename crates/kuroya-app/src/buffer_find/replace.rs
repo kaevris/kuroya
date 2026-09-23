@@ -61,7 +61,7 @@ impl KuroyaApp {
             (match_index, range)
         };
         self.buffer_find_match = match_index;
-        let query = self.buffer_find_query.trim().to_owned();
+        let query = self.buffer_find_query.clone();
         let replacement = self.buffer_find_replacement.clone();
         let case_sensitive = self.buffer_find_case_sensitive;
         let whole_word = self.buffer_find_whole_word;
@@ -125,7 +125,7 @@ impl KuroyaApp {
             self.status = LARGE_FILE_FIND_STATUS.to_owned();
             return;
         }
-        let query = self.buffer_find_query.trim().to_owned();
+        let query = self.buffer_find_query.clone();
         if query.is_empty() {
             self.status = "No query to replace".to_owned();
             return;

@@ -78,6 +78,17 @@ pub(crate) fn source_control_filter_empty_label(query: &str) -> String {
     }
 }
 
+pub(crate) fn source_control_git_error_label(error: &str) -> String {
+    let error = error.trim();
+    if error.is_empty() {
+        return "Git error".to_owned();
+    }
+    format!(
+        "Git error: {}",
+        source_control_ref_display_label_cow(error, "unknown error")
+    )
+}
+
 pub(crate) fn source_control_result_count_label(
     total_count: usize,
     result_count: usize,

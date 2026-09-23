@@ -40,7 +40,7 @@ pub(in crate::editor_vim_key_events) fn vim_visual_character_swap_key(
     key: Key,
     modifiers: Modifiers,
 ) -> bool {
-    key == Key::O && !modifiers.shift && !modifiers.command && !modifiers.alt && !modifiers.ctrl
+    key == Key::O && !modifiers.command && !modifiers.alt && !modifiers.ctrl
 }
 
 pub(in crate::editor_vim_key_events) fn vim_visual_character_case_conversion(

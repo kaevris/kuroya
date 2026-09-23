@@ -2,7 +2,9 @@ use crate::{
     KuroyaApp,
     devtools_async_tasks::plugin_command_task_detail,
     path_display::{display_error_label_cow, sanitized_display_label_cow},
-    plugin_command_runtime::{PluginCommandExecution, execute_plugin_command},
+    plugin_command_runtime::{
+        ActiveBufferSnapshot, PluginCommandExecution, PluginHostContext, execute_plugin_command,
+    },
     ui_events::UiEvent,
 };
 use kuroya_core::{
@@ -10,6 +12,7 @@ use kuroya_core::{
     PluginRuntimeRegistration, PluginRuntimeRegistry, TextBuffer,
 };
 use std::borrow::Cow;
+use std::path::PathBuf;
 
 const PLUGIN_COMMAND_STATUS_FRAGMENT_MAX_CHARS: usize = 96;
 #[cfg(test)]
@@ -259,20 +262,28 @@ impl KuroyaApp {
         let root = self.workspace.root.clone();
         let generation = self.workspace_event_generation;
         let tx = self.tx.clone();
+
+        let active_buffer = self
+            .active
+            .and_then(|id| self.buffer(id))
+            .and_then(ActiveBufferSnapshot::capture);
+        let host = PluginHostContext {
+            plugin_id: runtime.plugin_id.clone(),
+            workspace_root: root.clone(),
+            active_buffer_path: active_buffer.as_ref().map(|snapshot| snapshot.path.clone()),
+            active_buffer,
+            capabilities: runtime.capabilities.clone(),
+            events: tx.clone(),
+        };
         self.record_async_task_started("Plugin Command", plugin_command_task_detail(&command_id));
         self.runtime.spawn_blocking(move || {
-            let result =
-                execute_plugin_command(&runtime, &command_id).map_err(|error| error.to_string());
-            let _ = crate::ui_event_channel::send_critical_ui_event(
-                &tx,
-                UiEvent::PluginCommandFinished {
-                    root,
-                    generation,
-                    plugin_id,
-                    command_id,
-                    result,
-                },
-            );
+            let result = execute_plugin_command(&runtime, &command_id, &host)
+                .map_err(|error| error.to_string());
+            for event in
+                plugin_command_completion_events(root, generation, plugin_id, command_id, result)
+            {
+                let _ = crate::ui_event_channel::send_critical_ui_event(&tx, event);
+            }
         });
     }
 
@@ -285,6 +296,35 @@ impl KuroyaApp {
         self.status =
             plugin_command_finished_status(&self.plugin_commands, &plugin_id, &command_id, result);
     }
+}
+
+fn plugin_command_completion_events(
+    root: PathBuf,
+    generation: u64,
+    plugin_id: String,
+    command_id: String,
+    result: Result<PluginCommandExecution, String>,
+) -> Vec<UiEvent> {
+    let pending_buffer_text = result
+        .as_ref()
+        .ok()
+        .and_then(|execution| execution.pending_buffer_text.clone());
+    let mut events = Vec::with_capacity(2);
+    events.push(UiEvent::PluginCommandFinished {
+        root,
+        generation,
+        plugin_id: plugin_id.clone(),
+        command_id,
+        result,
+    });
+    if let Some((path, text)) = pending_buffer_text {
+        events.push(UiEvent::PluginBufferTextApply {
+            plugin_id,
+            path,
+            text,
+        });
+    }
+    events
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -451,13 +491,93 @@ mod tests {
         plugin_command_status_fragment_cow,
     };
     use crate::plugin_command_runtime::PluginCommandExecution;
+    use crate::ui_events::UiEvent;
     use kuroya_core::{
         PLUGIN_API_VERSION, PluginActivationState, PluginCapabilities, PluginCommandContribution,
         PluginCommandRegistry, PluginContributions, PluginDescriptor, PluginManifest,
         PluginRuntimeRegistry,
     };
     use std::borrow::Cow;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn plugin_command_completion_events_apply_staged_text_after_success() {
+        let events = super::plugin_command_completion_events(
+            PathBuf::from("workspace"),
+            3,
+            "example.plugin".to_owned(),
+            "example.run".to_owned(),
+            Ok(PluginCommandExecution {
+                exit_code: 0,
+                status: None,
+                used_default_export: false,
+                logs: Vec::new(),
+                pending_buffer_text: Some((
+                    PathBuf::from("workspace/notes.md"),
+                    "replacement".to_owned(),
+                )),
+            }),
+        );
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            UiEvent::PluginCommandFinished { plugin_id, command_id, result, .. }
+                if plugin_id == "example.plugin"
+                    && command_id == "example.run"
+                    && result.is_ok()
+        ));
+        assert!(matches!(
+            &events[1],
+            UiEvent::PluginBufferTextApply { path, text, .. }
+                if path.as_path() == Path::new("workspace/notes.md") && text == "replacement"
+        ));
+    }
+
+    #[test]
+    fn plugin_command_completion_events_apply_staged_text_after_failure() {
+        let events = super::plugin_command_completion_events(
+            PathBuf::from("workspace"),
+            3,
+            "example.plugin".to_owned(),
+            "example.run".to_owned(),
+            Ok(PluginCommandExecution {
+                exit_code: 1,
+                status: None,
+                used_default_export: false,
+                logs: Vec::new(),
+                pending_buffer_text: Some((PathBuf::from("notes.md"), "staged".to_owned())),
+            }),
+        );
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            UiEvent::PluginCommandFinished { result: Ok(execution), .. }
+                if execution.exit_code == 1
+        ));
+        assert!(matches!(
+            &events[1],
+            UiEvent::PluginBufferTextApply { text, .. } if text == "staged"
+        ));
+    }
+
+    #[test]
+    fn plugin_command_completion_events_without_staged_text_are_completion_only() {
+        let events = super::plugin_command_completion_events(
+            PathBuf::from("workspace"),
+            3,
+            "example.plugin".to_owned(),
+            "example.run".to_owned(),
+            Err("trapped".to_owned()),
+        );
+
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            UiEvent::PluginCommandFinished { result: Err(error), .. } if error == "trapped"
+        ));
+    }
 
     #[test]
     fn plugin_command_status_names_registered_command_without_executing() {
@@ -677,6 +797,8 @@ mod tests {
                     exit_code: 0,
                     status: Some("done".to_owned()),
                     used_default_export: false,
+                    logs: Vec::new(),
+                    pending_buffer_text: None,
                 }),
             ),
             "Plugin command Example: Say Hello completed: done"
@@ -690,6 +812,8 @@ mod tests {
                     exit_code: 5,
                     status: None,
                     used_default_export: false,
+                    logs: Vec::new(),
+                    pending_buffer_text: None,
                 }),
             ),
             "Plugin command Example: Say Hello failed with exit code 5"

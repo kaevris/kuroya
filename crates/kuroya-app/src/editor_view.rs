@@ -53,8 +53,8 @@ impl KuroyaApp {
                         |ui| {
                             ui.set_min_width(pane_width);
                             ui.set_max_width(pane_width);
-                            let active_id = pane.active.or(self.active);
-                            self.render_editor_pane(ui, pane.id, active_id);
+
+                            self.render_editor_pane(ui, pane.id, pane.active);
                         },
                     );
 

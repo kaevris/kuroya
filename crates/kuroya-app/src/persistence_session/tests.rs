@@ -1,12 +1,13 @@
 use super::{
-    PERSISTED_SESSION_MAX_BYTES_USIZE, load_latest_session_snapshot_after_quarantine,
-    normalize_persisted_session_paths_for_restore, session_bytes_for_write,
+    MAX_SESSION_SNAPSHOTS, PERSISTED_SESSION_MAX_BYTES_USIZE,
+    load_latest_session_snapshot_after_quarantine, normalize_persisted_session_paths_for_restore,
+    prune_session_snapshots, prune_session_snapshots_async, session_bytes_for_write,
     sort_session_snapshot_paths, unique_session_snapshot_path, write_session_snapshot,
 };
 use crate::{
     layout::{
-        DIAGNOSTICS_PANEL_MAX_WIDTH, EXPLORER_DEFAULT_WIDTH, PROJECT_SEARCH_MIN_WIDTH,
-        SOURCE_CONTROL_MIN_WIDTH, SYMBOLS_PANEL_DEFAULT_WIDTH, TERMINAL_DEFAULT_HEIGHT,
+        DIAGNOSTICS_PANEL_MAX_WIDTH, EXPLORER_DEFAULT_WIDTH, SOURCE_CONTROL_MIN_WIDTH,
+        SYMBOLS_PANEL_DEFAULT_WIDTH, TERMINAL_DEFAULT_HEIGHT,
     },
     persistence::{
         PaneBufferViewState, PersistedSession, PersistedTerminalSession, RecoveredBuffer,
@@ -17,12 +18,13 @@ use crate::{
         PERSISTED_SESSION_RECOVERY_TEXT_MAX_CHARS, PERSISTED_SESSION_TERMINAL_SCROLLBACK_MAX_CHARS,
         PERSISTED_SESSION_VOLATILE_TEXT_MAX_CHARS,
     },
+    persistence_storage::session_snapshots_dir,
 };
 use kuroya_core::BufferHistorySnapshot;
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 fn temp_workspace(name: &str) -> PathBuf {
@@ -260,7 +262,6 @@ fn session_bytes_for_write_clamps_restored_layout_scalars() {
     let session = PersistedSession {
         workspace_root: workspace,
         explorer_width: f32::NAN,
-        project_search_width: -100.0,
         symbols_panel_width: f32::INFINITY,
         diagnostics_panel_width: 9999.0,
         source_control_width: 0.0,
@@ -272,7 +273,6 @@ fn session_bytes_for_write_clamps_restored_layout_scalars() {
     let saved: PersistedSession = serde_json::from_slice(&bytes).unwrap();
 
     assert_eq!(saved.explorer_width, EXPLORER_DEFAULT_WIDTH);
-    assert_eq!(saved.project_search_width, PROJECT_SEARCH_MIN_WIDTH);
     assert_eq!(saved.symbols_panel_width, SYMBOLS_PANEL_DEFAULT_WIDTH);
     assert_eq!(saved.diagnostics_panel_width, DIAGNOSTICS_PANEL_MAX_WIDTH);
     assert_eq!(saved.source_control_width, SOURCE_CONTROL_MIN_WIDTH);
@@ -285,7 +285,6 @@ fn restore_normalization_clamps_restored_layout_scalars() {
     let mut session = PersistedSession {
         workspace_root: root.clone(),
         explorer_width: f32::NAN,
-        project_search_width: -100.0,
         symbols_panel_width: f32::INFINITY,
         diagnostics_panel_width: 9999.0,
         source_control_width: 0.0,
@@ -296,7 +295,6 @@ fn restore_normalization_clamps_restored_layout_scalars() {
     normalize_persisted_session_paths_for_restore(&root, &mut session);
 
     assert_eq!(session.explorer_width, EXPLORER_DEFAULT_WIDTH);
-    assert_eq!(session.project_search_width, PROJECT_SEARCH_MIN_WIDTH);
     assert_eq!(session.symbols_panel_width, SYMBOLS_PANEL_DEFAULT_WIDTH);
     assert_eq!(session.diagnostics_panel_width, DIAGNOSTICS_PANEL_MAX_WIDTH);
     assert_eq!(session.source_control_width, SOURCE_CONTROL_MIN_WIDTH);
@@ -692,6 +690,128 @@ fn restore_path_normalization_handles_current_dir_root() {
             None,
         ]
     );
+}
+
+#[test]
+fn session_snapshot_prune_keeps_newest_modified_not_newest_name() {
+    let workspace = temp_workspace("prune-mtime");
+    fs::create_dir_all(&workspace).unwrap();
+    let dir = session_snapshots_dir(&workspace);
+    fs::create_dir_all(&dir).unwrap();
+    write_snapshot_with_modified(
+        &dir,
+        "session.1.0.0.json",
+        snapshot_modified_time_for_index(0),
+    );
+    for index in 2..=10_u64 {
+        write_snapshot_with_modified(
+            &dir,
+            &format!("session.{index}.0.0.json"),
+            snapshot_modified_time_for_index(index - 1),
+        );
+    }
+
+    prune_session_snapshots(&dir).unwrap();
+
+    assert!(dir.join("session.1.0.0.json").exists());
+    assert!(dir.join("session.8.0.0.json").exists());
+    assert!(!dir.join("session.9.0.0.json").exists());
+    assert!(!dir.join("session.10.0.0.json").exists());
+    assert_eq!(count_snapshot_files(&dir), MAX_SESSION_SNAPSHOTS);
+
+    fs::remove_dir_all(workspace).unwrap();
+}
+
+#[tokio::test]
+async fn session_snapshot_prune_async_keeps_newest_modified_not_newest_name() {
+    let workspace = temp_workspace("prune-mtime-async");
+    fs::create_dir_all(&workspace).unwrap();
+    let dir = session_snapshots_dir(&workspace);
+    fs::create_dir_all(&dir).unwrap();
+    write_snapshot_with_modified(
+        &dir,
+        "session.1.0.0.json",
+        snapshot_modified_time_for_index(0),
+    );
+    for index in 2..=10_u64 {
+        write_snapshot_with_modified(
+            &dir,
+            &format!("session.{index}.0.0.json"),
+            snapshot_modified_time_for_index(index - 1),
+        );
+    }
+
+    prune_session_snapshots_async(&dir).await.unwrap();
+
+    assert!(dir.join("session.1.0.0.json").exists());
+    assert!(!dir.join("session.9.0.0.json").exists());
+    assert!(!dir.join("session.10.0.0.json").exists());
+    assert_eq!(count_snapshot_files(&dir), MAX_SESSION_SNAPSHOTS);
+
+    fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn session_bytes_for_write_evicts_largest_recovery_entry_first() {
+    let workspace = temp_workspace("write-evict-largest-recovery");
+    let huge_bytes = PERSISTED_SESSION_MAX_BYTES_USIZE + 4096;
+    let session = PersistedSession {
+        workspace_root: workspace.clone(),
+        recovery: vec![
+            RecoveredBuffer {
+                path: Some(workspace.join("src/small.rs")),
+                display_name: "small.rs".to_owned(),
+                text: "user text".to_owned(),
+            },
+            RecoveredBuffer {
+                path: Some(workspace.join("src/huge.rs")),
+                display_name: "huge.rs".to_owned(),
+                text: "r".repeat(huge_bytes),
+            },
+        ],
+        recovery_view_states: vec![recovery_view_state(0, 3), recovery_view_state(1, 7)],
+        ..Default::default()
+    };
+
+    let bytes = session_bytes_for_write(&session).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    let recovery = value["recovery"].as_array().unwrap();
+    assert_eq!(recovery.len(), 1);
+    assert_eq!(recovery[0]["display_name"].as_str(), Some("small.rs"));
+    assert_eq!(recovery[0]["text"].as_str(), Some("user text"));
+    let view_states = value["recovery_view_states"].as_array().unwrap();
+    assert_eq!(view_states.len(), 1);
+    assert_eq!(view_states[0]["cursor_line"].as_u64(), Some(3));
+    let skipped = value["recovery_skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0]["display_name"].as_str(), Some("huge.rs"));
+    assert_eq!(skipped[0]["bytes"].as_u64(), Some(huge_bytes as u64));
+}
+
+fn write_snapshot_with_modified(dir: &Path, file_name: &str, modified: SystemTime) {
+    let path = dir.join(file_name);
+    fs::write(&path, "stale snapshot json").unwrap();
+    let file = fs::File::options().write(true).open(&path).unwrap();
+    file.set_modified(modified).unwrap();
+}
+
+fn snapshot_modified_time_for_index(seconds_before_base: u64) -> SystemTime {
+    let base = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    base - Duration::from_secs(seconds_before_base)
+}
+
+fn count_snapshot_files(dir: &Path) -> usize {
+    fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("session.") && name.ends_with(".json"))
+        })
+        .count()
 }
 
 fn recovery_view_state(recovery_index: usize, cursor_line: usize) -> RecoveredBufferViewState {

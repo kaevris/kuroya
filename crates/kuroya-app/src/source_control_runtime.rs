@@ -528,8 +528,8 @@ impl KuroyaApp {
             Some(&paths),
             Some(GitChangeStage::Unstaged),
         );
-        self.spawn_git_scan();
         self.status = git_stage_success_status(&paths);
+        self.spawn_git_scoped_refresh(paths);
     }
 
     pub(crate) fn apply_git_stage_failed(
@@ -555,8 +555,8 @@ impl KuroyaApp {
             Some(&paths),
             Some(GitChangeStage::Staged),
         );
-        self.spawn_git_scan();
         self.status = git_unstage_success_status(&paths);
+        self.spawn_git_scoped_refresh(paths);
     }
 
     pub(crate) fn apply_git_unstage_failed(
@@ -580,8 +580,8 @@ impl KuroyaApp {
 
         self.close_source_control_diff_buffers_for_operation(Some(&paths), None);
         self.spawn_index();
-        self.spawn_git_scan();
         self.status = git_discard_success_status(&paths);
+        self.spawn_git_scoped_refresh(paths);
     }
 
     pub(crate) fn apply_git_discard_failed(

@@ -120,7 +120,7 @@ pub(super) fn app_for_test(root: PathBuf) -> KuroyaApp {
 }
 
 pub(super) fn drain_until_lsp_workspace_event(app: &mut KuroyaApp) {
-    for _ in 0..50 {
+    for _ in 0..500 {
         if app.handle_events() > 0 {
             return;
         }

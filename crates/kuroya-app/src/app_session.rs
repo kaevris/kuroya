@@ -32,11 +32,19 @@ use crate::{
     workspace_trust::{trusted_workspace_paths_match, workspace_path_stays_within_root_lexically},
 };
 use std::{
-    collections::HashSet,
+    collections::{HashSet, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     path::{Component, Path, PathBuf},
 };
 
 const MAX_SESSION_EXPLORER_EXPANDED_PATHS: usize = 512;
+const SESSION_STRUCTURE_FINGERPRINT_SALT: u64 = 0x6b_75_72_6f_79_61_00_04;
+
+fn hash_session_structure_field<T: Hash>(hasher: &mut DefaultHasher, name: &str, value: T) {
+    SESSION_STRUCTURE_FINGERPRINT_SALT.hash(hasher);
+    name.hash(hasher);
+    value.hash(hasher);
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct SessionSaveSnapshot {
@@ -248,6 +256,288 @@ impl KuroyaApp {
         }
     }
 
+    pub(crate) fn session_structure_fingerprint(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        hash_session_structure_field(&mut hasher, "workspace_root", &self.workspace.root);
+        hash_session_structure_field(&mut hasher, "buffer_count", self.buffers.len());
+        for buffer in &self.buffers {
+            hash_session_structure_field(&mut hasher, "buffer_id", buffer.id());
+            hash_session_structure_field(&mut hasher, "buffer_version", buffer.version());
+            hash_session_structure_field(&mut hasher, "buffer_dirty", buffer.is_dirty());
+            hash_session_structure_field(&mut hasher, "buffer_path", buffer.path());
+        }
+        hash_session_structure_field(&mut hasher, "active_buffer", self.active);
+        hash_session_structure_field(&mut hasher, "pane_count", self.panes.len());
+        for pane in &self.panes {
+            hash_session_structure_field(&mut hasher, "pane_id", pane.id);
+            hash_session_structure_field(&mut hasher, "pane_active_buffer", pane.active);
+            hash_session_structure_field(&mut hasher, "pane_weight", pane.weight.to_bits());
+        }
+        hash_session_structure_field(&mut hasher, "active_pane", self.active_pane);
+        hash_session_structure_field(&mut hasher, "explorer_width", self.explorer_width.to_bits());
+        hash_session_structure_field(
+            &mut hasher,
+            "explorer_expanded_count",
+            self.explorer_expanded.len(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "explorer_revealed_path",
+            &self.explorer_revealed_path,
+        );
+        hash_session_structure_field(&mut hasher, "project_search_open", self.project_search);
+        hash_session_structure_field(
+            &mut hasher,
+            "project_search_query",
+            &self.project_search_query,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "project_search_case_sensitive",
+            self.project_search_case_sensitive,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "project_search_whole_word",
+            self.project_search_whole_word,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "project_search_regex",
+            self.project_search_regex,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "project_search_include",
+            &self.project_search_include,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "project_search_exclude",
+            &self.project_search_exclude,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "project_search_recent_count",
+            self.project_search_recent.len(),
+        );
+        hash_session_structure_field(&mut hasher, "buffer_find_open", self.buffer_find_open);
+        hash_session_structure_field(&mut hasher, "buffer_find_query", &self.buffer_find_query);
+        hash_session_structure_field(
+            &mut hasher,
+            "buffer_find_replacement",
+            &self.buffer_find_replacement,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "buffer_find_case_sensitive",
+            self.buffer_find_case_sensitive,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "buffer_find_whole_word",
+            self.buffer_find_whole_word,
+        );
+        hash_session_structure_field(&mut hasher, "buffer_find_regex", self.buffer_find_regex);
+        hash_session_structure_field(
+            &mut hasher,
+            "buffer_find_preserve_case",
+            self.buffer_find_preserve_case,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "buffer_find_query_history_count",
+            self.buffer_find_query_history.len(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "buffer_find_replacement_history_count",
+            self.buffer_find_replacement_history.len(),
+        );
+        hash_session_structure_field(&mut hasher, "settings_panel_open", self.settings_panel_open);
+        hash_session_structure_field(&mut hasher, "theme_picker_open", self.theme_picker_open);
+        hash_session_structure_field(&mut hasher, "keybindings_open", self.keybindings_open);
+        hash_session_structure_field(&mut hasher, "symbols_panel_open", self.symbols_panel);
+        hash_session_structure_field(
+            &mut hasher,
+            "symbols_panel_placement",
+            std::mem::discriminant(&self.symbols_panel_placement),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "symbols_panel_width",
+            self.symbols_panel_width.to_bits(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "diagnostics_panel_open",
+            self.diagnostics_panel,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "diagnostics_panel_placement",
+            std::mem::discriminant(&self.diagnostics_panel_placement),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "diagnostics_panel_width",
+            self.diagnostics_panel_width.to_bits(),
+        );
+        hash_session_structure_field(&mut hasher, "source_control_open", self.source_control);
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_placement",
+            std::mem::discriminant(&self.source_control_placement),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_width",
+            self.source_control_width.to_bits(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_query",
+            &self.source_control_query,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_view",
+            std::mem::discriminant(&self.source_control_view),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_sort",
+            std::mem::discriminant(&self.source_control_sort),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_commit_message",
+            &self.source_control_commit_message,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_commit_history_count",
+            self.source_control_commit_history.len(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_stash_message",
+            &self.source_control_stash_message,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_stash_query",
+            &self.source_control_stash_query,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_stashes_open",
+            self.source_control_stashes_open,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_history_open",
+            self.source_control_history_open,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_history_query",
+            &self.source_control_history_query,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_unstaged_collapsed",
+            self.source_control_unstaged_collapsed,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_untracked_collapsed",
+            self.source_control_untracked_collapsed,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "source_control_staged_collapsed",
+            self.source_control_staged_collapsed,
+        );
+        hash_session_structure_field(&mut hasher, "terminal_visible", self.terminal.visible);
+        hash_session_structure_field(
+            &mut hasher,
+            "terminal_height",
+            self.terminal_height.to_bits(),
+        );
+        let terminal_stats = self.terminal.diagnostics_stats();
+        hash_session_structure_field(
+            &mut hasher,
+            "terminal_session_count",
+            terminal_stats.sessions,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "terminal_running_sessions",
+            terminal_stats.active_sessions,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "terminal_scrollback_bytes",
+            terminal_stats.search_buffer_bytes,
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "terminal_active_session",
+            self.terminal.terminal_active_session_for_restore(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "terminal_split_view",
+            self.terminal.terminal_split_view_for_restore(),
+        );
+        for weight in self.terminal.terminal_split_weights_for_restore() {
+            hash_session_structure_field(&mut hasher, "terminal_split_weight", weight.to_bits());
+        }
+        hash_session_structure_field(
+            &mut hasher,
+            "recent_projects_count",
+            self.recent_projects.len(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "quick_open_recent_files_count",
+            self.quick_open_recent_files.len(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "quick_open_query_memory_count",
+            self.quick_open_query_memory.len(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "workspace_symbol_query_memory_count",
+            self.workspace_symbol_query_memory.len(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "command_recent_count",
+            self.command_recent.len(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "command_query_memory_count",
+            self.command_query_memory.len(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "navigation_back_count",
+            self.navigation_back.len(),
+        );
+        hash_session_structure_field(
+            &mut hasher,
+            "navigation_forward_count",
+            self.navigation_forward.len(),
+        );
+        hash_session_structure_field(&mut hasher, "closed_files_count", self.closed_files.len());
+        hasher.finish()
+    }
+
     fn populate_recovery_session_state(&self, session: &mut PersistedSession) {
         let row_height = editor_row_height(self.settings.font_size, self.settings.line_height);
         session.recovery_view_states = session_recovery_view_states(
@@ -336,11 +626,10 @@ impl KuroyaApp {
                 .as_ref()
                 .and_then(|path| workspace_descendant_path_for_session(&self.workspace.root, path)),
             project_search_open: self.project_search,
-            project_search_placement: self.project_search_placement,
-            project_search_width: self.project_search_width,
             project_search_query: self.project_search_query.clone(),
             project_search_case_sensitive: self.project_search_case_sensitive,
             project_search_whole_word: self.project_search_whole_word,
+            project_search_regex: self.project_search_regex,
             project_search_include: self.project_search_include.clone(),
             project_search_exclude: self.project_search_exclude.clone(),
             project_search_recent: collect_capped_session_vec(
@@ -396,6 +685,7 @@ impl KuroyaApp {
                 SOURCE_CONTROL_COMMIT_HISTORY_LIMIT,
             ),
             source_control_stash_message: self.source_control_stash_message.clone(),
+            source_control_stash_query: self.source_control_stash_query.clone(),
             source_control_stashes_open: self.source_control_stashes_open,
             source_control_history_open: self.source_control_history_open,
             source_control_history_query: self.source_control_history_query.clone(),
@@ -458,5 +748,141 @@ impl KuroyaApp {
             recovery: Vec::new(),
             recovery_skipped: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KuroyaApp;
+    use crate::{
+        app_startup_context::AppStartupContext, history::NavigationLocation, terminal::TerminalPane,
+    };
+    use kuroya_core::{EditorSettings, TextBuffer, Workspace};
+    use std::{path::PathBuf, time::Instant};
+    use tokio::runtime::Runtime;
+
+    fn app_for_test(root: PathBuf) -> KuroyaApp {
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let settings = EditorSettings::default();
+        KuroyaApp::from_startup_context(AppStartupContext {
+            runtime: Runtime::new().expect("test runtime"),
+            tx,
+            rx,
+            workspace: Workspace::new(root.clone()),
+            settings: settings.clone(),
+            settings_panel_draft: settings,
+            settings_editor_font_path: String::new(),
+            settings_ui_font_path: String::new(),
+            theme_picker_selected: 0,
+            saved_session: None,
+            terminal: TerminalPane::new(root.clone(), 100, 12.0, 1.2),
+            watcher: None,
+            recent_projects: Vec::new(),
+            trusted_workspaces: vec![root],
+            now: Instant::now(),
+            startup_timings: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn session_structure_fingerprint_is_stable_for_unchanged_state() {
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root.clone());
+        let path = root.join("src/main.rs");
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(path),
+            "fn main() {}".to_owned(),
+        ));
+        app.active = Some(7);
+
+        assert_eq!(
+            app.session_structure_fingerprint(),
+            app.session_structure_fingerprint()
+        );
+    }
+
+    #[test]
+    fn session_structure_fingerprint_changes_when_buffer_dirty_flag_flips() {
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root.clone());
+        let path = root.join("src/main.rs");
+        app.buffers
+            .push(TextBuffer::from_text(7, Some(path), "text".to_owned()));
+        let unchanged = app.session_structure_fingerprint();
+
+        app.buffer_mut(7).expect("buffer").mark_dirty();
+
+        assert_ne!(unchanged, app.session_structure_fingerprint());
+    }
+
+    #[test]
+    fn session_structure_fingerprint_changes_when_panel_visibility_flips() {
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root);
+        let unchanged = app.session_structure_fingerprint();
+
+        app.diagnostics_panel = true;
+
+        assert_ne!(unchanged, app.session_structure_fingerprint());
+    }
+
+    #[test]
+    fn session_structure_fingerprint_changes_when_navigation_history_grows() {
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root.clone());
+        let path = root.join("src/main.rs");
+        let unchanged = app.session_structure_fingerprint();
+
+        app.navigation_back
+            .push_back(NavigationLocation::new(path, 1, 1));
+
+        assert_ne!(unchanged, app.session_structure_fingerprint());
+    }
+
+    #[test]
+    fn session_structure_fingerprint_changes_when_active_buffer_changes() {
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root.clone());
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(root.join("src/main.rs")),
+            "one".to_owned(),
+        ));
+        app.buffers.push(TextBuffer::from_text(
+            8,
+            Some(root.join("src/other.rs")),
+            "two".to_owned(),
+        ));
+        app.active = Some(7);
+        let unchanged = app.session_structure_fingerprint();
+
+        app.active = Some(8);
+
+        assert_ne!(unchanged, app.session_structure_fingerprint());
+    }
+
+    #[test]
+    fn session_structure_fingerprint_ignores_scroll_offsets() {
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root.clone());
+        let path = root.join("src/main.rs");
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(path),
+            "fn main() {}".to_owned(),
+        ));
+        app.panes.push(crate::session_state::EditorPane {
+            id: 1,
+            active: Some(7),
+            weight: 1.0,
+        });
+        app.active_pane = 1;
+        let unchanged = app.session_structure_fingerprint();
+
+        app.editor_scroll_offsets.insert((1, 7), 12.5);
+        app.editor_horizontal_scroll_offsets.insert((1, 7), 3.0);
+
+        assert_eq!(unchanged, app.session_structure_fingerprint());
     }
 }

@@ -1,6 +1,7 @@
 use crate::{
     KuroyaApp,
     devtools_repaint_diagnostics::RepaintFrameActivity,
+    devtools_trace_id::next_devtools_trace_id,
     lsp_diagnostics_batch::LSP_DIAGNOSTIC_BATCH_DELAY,
     lsp_lifecycle::LANGUAGE_SYNC_DEBOUNCE,
     lsp_runtime::LSP_SYMBOL_REFRESH_DEBOUNCE,
@@ -19,11 +20,16 @@ pub(crate) const DEVTOOLS_REPAINT_INTERVAL: Duration = Duration::from_millis(80)
 pub(crate) const PENDING_FORMAT_SAVE_REPAINT_INTERVAL: Duration = Duration::from_millis(80);
 pub(crate) const SESSION_SAVE_INTERVAL: Duration = Duration::from_secs(2);
 pub(crate) const STARTUP_REPAINT_WARMUP_FRAMES: u64 = 12;
-const MAX_REPAINT_AFTER: Duration = SESSION_SAVE_INTERVAL;
+
+const MAX_REPAINT_AFTER: Duration = Duration::from_secs(30);
 
 impl KuroyaApp {
     pub(crate) fn startup_repaint_warmup_active(&self) -> bool {
         startup_repaint_warmup_active_for_frame(self.next_repaint_diagnostic_id)
+    }
+
+    pub(crate) fn advance_startup_warmup_frame_counter(&mut self) {
+        next_devtools_trace_id(&mut self.next_repaint_diagnostic_id);
     }
 
     pub(crate) fn next_frame_repaint_after(
@@ -37,17 +43,20 @@ impl KuroyaApp {
             return Duration::ZERO;
         }
 
-        let runtime_delay = self.next_runtime_wakeup_after(now);
+        let runtime_delay = self.next_runtime_wakeup_after(
+            now,
+            session_save_wake_due(activity, self.session_save_persisted_changes),
+        );
         non_immediate_frame_repaint_after(activity, self.devtools_open || profiling, runtime_delay)
     }
 
-    fn next_runtime_wakeup_after(&self, now: Instant) -> Duration {
-        let session_save_delay =
-            session_save_wakeup_after(self.workspace_placeholder, self.last_session_save, now);
-        if session_save_delay.is_zero() {
+    fn next_runtime_wakeup_after(&self, now: Instant, session_save_wake_due: bool) -> Duration {
+        let mut next = session_save_wake_due.then(|| {
+            session_save_wakeup_after(self.workspace_placeholder, self.last_session_save, now)
+        });
+        if next.is_some_and(|delay| delay.is_zero()) {
             return Duration::ZERO;
         }
-        let mut next = Some(session_save_delay);
 
         if record_earliest(
             &mut next,
@@ -161,8 +170,22 @@ impl KuroyaApp {
         ) {
             return Duration::ZERO;
         }
+        if record_earliest(
+            &mut next,
+            self.workspace_refresh_wakeup()
+                .map(|due| delay_until(now, due)),
+        ) {
+            return Duration::ZERO;
+        }
+        if record_earliest(
+            &mut next,
+            self.workspace_plugin_reload_wakeup()
+                .map(|due| delay_until(now, due)),
+        ) {
+            return Duration::ZERO;
+        }
 
-        next.unwrap_or(SESSION_SAVE_INTERVAL)
+        next.unwrap_or(MAX_REPAINT_AFTER)
     }
 
     fn autosave_wakeup_after(&self, now: Instant) -> Option<Duration> {
@@ -250,6 +273,13 @@ fn session_save_wakeup_after(
     delayed_wakeup_after(last_session_save, now, SESSION_SAVE_INTERVAL)
 }
 
+fn session_save_wake_due(
+    activity: RepaintFrameActivity,
+    session_save_persisted_changes: bool,
+) -> bool {
+    session_save_persisted_changes || activity.keeps_frame_active()
+}
+
 fn pending_format_save_wakeup_after(has_pending_format_save: bool) -> Option<Duration> {
     pending_save_wakeup_after(has_pending_format_save)
 }
@@ -294,14 +324,110 @@ fn startup_repaint_warmup_active_for_frame(next_repaint_diagnostic_id: u64) -> b
 mod tests {
     use super::{
         ACTIVE_REPAINT_INTERVAL, DEVTOOLS_REPAINT_INTERVAL, MAX_REPAINT_AFTER,
-        PENDING_FORMAT_SAVE_REPAINT_INTERVAL, STARTUP_REPAINT_WARMUP_FRAMES, absolute_wakeup_after,
-        debounced_wakeup_after, delayed_wakeup_after, frame_repaint_after,
+        PENDING_FORMAT_SAVE_REPAINT_INTERVAL, SESSION_SAVE_INTERVAL, STARTUP_REPAINT_WARMUP_FRAMES,
+        absolute_wakeup_after, debounced_wakeup_after, delayed_wakeup_after, frame_repaint_after,
         immediate_frame_repaint_needed, pending_format_save_wakeup_after,
         pending_guard_save_wakeup_after, pending_source_control_save_wakeup_after,
-        session_save_wakeup_after,
+        session_save_wake_due, session_save_wakeup_after,
     };
-    use crate::devtools_repaint_diagnostics::RepaintFrameActivity;
-    use std::time::{Duration, Instant};
+    use crate::{
+        KuroyaApp, app_startup_context::AppStartupContext,
+        devtools_repaint_diagnostics::RepaintFrameActivity,
+        startup_tasks::WORKSPACE_PLUGIN_RELOAD_DEBOUNCE, terminal::TerminalPane,
+    };
+    use kuroya_core::{EditorSettings, Workspace};
+    use std::{
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
+    use tokio::runtime::Runtime;
+
+    #[test]
+    fn runtime_wakeup_wakes_for_pending_workspace_refresh() {
+        let mut app = app_for_test(PathBuf::from("workspace"));
+        app.schedule_workspace_refresh();
+
+        assert_eq!(
+            app.next_runtime_wakeup_after(Instant::now(), false),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn runtime_wakeup_bounds_pending_plugin_reload_rescheduling() {
+        let mut app = app_for_test(PathBuf::from("workspace"));
+        let now = Instant::now();
+        app.schedule_workspace_plugin_reload();
+        for _ in 0..8 {
+            app.schedule_workspace_plugin_reload();
+            let delay = app.next_runtime_wakeup_after(now, false);
+            assert!(delay <= WORKSPACE_PLUGIN_RELOAD_DEBOUNCE, "{delay:?}");
+        }
+    }
+
+    #[test]
+    fn clean_idle_session_does_not_contribute_session_save_wakeup() {
+        let mut app = app_for_test(PathBuf::from("workspace"));
+        app.settings.autosave = false;
+        app.next_automatic_update_check_at = Instant::now() + Duration::from_secs(3_600);
+        app.session_save_persisted_changes = false;
+        app.last_session_save = Instant::now() - Duration::from_secs(30);
+
+        assert!(
+            app.next_runtime_wakeup_after(Instant::now(), false) > SESSION_SAVE_INTERVAL,
+            "a session whose last save persisted nothing must not arm the heartbeat"
+        );
+    }
+
+    #[test]
+    fn dirty_session_still_contributes_session_save_wakeup() {
+        let mut app = app_for_test(PathBuf::from("workspace"));
+        app.settings.autosave = false;
+        app.next_automatic_update_check_at = Instant::now() + Duration::from_secs(3_600);
+        app.session_save_persisted_changes = true;
+        app.last_session_save = Instant::now() - Duration::from_secs(30);
+
+        assert_eq!(
+            app.next_runtime_wakeup_after(Instant::now(), true),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn idle_clean_session_sleeps_past_the_session_save_interval() {
+        let mut app = app_for_test(PathBuf::from("workspace"));
+        app.settings.autosave = false;
+        app.next_automatic_update_check_at = Instant::now() + Duration::from_secs(3_600);
+        app.session_save_persisted_changes = false;
+        app.last_session_save = Instant::now() - Duration::from_secs(30);
+
+        let repaint_after = app.next_frame_repaint_after(
+            Instant::now(),
+            RepaintFrameActivity::default(),
+            false,
+            false,
+        );
+
+        assert!(
+            repaint_after > SESSION_SAVE_INTERVAL,
+            "expected the idle window to sleep past the heartbeat, got {repaint_after:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_activity_keeps_session_save_wakeup_armed() {
+        let active = RepaintFrameActivity {
+            commands: 1,
+            ..RepaintFrameActivity::default()
+        };
+
+        assert!(session_save_wake_due(active, false));
+        assert!(session_save_wake_due(RepaintFrameActivity::default(), true));
+        assert!(!session_save_wake_due(
+            RepaintFrameActivity::default(),
+            false
+        ));
+    }
 
     #[test]
     fn frame_repaint_is_immediate_while_terminal_output_is_pending() {
@@ -547,5 +673,28 @@ mod tests {
             Some(PENDING_FORMAT_SAVE_REPAINT_INTERVAL)
         );
         assert_eq!(pending_guard_save_wakeup_after(false), None);
+    }
+
+    fn app_for_test(root: PathBuf) -> KuroyaApp {
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let settings = EditorSettings::default();
+        KuroyaApp::from_startup_context(AppStartupContext {
+            runtime: Runtime::new().expect("test runtime"),
+            tx,
+            rx,
+            workspace: Workspace::new(root.clone()),
+            settings: settings.clone(),
+            settings_panel_draft: settings,
+            settings_editor_font_path: String::new(),
+            settings_ui_font_path: String::new(),
+            theme_picker_selected: 0,
+            saved_session: None,
+            terminal: TerminalPane::new(root.clone(), 100, 12.0, 1.2),
+            watcher: None,
+            recent_projects: Vec::new(),
+            trusted_workspaces: vec![root],
+            now: Instant::now(),
+            startup_timings: Vec::new(),
+        })
     }
 }

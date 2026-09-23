@@ -3,7 +3,7 @@ use crate::{
     path_display::{sanitized_display_label_cow, sanitized_owned_display_label},
     source_control_git_panel_ui::{
         SOURCE_CONTROL_GIT_ROW_HEIGHT, SOURCE_CONTROL_GIT_STASH_PANEL_DEFAULT_SIZE,
-        apply_git_panel_spacing, render_git_panel_row,
+        apply_git_panel_spacing, git_panel_list_max_height, render_git_panel_row,
     },
     ui_state::{
         clamp_selection, handle_list_navigation_keys, selected_row_scroll_offset,
@@ -11,7 +11,7 @@ use crate::{
     },
 };
 use eframe::egui::{self, Context, InputState, Key, RichText, ScrollArea, TextEdit};
-use kuroya_core::{Command, GitStashEntry};
+use kuroya_core::{Command, GitStashEntry, text_match::ascii_case_insensitive_contains};
 use std::{borrow::Cow, ops::Range};
 
 const SOURCE_CONTROL_STASH_PANEL_FRAGMENT_MAX_CHARS: usize = 160;
@@ -27,6 +27,13 @@ impl KuroyaApp {
         let mut pending_selected_stash_action: Option<SourceControlStashFooterActionKind> = None;
 
         egui::Window::new("Git Stashes")
+            .id(egui::Id::new((
+                "git_stashes_panel",
+                self.git_panel_open_generation,
+            )))
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 120.0,
+            ))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 96.0])
@@ -37,7 +44,7 @@ impl KuroyaApp {
                     ui.add(
                         TextEdit::singleline(&mut self.source_control_stash_message)
                             .hint_text("Stash message")
-                            .desired_width(f32::INFINITY),
+                            .desired_width(420.0),
                     );
                     if ui.button("Save").clicked() {
                         self.command_bus.push(Command::SaveGitStash);
@@ -50,22 +57,36 @@ impl KuroyaApp {
                     }
                 });
 
+                let filter_response = ui.add(
+                    TextEdit::singleline(&mut self.source_control_stash_query)
+                        .hint_text("Filter stashes")
+                        .desired_width(f32::INFINITY),
+                );
+                let stash_query_changed = filter_response.changed();
+                self.source_control_stash_selected =
+                    source_control_stash_selected_after_query_change(
+                        stash_query_changed,
+                        self.source_control_stash_selected,
+                    );
+                let filtered_stash_rows = source_control_filtered_stash_rows(
+                    &self.source_control_stashes,
+                    &self.source_control_stash_query,
+                );
+                let stash_row_count = filtered_stash_rows.len();
+
                 if ui.input(|input| input.key_pressed(Key::Escape)) {
                     close = true;
                 }
-                clamp_selection(
-                    &mut self.source_control_stash_selected,
-                    self.source_control_stashes.len(),
-                );
+                clamp_selection(&mut self.source_control_stash_selected, stash_row_count);
                 let viewport_height = ui.available_height();
                 let selection_changed = ui.input(|input| {
                     handle_list_navigation_keys(
                         input,
                         &mut self.source_control_stash_selected,
-                        self.source_control_stashes.len(),
+                        stash_row_count,
                         selection_page_step(SOURCE_CONTROL_GIT_ROW_HEIGHT, viewport_height),
                     )
-                });
+                }) || stash_query_changed;
                 if ui.input(|input| input.key_pressed(Key::Enter)) {
                     pending_selected_stash_action =
                         Some(SourceControlStashFooterActionKind::OpenChanges);
@@ -79,13 +100,17 @@ impl KuroyaApp {
                 let mut visible_selected_row: Option<usize> = None;
                 if self.source_control_stashes.is_empty() {
                     ui.label(RichText::new("No git stashes").small());
+                } else if filtered_stash_rows.is_empty() {
+                    ui.label(RichText::new("No matching stashes").small());
                 } else {
-                    let mut scroll_area = ScrollArea::vertical().auto_shrink([false, false]);
+                    let mut scroll_area = ScrollArea::vertical()
+                        .auto_shrink([false, true])
+                        .max_height(git_panel_list_max_height(ctx, 96.0));
                     if selection_changed {
                         scroll_area =
                             scroll_area.vertical_scroll_offset(selected_row_scroll_offset(
                                 self.source_control_stash_selected,
-                                self.source_control_stashes.len(),
+                                stash_row_count,
                                 SOURCE_CONTROL_GIT_ROW_HEIGHT,
                                 viewport_height,
                             ));
@@ -93,12 +118,10 @@ impl KuroyaApp {
                     scroll_area.show_rows(
                         ui,
                         SOURCE_CONTROL_GIT_ROW_HEIGHT,
-                        self.source_control_stashes.len(),
+                        stash_row_count,
                         |ui, rows| {
-                            let visible_rows = source_control_stash_visible_rows(
-                                &self.source_control_stashes,
-                                rows,
-                            );
+                            let visible_rows =
+                                source_control_stash_visible_rows(&filtered_stash_rows, rows);
                             visible_selected_row =
                                 visible_rows.selected_row(self.source_control_stash_selected);
                             for row_display in visible_rows.row_displays() {
@@ -140,8 +163,8 @@ impl KuroyaApp {
                     && pending_stash_action.is_none()
                 {
                     if let Some(target) = visible_selected_row.and_then(|row| {
-                        source_control_stash_action_target_for_row(
-                            &self.source_control_stashes,
+                        source_control_stash_action_target_for_visible_row(
+                            &filtered_stash_rows,
                             row,
                         )
                     }) {
@@ -160,17 +183,21 @@ impl KuroyaApp {
                             .on_hover_text(action.tooltip)
                             .clicked()
                             && let Some(row) = selected_row
-                            && let Some(target) = source_control_stash_action_target_for_row(
-                                &self.source_control_stashes,
-                                row,
-                            )
+                            && let Some(target) =
+                                source_control_stash_action_target_for_visible_row(
+                                    &filtered_stash_rows,
+                                    row,
+                                )
                         {
                             pending_stash_action = Some((target, action.kind));
                         }
                     }
                     ui.label(
-                        RichText::new(format!("{} stashes", self.source_control_stashes.len()))
-                            .small(),
+                        RichText::new(source_control_stash_count_label(
+                            stash_row_count,
+                            self.source_control_stashes.len(),
+                        ))
+                        .small(),
                     );
                 });
             });
@@ -214,6 +241,7 @@ pub(crate) fn source_control_stash_label(stash: &GitStashEntry) -> String {
 #[derive(Debug)]
 struct SourceControlStashRowDisplay<'a> {
     row: usize,
+    stash_row: usize,
     stash: &'a GitStashEntry,
     stash_ref: String,
     short_oid: Cow<'a, str>,
@@ -222,7 +250,7 @@ struct SourceControlStashRowDisplay<'a> {
 }
 
 impl<'a> SourceControlStashRowDisplay<'a> {
-    fn new(row: usize, stash: &'a GitStashEntry) -> Self {
+    fn new(row: usize, stash_row: usize, stash: &'a GitStashEntry) -> Self {
         let stash_ref = source_control_stash_ref(stash);
         let short_oid = source_control_stash_panel_display_label(&stash.short_oid, "unknown");
         let message = source_control_stash_panel_display_label(&stash.message, "No message");
@@ -233,6 +261,7 @@ impl<'a> SourceControlStashRowDisplay<'a> {
         );
         Self {
             row,
+            stash_row,
             stash,
             stash_ref,
             short_oid,
@@ -246,7 +275,7 @@ impl<'a> SourceControlStashRowDisplay<'a> {
     }
 
     fn target(&self) -> SourceControlStashActionTarget {
-        SourceControlStashActionTarget::new(self.row, self.stash)
+        SourceControlStashActionTarget::new(self.stash_row, self.stash)
     }
 
     fn label(&self) -> &str {
@@ -269,19 +298,22 @@ impl<'a> SourceControlStashRowDisplay<'a> {
 #[derive(Debug, Clone, Copy)]
 struct SourceControlStashVisibleRows<'a> {
     first_row: usize,
-    stashes: &'a [GitStashEntry],
+    rows: &'a [(usize, &'a GitStashEntry)],
 }
 
 impl<'a> SourceControlStashVisibleRows<'a> {
     fn selected_row(&self, selected: usize) -> Option<usize> {
-        let visible_end = self.first_row.saturating_add(self.stashes.len());
+        let visible_end = self.first_row.saturating_add(self.rows.len());
         (selected >= self.first_row && selected < visible_end).then_some(selected)
     }
 
     fn row_displays(self) -> impl Iterator<Item = SourceControlStashRowDisplay<'a>> + 'a {
-        self.stashes.iter().enumerate().map(move |(offset, stash)| {
-            SourceControlStashRowDisplay::new(self.first_row + offset, stash)
-        })
+        self.rows
+            .iter()
+            .enumerate()
+            .map(move |(offset, (stash_row, stash))| {
+                SourceControlStashRowDisplay::new(self.first_row + offset, *stash_row, stash)
+            })
     }
 }
 
@@ -304,13 +336,13 @@ impl SourceControlStashActionTarget {
     }
 }
 
-fn source_control_stash_action_target_for_row(
-    stashes: &[GitStashEntry],
+fn source_control_stash_action_target_for_visible_row(
+    filtered_rows: &[(usize, &GitStashEntry)],
     row: usize,
 ) -> Option<SourceControlStashActionTarget> {
-    stashes
+    filtered_rows
         .get(row)
-        .map(|stash| SourceControlStashActionTarget::new(row, stash))
+        .map(|(stash_row, stash)| SourceControlStashActionTarget::new(*stash_row, stash))
 }
 
 #[cfg(test)]
@@ -583,43 +615,90 @@ fn source_control_stash_sample_tail_start(value: &str, chars: usize) -> usize {
         .map_or(0, |(index, _)| index)
 }
 
-fn source_control_stash_visible_rows(
-    stashes: &[GitStashEntry],
+fn source_control_stash_visible_rows<'a>(
+    filtered_rows: &'a [(usize, &'a GitStashEntry)],
     rows: Range<usize>,
-) -> SourceControlStashVisibleRows<'_> {
-    let start = rows.start.min(stashes.len());
-    let end = rows.end.min(stashes.len()).max(start);
+) -> SourceControlStashVisibleRows<'a> {
+    let start = rows.start.min(filtered_rows.len());
+    let end = rows.end.min(filtered_rows.len()).max(start);
     SourceControlStashVisibleRows {
         first_row: start,
-        stashes: &stashes[start..end],
+        rows: &filtered_rows[start..end],
+    }
+}
+
+fn source_control_filtered_stash_rows<'a>(
+    stashes: &'a [GitStashEntry],
+    query: &str,
+) -> Vec<(usize, &'a GitStashEntry)> {
+    let terms = source_control_stash_filter_terms(query);
+    stashes
+        .iter()
+        .enumerate()
+        .filter(|(_, stash)| source_control_stash_matches_filter_terms(stash, &terms))
+        .collect()
+}
+
+fn source_control_stash_filter_terms(query: &str) -> Vec<&str> {
+    query.split_whitespace().collect()
+}
+
+fn source_control_stash_matches_filter_terms(stash: &GitStashEntry, terms: &[&str]) -> bool {
+    terms.iter().all(|term| {
+        ascii_case_insensitive_contains(&stash.short_oid, term)
+            || ascii_case_insensitive_contains(&stash.message, term)
+    })
+}
+
+fn source_control_stash_selected_after_query_change(
+    query_changed: bool,
+    previous_selected: usize,
+) -> usize {
+    if query_changed { 0 } else { previous_selected }
+}
+
+fn source_control_stash_count_label(filtered_count: usize, total_count: usize) -> String {
+    if filtered_count == total_count {
+        format!("{total_count} stashes")
+    } else {
+        format!("{filtered_count} of {total_count} stashes")
     }
 }
 
 #[cfg(test)]
+fn source_control_stash_unfiltered_rows(stashes: &[GitStashEntry]) -> Vec<(usize, &GitStashEntry)> {
+    source_control_filtered_stash_rows(stashes, "")
+}
+
+#[cfg(test)]
 fn source_control_stash_visible_row_displays<'a>(
-    stashes: &'a [GitStashEntry],
+    filtered_rows: &'a [(usize, &'a GitStashEntry)],
     rows: Range<usize>,
 ) -> impl Iterator<Item = SourceControlStashRowDisplay<'a>> + 'a {
-    source_control_stash_visible_rows(stashes, rows).row_displays()
+    source_control_stash_visible_rows(filtered_rows, rows).row_displays()
 }
 
 #[cfg(test)]
 fn source_control_visible_selected_stash_row(
-    stashes: &[GitStashEntry],
+    filtered_rows: &[(usize, &GitStashEntry)],
     selected: usize,
     rows: Range<usize>,
 ) -> Option<usize> {
-    source_control_stash_visible_rows(stashes, rows).selected_row(selected)
+    source_control_stash_visible_rows(filtered_rows, rows).selected_row(selected)
 }
 
 #[cfg(test)]
-fn source_control_visible_selected_stash_action_target_at(
-    stashes: &[GitStashEntry],
+fn source_control_visible_selected_stash_action_target_at<'a>(
+    filtered_rows: &'a [(usize, &'a GitStashEntry)],
     selected: usize,
     rows: Range<usize>,
-) -> Option<(SourceControlStashActionTarget, &GitStashEntry)> {
-    let selected = source_control_visible_selected_stash_row(stashes, selected, rows)?;
-    source_control_stash_action_target_at(stashes, selected)
+) -> Option<(SourceControlStashActionTarget, &'a GitStashEntry)> {
+    let selected = source_control_visible_selected_stash_row(filtered_rows, selected, rows)?;
+    let (stash_row, stash) = filtered_rows.get(selected)?;
+    Some((
+        SourceControlStashActionTarget::new(*stash_row, stash),
+        stash,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -907,14 +986,17 @@ mod tests {
         SourceControlStashActionTarget, SourceControlStashCopyKind,
         SourceControlStashFooterActionKind, SourceControlStashKeyboardActionKind,
         source_control_ambiguous_stash_action_status,
-        source_control_ambiguous_stash_identity_action_status, source_control_resolve_stash_action,
-        source_control_stale_stash_action_status, source_control_stash_action_target_at,
-        source_control_stash_copy_status, source_control_stash_copy_text,
+        source_control_ambiguous_stash_identity_action_status, source_control_filtered_stash_rows,
+        source_control_resolve_stash_action, source_control_stale_stash_action_status,
+        source_control_stash_action_target_at, source_control_stash_copy_status,
+        source_control_stash_copy_text, source_control_stash_count_label,
         source_control_stash_display_input, source_control_stash_for_action_target,
         source_control_stash_keyboard_action, source_control_stash_label,
         source_control_stash_menu_actions, source_control_stash_ref, source_control_stash_ref_len,
+        source_control_stash_selected_after_query_change, source_control_stash_unfiltered_rows,
         source_control_stash_visible_row_displays, source_control_stash_visible_rows,
         source_control_visible_selected_stash_action_target_at,
+        source_control_visible_selected_stash_row,
     };
     use eframe::egui::{Context, Event, Key, Modifiers, RawInput};
     use kuroya_core::GitStashEntry;
@@ -925,6 +1007,13 @@ mod tests {
             short_oid: short_oid.to_owned(),
             message: message.to_owned(),
         }
+    }
+
+    fn stash_filter_rows(stashes: &[GitStashEntry], query: &str) -> Vec<usize> {
+        source_control_filtered_stash_rows(stashes, query)
+            .into_iter()
+            .map(|(stash_row, _)| stash_row)
+            .collect()
     }
 
     fn stash_keyboard_action_for_keys(
@@ -1036,9 +1125,10 @@ mod tests {
             stash(0, "aaaa0000", "first"),
             stash(1, &raw_oid, &raw_message),
         ];
+        let filtered_rows = source_control_stash_unfiltered_rows(&stashes);
 
         let row_displays =
-            source_control_stash_visible_row_displays(&stashes, 1..2).collect::<Vec<_>>();
+            source_control_stash_visible_row_displays(&filtered_rows, 1..2).collect::<Vec<_>>();
 
         assert_eq!(row_displays.len(), 1);
         assert_eq!(row_displays[0].row(), 1);
@@ -1067,32 +1157,33 @@ mod tests {
             stash(1, "bbbb1111", "second"),
             stash(2, "cccc2222", "third"),
         ];
+        let filtered_rows = source_control_stash_unfiltered_rows(&stashes);
 
-        let visible_rows = source_control_stash_visible_rows(&stashes, 1..10);
+        let visible_rows = source_control_stash_visible_rows(&filtered_rows, 1..10);
         assert_eq!(visible_rows.first_row, 1);
         assert_eq!(
             visible_rows
-                .stashes
-                .iter()
-                .map(|stash| stash.index)
+                .row_displays()
+                .map(|row_display| row_display.target().stash_index)
                 .collect::<Vec<_>>(),
             vec![1, 2]
         );
 
-        let visible_rows = source_control_stash_visible_rows(&stashes, 10..12);
+        let visible_rows = source_control_stash_visible_rows(&filtered_rows, 10..12);
         assert_eq!(visible_rows.first_row, 3);
-        assert!(visible_rows.stashes.is_empty());
+        assert!(visible_rows.row_displays().next().is_none());
 
-        let visible_rows = source_control_stash_visible_rows(&stashes, usize::MAX - 1..usize::MAX);
+        let visible_rows =
+            source_control_stash_visible_rows(&filtered_rows, usize::MAX - 1..usize::MAX);
         assert_eq!(visible_rows.first_row, 3);
-        assert!(visible_rows.stashes.is_empty());
+        assert!(visible_rows.row_displays().next().is_none());
 
-        let reversed_start = stashes.len() - 1;
+        let reversed_start = filtered_rows.len() - 1;
         let reversed_end = reversed_start.saturating_sub(1);
         let visible_rows =
-            source_control_stash_visible_rows(&stashes, reversed_start..reversed_end);
+            source_control_stash_visible_rows(&filtered_rows, reversed_start..reversed_end);
         assert_eq!(visible_rows.first_row, 2);
-        assert!(visible_rows.stashes.is_empty());
+        assert!(visible_rows.row_displays().next().is_none());
     }
 
     #[test]
@@ -1165,25 +1256,29 @@ mod tests {
             stash(1, "bbbb1111", "second"),
             stash(2, "cccc2222", "third"),
         ];
+        let filtered_rows = source_control_stash_unfiltered_rows(&stashes);
 
         assert_eq!(
-            source_control_visible_selected_stash_action_target_at(&stashes, 1, 1..2)
+            source_control_visible_selected_stash_action_target_at(&filtered_rows, 1, 1..2)
                 .map(|(target, _)| target),
             Some(SourceControlStashActionTarget::new(1, &stashes[1]))
         );
         assert!(
-            source_control_visible_selected_stash_action_target_at(&stashes, 1, 0..1).is_none()
+            source_control_visible_selected_stash_action_target_at(&filtered_rows, 1, 0..1)
+                .is_none()
         );
         assert!(
-            source_control_visible_selected_stash_action_target_at(&stashes, 1, 2..3).is_none()
+            source_control_visible_selected_stash_action_target_at(&filtered_rows, 1, 2..3)
+                .is_none()
         );
         assert!(
-            source_control_visible_selected_stash_action_target_at(&stashes, 1, 10..12).is_none()
+            source_control_visible_selected_stash_action_target_at(&filtered_rows, 1, 10..12)
+                .is_none()
         );
         let start = 2;
         let end = 1;
         assert!(
-            source_control_visible_selected_stash_action_target_at(&stashes, 1, start..end)
+            source_control_visible_selected_stash_action_target_at(&filtered_rows, 1, start..end)
                 .is_none()
         );
     }
@@ -1345,5 +1440,106 @@ mod tests {
             source_control_stash_copy_status(&stash, SourceControlStashCopyKind::Message),
             "Copied stash message for stash@{42}"
         );
+    }
+
+    #[test]
+    fn stash_filter_requires_all_terms_and_folds_ascii_case() {
+        let stashes = vec![
+            stash(0, "aaaa0000", "On main: work in progress"),
+            stash(1, "bbbb1111", "On feature: WIP router"),
+            stash(2, "cccc2222", "On dev: experiment"),
+        ];
+
+        assert_eq!(stash_filter_rows(&stashes, ""), vec![0, 1, 2]);
+        assert_eq!(stash_filter_rows(&stashes, "   "), vec![0, 1, 2]);
+
+        assert_eq!(stash_filter_rows(&stashes, "bbbb ROUTER"), vec![1]);
+        assert_eq!(stash_filter_rows(&stashes, "MAIN progress"), vec![0]);
+        assert_eq!(stash_filter_rows(&stashes, "aaaa main"), vec![0]);
+        assert!(stash_filter_rows(&stashes, "missing").is_empty());
+        assert!(stash_filter_rows(&stashes, "aaaa missing").is_empty());
+    }
+
+    #[test]
+    fn stash_filter_keeps_original_stash_rows_and_action_targets() {
+        let stashes = vec![
+            stash(0, "aaaa0000", "latest work"),
+            stash(4, "bbbb1111", "middle experiment"),
+            stash(9, "cccc2222", "oldest work"),
+        ];
+
+        let filtered = source_control_filtered_stash_rows(&stashes, "work");
+
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|(stash_row, _)| *stash_row)
+                .collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        assert_eq!(
+            filtered
+                .iter()
+                .map(|(_, filtered_stash)| filtered_stash.index)
+                .collect::<Vec<_>>(),
+            vec![0, 9]
+        );
+
+        let displays = source_control_stash_visible_rows(&filtered, 0..10)
+            .row_displays()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            displays.iter().map(|row| row.row()).collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            displays[0].target(),
+            SourceControlStashActionTarget::new(0, &stashes[0])
+        );
+        assert_eq!(
+            displays[1].target(),
+            SourceControlStashActionTarget::new(2, &stashes[2])
+        );
+        assert_eq!(displays[1].stash_ref(), "stash@{9}");
+    }
+
+    #[test]
+    fn stash_visible_selected_row_tracks_filtered_positions() {
+        let stashes = vec![
+            stash(0, "aaaa0000", "latest work"),
+            stash(4, "bbbb1111", "middle experiment"),
+            stash(9, "cccc2222", "oldest work"),
+        ];
+        let filtered = source_control_filtered_stash_rows(&stashes, "experiment");
+
+        assert_eq!(
+            source_control_visible_selected_stash_row(&filtered, 0, 0..1),
+            Some(0)
+        );
+        assert_eq!(
+            source_control_visible_selected_stash_action_target_at(&filtered, 0, 0..1)
+                .map(|(target, _)| target),
+            Some(SourceControlStashActionTarget::new(1, &stashes[1]))
+        );
+
+        assert!(
+            source_control_visible_selected_stash_action_target_at(&filtered, 1, 0..1).is_none()
+        );
+    }
+
+    #[test]
+    fn stash_selection_resets_to_first_row_when_query_changes() {
+        assert_eq!(source_control_stash_selected_after_query_change(true, 7), 0);
+        assert_eq!(
+            source_control_stash_selected_after_query_change(false, 7),
+            7
+        );
+    }
+
+    #[test]
+    fn stash_count_label_shows_n_of_m_only_while_filtering() {
+        assert_eq!(source_control_stash_count_label(3, 3), "3 stashes");
+        assert_eq!(source_control_stash_count_label(1, 3), "1 of 3 stashes");
+        assert_eq!(source_control_stash_count_label(0, 3), "0 of 3 stashes");
     }
 }

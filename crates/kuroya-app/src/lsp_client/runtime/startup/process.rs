@@ -1,14 +1,18 @@
 mod stdio;
 
 use super::StartedLspClient;
+use crate::lsp_client::stderr_log::LspStderrLog;
 use crate::lsp_runtime::{lsp_language_display_label, lsp_status_display_message};
 use crate::path_display::sanitized_display_label_cow;
 use crate::ui_event_channel::Sender;
 use crate::{lsp_ui_events::LspUiEvent, ui_events::UiEvent};
-use kuroya_core::LspServerConfig;
+use kuroya_core::{LspServerConfig, TextDocumentSyncKindSetting};
 use std::path::Path;
 use stdio::take_lsp_stdio;
-use tokio::{io::BufReader, process::Command};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    process::{ChildStderr, Command},
+};
 
 const LSP_COMMAND_STATUS_MAX_CHARS: usize = 24;
 const LSP_UNAVAILABLE_DETAIL_MAX_CHARS: usize = 32;
@@ -18,6 +22,7 @@ pub(super) fn prepare_lsp_process_io(
     root: &Path,
     generation: u64,
     ui_tx: &Sender<UiEvent>,
+    stderr_log: &LspStderrLog,
 ) -> Option<StartedLspClient> {
     let mut command = lsp_process_command(config, root);
     let mut child = match command.spawn() {
@@ -36,17 +41,34 @@ pub(super) fn prepare_lsp_process_io(
                     ),
                 }),
             );
+            send_lsp_server_unavailable(config, root, generation, ui_tx);
             return None;
         }
     };
 
-    let (writer, stdout) = take_lsp_stdio(&mut child, config, root, generation, ui_tx)?;
+    let (writer, stdout, stderr) = take_lsp_stdio(&mut child, config, root, generation, ui_tx)?;
+    if let Some(stderr) = stderr {
+        spawn_lsp_stderr_reader(stderr, stderr_log.clone());
+    }
 
     Some(StartedLspClient {
         child,
         writer,
         reader: BufReader::new(stdout),
+
+        sync_kind: TextDocumentSyncKindSetting::default(),
     })
+}
+
+pub(super) fn spawn_lsp_stderr_reader(stderr: ChildStderr, stderr_log: LspStderrLog) {
+    tokio::spawn(copy_lsp_stderr_into_log(stderr, stderr_log));
+}
+
+async fn copy_lsp_stderr_into_log(stderr: ChildStderr, stderr_log: LspStderrLog) {
+    let mut lines = BufReader::new(stderr).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        stderr_log.push_line(&line);
+    }
 }
 
 fn lsp_process_command(config: &LspServerConfig, root: &Path) -> Command {
@@ -56,9 +78,25 @@ fn lsp_process_command(config: &LspServerConfig, root: &Path) -> Command {
         .current_dir(root)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     command
+}
+
+pub(super) fn send_lsp_server_unavailable(
+    config: &LspServerConfig,
+    root: &Path,
+    generation: u64,
+    ui_tx: &Sender<UiEvent>,
+) {
+    let _ = crate::ui_event_channel::send_critical_ui_event(
+        ui_tx,
+        UiEvent::Lsp(LspUiEvent::ServerUnavailable {
+            language: config.language.clone(),
+            root: root.to_path_buf(),
+            generation,
+        }),
+    );
 }
 
 fn lsp_unavailable_status_message(language: &str, command: &str, detail: &str) -> String {
@@ -84,15 +122,20 @@ fn lsp_unavailable_detail_label(detail: &str) -> std::borrow::Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{lsp_process_command, lsp_unavailable_status_message, prepare_lsp_process_io};
+    use super::{
+        copy_lsp_stderr_into_log, lsp_process_command, lsp_unavailable_status_message,
+        prepare_lsp_process_io,
+    };
     use crate::{
+        lsp_client::stderr_log::LspStderrLog,
         lsp_runtime::LSP_STATUS_MESSAGE_MAX_CHARS,
         lsp_ui_events::LspUiEvent,
         ui_event_channel::{UI_EVENT_CHANNEL_BOUND, ui_event_channel},
         ui_events::UiEvent,
     };
     use kuroya_core::LspServerConfig;
-    use std::{path::PathBuf, thread, time::Duration};
+    use std::{path::PathBuf, process::Stdio, thread, time::Duration};
+    use tokio::process::Command;
 
     #[test]
     fn lsp_process_is_killed_when_runtime_task_drops_child() {
@@ -102,6 +145,7 @@ mod tests {
             args: vec!["--stdio".to_owned()],
             extensions: Vec::new(),
             root_markers: vec![],
+            enabled: true,
         };
 
         let command = lsp_process_command(&config, &PathBuf::from("workspace"));
@@ -136,9 +180,16 @@ mod tests {
             args: Vec::new(),
             extensions: Vec::new(),
             root_markers: Vec::new(),
+            enabled: true,
         };
 
-        let started = prepare_lsp_process_io(&config, &PathBuf::from("."), 7, &tx);
+        let started = prepare_lsp_process_io(
+            &config,
+            &PathBuf::from("."),
+            7,
+            &tx,
+            &LspStderrLog::default(),
+        );
 
         assert!(started.is_none());
         let event = rx
@@ -175,11 +226,19 @@ mod tests {
             args: Vec::new(),
             extensions: Vec::new(),
             root_markers: Vec::new(),
+            enabled: true,
         };
         let status_tx = tx.clone();
 
         let sender = thread::spawn(move || {
-            prepare_lsp_process_io(&config, &PathBuf::from("workspace"), 7, &status_tx).is_none()
+            prepare_lsp_process_io(
+                &config,
+                &PathBuf::from("workspace"),
+                7,
+                &status_tx,
+                &LspStderrLog::default(),
+            )
+            .is_none()
         });
 
         let _ = rx
@@ -205,6 +264,46 @@ mod tests {
             }
         }
         assert!(delivered);
+    }
+
+    #[tokio::test]
+    async fn stderr_capture_retains_last_output_of_real_child_process() {
+        let log = LspStderrLog::default();
+
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "echo boom-from-stderr 1>&2"]);
+            command
+        };
+
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "echo boom-from-stderr 1>&2"]);
+            command
+        };
+
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn stderr-writing child");
+        let stderr = child
+            .stderr
+            .take()
+            .expect("stderr should be piped for capture");
+
+        copy_lsp_stderr_into_log(stderr, log.clone()).await;
+        let _ = child.wait().await;
+
+        let tail = log.tail_chars(LSP_STATUS_MESSAGE_MAX_CHARS);
+        assert!(
+            tail.contains("boom-from-stderr"),
+            "stderr ring should retain child output, got {tail:?}"
+        );
     }
 
     fn assert_display_safe(value: &str) {

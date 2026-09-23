@@ -39,7 +39,7 @@ fn render_capture_or_search(
             });
             ui.label(
                 egui::RichText::new(
-                    "Press a shortcut. Esc sets Escape; Esc twice cancels. Text keys require Ctrl, Alt, or Cmd.",
+                    "Press a shortcut. Press Esc twice to bind Escape. Text keys require Ctrl, Alt, or Cmd.",
                 )
                 .small()
                 .color(ui.visuals().weak_text_color()),

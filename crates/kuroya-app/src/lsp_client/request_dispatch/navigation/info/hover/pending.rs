@@ -1,8 +1,9 @@
 use super::super::super::super::reserve_request_id;
+use crate::lsp_client::pending::PendingLspRequests;
 use crate::lsp_client::pending::{PendingLspRequest, register_pending_request};
 use kuroya_core::{BufferId, LspWireMessage};
 use serde_json::Value;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 pub(super) fn register_hover_request(
     id: BufferId,
@@ -11,7 +12,7 @@ pub(super) fn register_hover_request(
     line: usize,
     character: usize,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> (u64, Value) {
     let request_id = reserve_request_id(next_request_id, pending_requests);
     let message = LspWireMessage::hover(request_id, &path, line, character).to_json();

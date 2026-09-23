@@ -2,7 +2,7 @@ use crate::persistence_storage::{
     atomic_write, legacy_project_index_cache_path, project_index_cache_path,
     read_file_bytes_with_limit, state_dir,
 };
-use kuroya_core::{ProjectIndex, ProjectIndexSignature};
+use kuroya_core::{ProjectIndex, ProjectIndexOptions, ProjectIndexSignature};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const PROJECT_INDEX_CACHE_SCHEMA: u32 = 3;
+const PROJECT_INDEX_CACHE_SCHEMA: u32 = 4;
 const PROJECT_INDEX_CACHE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const PROJECT_INDEX_CACHE_MAX_BYTES_USIZE: usize = PROJECT_INDEX_CACHE_MAX_BYTES as usize;
 const PROJECT_INDEX_CACHE_MAX_SYMBOLS: usize = 20_000;
@@ -47,35 +47,43 @@ pub(crate) fn load_project_index_cache(
     workspace_root: &Path,
     max_files: usize,
 ) -> Option<ProjectIndex> {
-    let fresh_signature = ProjectIndex::scan_signature(workspace_root, max_files);
-    load_project_index_cache_with_fresh_signature(workspace_root, max_files, Some(fresh_signature))
+    load_project_index_cache_validated(workspace_root, &ProjectIndexOptions::new(max_files))
         .map(|cache| cache.index)
 }
 
+#[cfg(test)]
 pub(crate) fn load_project_index_cache_unverified(
     workspace_root: &Path,
     max_files: usize,
 ) -> Option<LoadedProjectIndexCache> {
-    load_project_index_cache_with_fresh_signature(workspace_root, max_files, None)
+    load_project_index_cache_unverified_with_options(
+        workspace_root,
+        &ProjectIndexOptions::new(max_files),
+    )
 }
 
-fn load_project_index_cache_with_fresh_signature(
+pub(crate) fn load_project_index_cache_unverified_with_options(
     workspace_root: &Path,
-    max_files: usize,
-    fresh_signature: Option<ProjectIndexSignature>,
+    options: &ProjectIndexOptions,
+) -> Option<LoadedProjectIndexCache> {
+    load_project_index_cache_validated(workspace_root, options)
+}
+
+fn load_project_index_cache_validated(
+    workspace_root: &Path,
+    options: &ProjectIndexOptions,
 ) -> Option<LoadedProjectIndexCache> {
     let path = project_index_cache_path(workspace_root);
-    load_project_index_cache_file(&path, workspace_root, max_files, fresh_signature).or_else(|| {
+    load_project_index_cache_file(&path, workspace_root, options).or_else(|| {
         let legacy_path = legacy_project_index_cache_path(workspace_root);
-        load_project_index_cache_file(&legacy_path, workspace_root, max_files, fresh_signature)
+        load_project_index_cache_file(&legacy_path, workspace_root, options)
     })
 }
 
 fn load_project_index_cache_file(
     path: &Path,
     workspace_root: &Path,
-    max_files: usize,
-    fresh_signature: Option<ProjectIndexSignature>,
+    options: &ProjectIndexOptions,
 ) -> Option<LoadedProjectIndexCache> {
     let bytes = match read_file_bytes_with_limit(path, PROJECT_INDEX_CACHE_MAX_BYTES) {
         Ok(bytes) => bytes,
@@ -104,7 +112,7 @@ fn load_project_index_cache_file(
         }
         return quarantine_invalid_project_index_cache(path);
     }
-    if cache.signature.max_files != max_files {
+    if !cache.signature.matches_options(options) {
         return None;
     }
     if !project_index_cache_index_matches_signature(&cache.index, cache.signature) {
@@ -112,9 +120,6 @@ fn load_project_index_cache_file(
     }
     if !project_index_cache_paths_are_inside_root(&cache.index, workspace_root) {
         return quarantine_invalid_project_index_cache(path);
-    }
-    if fresh_signature.is_some_and(|fresh_signature| cache.signature != fresh_signature) {
-        return None;
     }
     let payload_hash = match project_index_cache_payload_hash(&cache.index) {
         Ok(payload_hash) => payload_hash,
@@ -271,6 +276,7 @@ fn project_index_cache_index_matches_signature(
     signature.file_count == index.files().len()
         && signature.entry_count == index.all_entries().len()
         && signature.truncated == index.truncated()
+        && signature.max_files == index.max_files()
         && index.files().len() <= signature.max_files
         && project_index_cache_index_is_bounded(index)
 }
@@ -477,12 +483,13 @@ mod tests {
     use super::{
         PROJECT_INDEX_CACHE_MAX_BYTES, PROJECT_INDEX_CACHE_SCHEMA, ProjectIndexCacheRef,
         load_project_index_cache, load_project_index_cache_unverified,
-        project_index_cache_bytes_for_write, project_index_cache_hash_bytes,
-        project_index_cache_path_is_inside_root, project_index_cache_payload_hash,
-        quarantine_project_index_cache_to, save_project_index_cache,
+        load_project_index_cache_unverified_with_options, project_index_cache_bytes_for_write,
+        project_index_cache_hash_bytes, project_index_cache_path_is_inside_root,
+        project_index_cache_payload_hash, quarantine_project_index_cache_to,
+        save_project_index_cache,
     };
     use crate::persistence_storage::{project_index_cache_path, state_dir};
-    use kuroya_core::{ProjectIndex, ProjectIndexSignature};
+    use kuroya_core::{ProjectIndex, ProjectIndexOptions, ProjectIndexSignature};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -519,7 +526,27 @@ mod tests {
 
         let loaded = load_project_index_cache_unverified(&root, 40_000).unwrap();
         assert_eq!(loaded.index.files().len(), 1);
-        assert!(load_project_index_cache(&root, 40_000).is_none());
+
+        assert!(load_project_index_cache(&root, 40_000).is_some());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_cache_unverified_load_rejects_different_index_options() {
+        let root = temp_workspace("kuroya-project-index-cache-options");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("target")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn indexed() {}\n").unwrap();
+        fs::write(root.join("target/generated.rs"), "fn generated() {}\n").unwrap();
+        let saved_options = ProjectIndexOptions::new(40_000);
+        let load_options = ProjectIndexOptions::with_exclude_globs(40_000, Vec::new());
+        let (index, signature) =
+            ProjectIndex::rebuild_with_signature_options(&root, &saved_options);
+
+        save_project_index_cache(&root, &index, signature).unwrap();
+
+        assert!(load_project_index_cache_unverified_with_options(&root, &load_options).is_none());
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -584,13 +611,16 @@ mod tests {
             ],
             "symbols": [],
             "truncated": false,
+            "max_files": 40_000,
         }))
         .unwrap();
         let signature = ProjectIndexSignature {
             max_files: 40_000,
+            options_fingerprint: ProjectIndexOptions::new(40_000).options_fingerprint(),
             file_count: 1,
             entry_count: 2,
             truncated: false,
+            symbol_policy_version: kuroya_core::PROJECT_INDEX_SYMBOL_POLICY_VERSION,
             fingerprint: 0,
         };
 
@@ -732,7 +762,7 @@ mod tests {
             "truncated": false,
         }))
         .unwrap();
-        let signature = ProjectIndex::scan_signature(&root, 40_000);
+        let signature = mismatched_shape_signature();
 
         let error = save_project_index_cache(&root, &index, signature).unwrap_err();
 
@@ -755,7 +785,7 @@ mod tests {
             "truncated": false,
         }))
         .unwrap();
-        let signature = ProjectIndex::scan_signature(&root, 40_000);
+        let signature = mismatched_shape_signature();
 
         let error = save_project_index_cache(&root, &index, signature).unwrap_err();
 
@@ -875,13 +905,16 @@ mod tests {
             ],
             "symbols": [],
             "truncated": false,
+            "max_files": 40_000,
         }))
         .unwrap();
         let signature = ProjectIndexSignature {
             max_files: 40_000,
+            options_fingerprint: ProjectIndexOptions::new(40_000).options_fingerprint(),
             file_count: 1,
             entry_count: 2,
             truncated: false,
+            symbol_policy_version: kuroya_core::PROJECT_INDEX_SYMBOL_POLICY_VERSION,
             fingerprint: 0,
         };
 
@@ -905,7 +938,7 @@ mod tests {
             "truncated": false,
         }))
         .unwrap();
-        let signature = ProjectIndex::scan_signature(&root, 40_000);
+        let signature = mismatched_shape_signature();
 
         let error = save_project_index_cache(&root, &index, signature).unwrap_err();
 
@@ -990,7 +1023,7 @@ mod tests {
     }
 
     #[test]
-    fn project_index_cache_rejects_stale_workspace_signature() {
+    fn project_index_cache_load_accepts_stale_signature_for_startup_reconciliation() {
         let root = temp_workspace("kuroya-project-index-cache-stale");
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/main.rs"), "fn indexed() {}\n").unwrap();
@@ -1000,7 +1033,8 @@ mod tests {
         fs::write(root.join("src/main.rs"), "fn indexed() {}\nfn newer() {}\n").unwrap();
         let path = project_index_cache_path(&root);
 
-        assert!(load_project_index_cache(&root, 40_000).is_none());
+        let loaded = load_project_index_cache(&root, 40_000).unwrap();
+        assert_eq!(loaded.files().len(), 1);
         assert!(path.exists());
         assert!(quarantined_project_index_cache_files(&root).is_empty());
 
@@ -1008,8 +1042,8 @@ mod tests {
     }
 
     #[test]
-    fn project_index_cache_skips_payload_validation_for_stale_workspace_signature() {
-        let root = temp_workspace("kuroya-project-index-cache-stale-payload");
+    fn project_index_cache_validates_payload_hash_on_every_load() {
+        let root = temp_workspace("kuroya-project-index-cache-tampered-payload");
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/main.rs"), "fn indexed() {}\n").unwrap();
         let (index, signature) = ProjectIndex::rebuild_with_signature(&root, 40_000);
@@ -1022,12 +1056,63 @@ mod tests {
             .as_u64()
             .expect("project index cache payload hash");
         value["payload_hash"] = serde_json::Value::from(payload_hash ^ 1);
-        fs::write(root.join("src/main.rs"), "fn indexed() {}\nfn newer() {}\n").unwrap();
         fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
 
         assert!(load_project_index_cache(&root, 40_000).is_none());
-        assert!(path.exists());
-        assert!(quarantined_project_index_cache_files(&root).is_empty());
+        assert!(!path.exists());
+        assert_eq!(quarantined_project_index_cache_files(&root).len(), 1);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_cache_rejects_max_files_mismatch_between_index_and_signature() {
+        let root = temp_workspace("kuroya-project-index-cache-max-files-shape");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn indexed() {}\n").unwrap();
+        let (index, mut signature) = ProjectIndex::rebuild_with_signature(&root, 40_000);
+        signature.max_files += 1;
+
+        let error = save_project_index_cache(&root, &index, signature).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("signature does not match index shape")
+        );
+        assert!(!project_index_cache_path(&root).exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_cache_round_trips_entry_metadata_and_incremental_updates() {
+        let root = temp_workspace("kuroya-project-index-cache-incremental");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.rs"), "fn a() {}\n").unwrap();
+        let options = ProjectIndexOptions::new(40_000);
+        let index = ProjectIndex::rebuild_with_options(&root, &options);
+        let (_, signature) = ProjectIndex::rebuild_with_signature(&root, 40_000);
+        save_project_index_cache(&root, &index, signature).unwrap();
+
+        fs::write(root.join("src/b.rs"), "pub struct Added {}\n").unwrap();
+        let mut updated = load_project_index_cache_unverified_with_options(&root, &options)
+            .unwrap()
+            .index
+            .clone_for_update();
+        assert!(updated.apply_path_changes(&root, &[root.join("src/b.rs")]));
+        let updated_signature = updated.signature_from_entries(&options);
+        let (fresh, fresh_signature) =
+            ProjectIndex::rebuild_with_signature_options(&root, &options);
+        assert_eq!(updated_signature, fresh_signature);
+        assert_eq!(updated.files(), fresh.files());
+        save_project_index_cache(&root, &updated, updated_signature).unwrap();
+        let reloaded = load_project_index_cache(&root, 40_000).unwrap();
+        assert_eq!(reloaded.files().len(), 2);
+
+        let names: Vec<&str> = reloaded.symbols().iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"a"), "symbols: {names:?}");
+        assert!(names.contains(&"Added"), "symbols: {names:?}");
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -1253,6 +1338,18 @@ mod tests {
         assert_eq!(quarantined_project_index_cache_files(&root).len(), 1);
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    fn mismatched_shape_signature() -> ProjectIndexSignature {
+        ProjectIndexSignature {
+            max_files: 40_000,
+            options_fingerprint: ProjectIndexOptions::new(40_000).options_fingerprint(),
+            file_count: 1,
+            entry_count: 1,
+            truncated: false,
+            symbol_policy_version: kuroya_core::PROJECT_INDEX_SYMBOL_POLICY_VERSION,
+            fingerprint: 0,
+        }
     }
 
     fn quarantined_project_index_cache_files(root: &Path) -> Vec<PathBuf> {

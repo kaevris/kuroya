@@ -34,6 +34,7 @@ pub enum Command {
     SaveAll,
     ReloadActiveFromDisk,
     OpenActiveFileLatestLocalHistory,
+    OpenLocalHistoryBrowser,
     SaveWorkspaceSnapshot,
     RestoreLatestWorkspaceSnapshot,
     ToggleReadOnly,

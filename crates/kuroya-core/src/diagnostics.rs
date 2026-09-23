@@ -2,7 +2,7 @@ use crate::workspace_paths::lexical_normalize_cow;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ops::Range,
     path::{Path, PathBuf},
 };
@@ -34,6 +34,13 @@ pub enum DiagnosticSeverity {
     Hint,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspDiagnosticUnits {
+    Chars,
+
+    Utf16,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DiagnosticSeverityCounts {
     pub errors: usize,
@@ -62,11 +69,21 @@ pub struct DiagnosticSet {
     by_path: HashMap<PathBuf, Vec<Diagnostic>>,
     ordered_paths: Vec<PathBuf>,
     counts_by_severity: [usize; 4],
+
+    lsp_buckets_by_path: HashMap<PathBuf, HashMap<String, Vec<Diagnostic>>>,
+
+    raw_utf16_lsp_keys: HashSet<(PathBuf, String)>,
 }
+
+const DEFAULT_LSP_DIAGNOSTIC_SOURCE_KEY: &str = "kuroya:lsp-default";
 
 impl DiagnosticSet {
     pub fn replace(&mut self, path: PathBuf, mut diagnostics: Vec<Diagnostic>) {
         let path = normalize_diagnostic_path_owned(path);
+
+        self.lsp_buckets_by_path.remove(&path);
+        self.raw_utf16_lsp_keys
+            .retain(|(marker_path, _)| marker_path != &path);
         if diagnostics.is_empty() {
             self.remove_path_counts(&path);
             return;
@@ -137,11 +154,136 @@ impl DiagnosticSet {
         self.replace_matching_source(path, diagnostics, diagnostic_is_static);
     }
 
-    pub fn replace_lsp(&mut self, path: PathBuf, mut diagnostics: Vec<Diagnostic>) {
-        reserve_lsp_diagnostic_sources(&mut diagnostics);
-        self.replace_matching_source(path, diagnostics, |diagnostic| {
-            !diagnostic_is_static(diagnostic)
+    pub fn replace_lsp(&mut self, path: PathBuf, diagnostics: Vec<Diagnostic>) {
+        self.replace_lsp_source(path, DEFAULT_LSP_DIAGNOSTIC_SOURCE_KEY, diagnostics);
+    }
+
+    pub fn replace_lsp_units(
+        &mut self,
+        path: PathBuf,
+        diagnostics: Vec<Diagnostic>,
+        units: LspDiagnosticUnits,
+    ) {
+        self.replace_lsp_source_units(path, DEFAULT_LSP_DIAGNOSTIC_SOURCE_KEY, diagnostics, units);
+    }
+
+    pub fn replace_lsp_source(
+        &mut self,
+        path: PathBuf,
+        source_key: &str,
+        diagnostics: Vec<Diagnostic>,
+    ) {
+        self.replace_lsp_source_units(path, source_key, diagnostics, LspDiagnosticUnits::Chars);
+    }
+
+    pub fn replace_lsp_source_units(
+        &mut self,
+        path: PathBuf,
+        source_key: &str,
+        diagnostics: Vec<Diagnostic>,
+        units: LspDiagnosticUnits,
+    ) {
+        let path = normalize_diagnostic_path_owned(path);
+        let marker = (path.clone(), source_key.to_owned());
+        if diagnostics.is_empty() {
+            self.raw_utf16_lsp_keys.remove(&marker);
+        } else {
+            match units {
+                LspDiagnosticUnits::Chars => {
+                    self.raw_utf16_lsp_keys.remove(&marker);
+                }
+                LspDiagnosticUnits::Utf16 => {
+                    self.raw_utf16_lsp_keys.insert(marker);
+                }
+            }
+        }
+        self.store_lsp_bucket(path, source_key, diagnostics);
+    }
+
+    pub fn raw_utf16_lsp_paths(&self) -> Vec<PathBuf> {
+        let mut paths = self
+            .raw_utf16_lsp_keys
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        paths.sort_unstable();
+        paths.dedup();
+        paths
+    }
+
+    pub fn drain_raw_utf16_lsp_buckets(&mut self, path: &Path) -> Vec<(String, Vec<Diagnostic>)> {
+        let path = normalize_diagnostic_path_cow(path).into_owned();
+        let keys = self
+            .raw_utf16_lsp_keys
+            .iter()
+            .filter(|(marker_path, _)| marker_path == &path)
+            .map(|(_, key)| key.clone())
+            .collect::<Vec<_>>();
+        let mut drained = Vec::with_capacity(keys.len());
+        for key in keys {
+            self.raw_utf16_lsp_keys.remove(&(path.clone(), key.clone()));
+            if let Some(buckets) = self.lsp_buckets_by_path.get_mut(&path)
+                && let Some(diagnostics) = buckets.remove(&key)
+            {
+                drained.push((key, diagnostics));
+            }
+        }
+        if !drained.is_empty() {
+            self.rebuild_path_from_lsp_buckets(path);
+        }
+        drained
+    }
+
+    pub fn purge_lsp_source(&mut self, source_key: &str) {
+        let mut purged_paths = Vec::new();
+        self.lsp_buckets_by_path.retain(|path, buckets| {
+            let purged = buckets.remove(source_key).is_some();
+            if purged {
+                purged_paths.push(path.clone());
+            }
+            !buckets.is_empty()
         });
+        self.raw_utf16_lsp_keys.retain(|(_, key)| key != source_key);
+        for path in purged_paths {
+            self.rebuild_path_from_lsp_buckets(path);
+        }
+    }
+
+    fn store_lsp_bucket(
+        &mut self,
+        path: PathBuf,
+        source_key: &str,
+        mut diagnostics: Vec<Diagnostic>,
+    ) {
+        reserve_lsp_diagnostic_sources(&mut diagnostics);
+        normalize_diagnostics_for_path(&path, &mut diagnostics);
+        limit_diagnostics_for_path(&mut diagnostics);
+        let buckets = self.lsp_buckets_by_path.entry(path.clone()).or_default();
+        if diagnostics.is_empty() {
+            buckets.remove(source_key);
+        } else {
+            buckets.insert(source_key.to_owned(), diagnostics);
+        }
+        if buckets.is_empty() {
+            self.lsp_buckets_by_path.remove(&path);
+        }
+        self.rebuild_path_from_lsp_buckets(path);
+    }
+
+    fn rebuild_path_from_lsp_buckets(&mut self, path: PathBuf) {
+        let mut merged: Vec<Diagnostic> = Vec::new();
+        if let Some(existing) = self.by_path.get(&path) {
+            merged.extend(existing.iter().filter(|d| diagnostic_is_static(d)).cloned());
+        }
+        if let Some(buckets) = self.lsp_buckets_by_path.get(&path) {
+            for bucket in buckets.values() {
+                merged.extend(bucket.iter().cloned());
+            }
+        }
+        self.remove_path_counts(&path);
+        sort_and_dedup_diagnostics(&mut merged);
+        limit_diagnostics_for_path(&mut merged);
+        self.insert_path_diagnostics(path, merged);
     }
 
     fn replace_matching_source(
@@ -807,6 +949,209 @@ mod tests {
         let remaining = diagnostics.for_path(&path);
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].source, STATIC_DIAGNOSTIC_SOURCE);
+    }
+
+    #[test]
+    fn lsp_units_track_raw_utf16_buckets_until_converted() {
+        let path = PathBuf::from("src/main.rs");
+        let noisy = PathBuf::from("src/../src/main.rs");
+        let mut diagnostics = DiagnosticSet::default();
+
+        diagnostics.replace_lsp_units(
+            noisy.clone(),
+            vec![diagnostic(
+                &noisy,
+                DiagnosticSeverity::Warning,
+                "rust-analyzer",
+            )],
+            LspDiagnosticUnits::Utf16,
+        );
+        assert_eq!(diagnostics.for_path(&path).len(), 1);
+        assert_eq!(diagnostics.raw_utf16_lsp_paths(), vec![path.clone()]);
+
+        diagnostics.replace_lsp_source_units(
+            path.clone(),
+            "rust\u{0}2",
+            vec![diagnostic(
+                &path,
+                DiagnosticSeverity::Error,
+                "rust-analyzer",
+            )],
+            LspDiagnosticUnits::Utf16,
+        );
+        assert_eq!(diagnostics.for_path(&path).len(), 2);
+
+        let mut drained = diagnostics.drain_raw_utf16_lsp_buckets(&path);
+        drained.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].0, DEFAULT_LSP_DIAGNOSTIC_SOURCE_KEY);
+        assert_eq!(drained[1].0, "rust\u{0}2");
+        assert!(diagnostics.raw_utf16_lsp_paths().is_empty());
+
+        for (source_key, mut bucket) in drained {
+            for diagnostic in &mut bucket {
+                diagnostic.column = 1;
+                diagnostic.char_range = 0..1;
+            }
+            diagnostics.replace_lsp_source_units(
+                path.clone(),
+                &source_key,
+                bucket,
+                LspDiagnosticUnits::Chars,
+            );
+        }
+        assert_eq!(diagnostics.for_path(&path).len(), 2);
+        assert!(diagnostics.raw_utf16_lsp_paths().is_empty());
+
+        diagnostics.replace_lsp_units(
+            path.clone(),
+            vec![diagnostic(&path, DiagnosticSeverity::Hint, "rust-analyzer")],
+            LspDiagnosticUnits::Utf16,
+        );
+        assert_eq!(diagnostics.raw_utf16_lsp_paths(), vec![path.clone()]);
+        diagnostics.replace_lsp(path.clone(), Vec::new());
+        assert!(diagnostics.raw_utf16_lsp_paths().is_empty());
+    }
+
+    #[test]
+    fn lsp_units_markers_follow_full_replacement_and_purges() {
+        let path = PathBuf::from("src/main.rs");
+        let mut diagnostics = DiagnosticSet::default();
+        let source_key = "rust\u{0}1";
+
+        diagnostics.replace_lsp_source_units(
+            path.clone(),
+            source_key,
+            vec![diagnostic(
+                &path,
+                DiagnosticSeverity::Error,
+                "rust-analyzer",
+            )],
+            LspDiagnosticUnits::Utf16,
+        );
+        assert_eq!(diagnostics.raw_utf16_lsp_paths(), vec![path.clone()]);
+
+        diagnostics.replace(
+            path.clone(),
+            vec![diagnostic(
+                &path,
+                DiagnosticSeverity::Warning,
+                "kuroya-static",
+            )],
+        );
+        assert!(diagnostics.raw_utf16_lsp_paths().is_empty());
+
+        diagnostics.replace_lsp_source_units(
+            path.clone(),
+            source_key,
+            vec![diagnostic(
+                &path,
+                DiagnosticSeverity::Error,
+                "rust-analyzer",
+            )],
+            LspDiagnosticUnits::Utf16,
+        );
+        assert_eq!(diagnostics.raw_utf16_lsp_paths(), vec![path.clone()]);
+        diagnostics.purge_lsp_source(source_key);
+        assert!(diagnostics.raw_utf16_lsp_paths().is_empty());
+
+        diagnostics.replace_lsp_units(path.clone(), Vec::new(), LspDiagnosticUnits::Utf16);
+        assert!(diagnostics.raw_utf16_lsp_paths().is_empty());
+    }
+
+    #[test]
+    fn lsp_source_buckets_keep_sibling_servers_on_shared_path() {
+        let path = PathBuf::from("src/main.rs");
+        let mut diagnostics = DiagnosticSet::default();
+        let rust_key = "rust\u{0}10";
+        let python_key = "python\u{0}11";
+
+        diagnostics.replace_lsp_source(
+            path.clone(),
+            rust_key,
+            vec![diagnostic(
+                &path,
+                DiagnosticSeverity::Error,
+                "rust-analyzer",
+            )],
+        );
+        diagnostics.replace_lsp_source(
+            path.clone(),
+            python_key,
+            vec![diagnostic(&path, DiagnosticSeverity::Warning, "pyright")],
+        );
+
+        assert_eq!(diagnostics.for_path(&path).len(), 2);
+        assert_eq!(diagnostics.count_by_severity(DiagnosticSeverity::Error), 1);
+        assert_eq!(
+            diagnostics.count_by_severity(DiagnosticSeverity::Warning),
+            1
+        );
+
+        let mut updated = diagnostic(&path, DiagnosticSeverity::Error, "rust-analyzer");
+        updated.line = 3;
+        diagnostics.replace_lsp_source(path.clone(), rust_key, vec![updated]);
+        assert_eq!(diagnostics.for_path(&path).len(), 2);
+        assert_eq!(diagnostics.count_by_severity(DiagnosticSeverity::Error), 1);
+
+        diagnostics.replace_lsp_source(path.clone(), rust_key, Vec::new());
+        let remaining = diagnostics.for_path(&path);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].source, "pyright");
+        assert_eq!(diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn purge_lsp_source_clears_stopped_server_buckets_across_paths() {
+        let a = PathBuf::from("src/a.rs");
+        let b = PathBuf::from("src/b.rs");
+        let mut diagnostics = DiagnosticSet::default();
+        let stopped_key = "rust\u{0}10";
+        let sibling_key = "rust\u{0}11";
+
+        for path in [&a, &b] {
+            diagnostics.replace_static(
+                path.to_path_buf(),
+                vec![diagnostic(
+                    path,
+                    DiagnosticSeverity::Info,
+                    STATIC_DIAGNOSTIC_SOURCE,
+                )],
+            );
+            diagnostics.replace_lsp_source(
+                path.to_path_buf(),
+                stopped_key,
+                vec![diagnostic(path, DiagnosticSeverity::Error, "rust-analyzer")],
+            );
+            diagnostics.replace_lsp_source(
+                path.to_path_buf(),
+                sibling_key,
+                vec![diagnostic(
+                    path,
+                    DiagnosticSeverity::Warning,
+                    "rust-analyzer-obsidian",
+                )],
+            );
+        }
+        assert_eq!(diagnostics.len(), 6);
+
+        diagnostics.purge_lsp_source(stopped_key);
+
+        assert_eq!(diagnostics.len(), 4);
+        for path in [&a, &b] {
+            let remaining = diagnostics.for_path(path);
+            assert_eq!(remaining.len(), 2);
+            assert!(remaining.iter().all(|d| d.source != "rust-analyzer"));
+        }
+        assert_eq!(diagnostics.count_by_severity(DiagnosticSeverity::Error), 0);
+        assert_eq!(
+            diagnostics.count_by_severity(DiagnosticSeverity::Warning),
+            2
+        );
+        assert_eq!(diagnostics.count_by_severity(DiagnosticSeverity::Info), 2);
+
+        diagnostics.purge_lsp_source("missing\u{0}99");
+        assert_eq!(diagnostics.len(), 4);
     }
 
     #[test]

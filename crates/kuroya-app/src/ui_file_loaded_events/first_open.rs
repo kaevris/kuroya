@@ -1,6 +1,7 @@
 use super::LoadedFileTargets;
 use crate::{
     KuroyaApp,
+    file_decode::{UTF16_LABEL_DETECT_CHARS, utf16_unsupported_label},
     folding::clamp_folded_ranges_for_line_count,
     large_file_mode::buffer_uses_large_file_mode,
     lsp_lifecycle::buffer_allows_background_language,
@@ -17,7 +18,12 @@ use crate::{
     workspace_state::should_activate_loaded_file,
 };
 use kuroya_core::TextBuffer;
-use std::{path::PathBuf, time::Duration};
+use std::{
+    borrow::Cow,
+    io::Read,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 impl KuroyaApp {
     pub(super) fn apply_first_loaded_file(
@@ -129,6 +135,24 @@ impl KuroyaApp {
         ) {
             self.set_active_buffer(id);
         }
+
+        let bom_note = if !binary
+            && (path_has_utf8_bom(&path)
+                || self
+                    .buffer(id)
+                    .is_some_and(|buffer| buffer.line_starts_with(0, "\u{FEFF}")))
+        {
+            " (UTF-8 BOM)"
+        } else {
+            ""
+        };
+        let utf16_label = if binary {
+            self.buffer(id)
+                .and_then(|buffer| buffer.line_content_prefix(0, UTF16_LABEL_DETECT_CHARS))
+                .and_then(|prefix| utf16_unsupported_label(&prefix))
+        } else {
+            None
+        };
         let mode = match (
             binary,
             lossy,
@@ -141,20 +165,31 @@ impl KuroyaApp {
             (false, false, false, true) => " (large file mode)",
             (false, false, false, false) => "",
         };
-        let decode_note = if binary && lossy {
-            " with binary/UTF-8 replacement preview"
+        let mode = if utf16_label.is_some() { "" } else { mode };
+        let decode_note: Cow<'_, str> = if let Some(label) = utf16_label {
+            Cow::Owned(format!(
+                " ({label} encoded files are not supported; opened as a read-only preview)"
+            ))
+        } else if binary && lossy {
+            Cow::Borrowed(" with binary/UTF-8 replacement preview")
         } else if binary {
-            " with binary preview"
+            Cow::Borrowed(" with binary preview")
         } else if lossy {
-            " with UTF-8 replacements"
+            Cow::Borrowed(" with UTF-8 replacements")
         } else {
-            ""
+            Cow::Borrowed("")
         };
         if let Some(jump) = targets.pending_jump {
-            self.apply_file_jump_with_encoding(id, jump.line, jump.column, jump.column_encoding);
+            self.apply_file_jump_with_encoding_and_selection(
+                id,
+                jump.line,
+                jump.column,
+                jump.column_encoding,
+                jump.selection_length,
+            );
             self.status = append_plugin_language_activation_status(
                 format!(
-                    "Opened {} at {}:{} in {:.1?}{mode}{decode_note}",
+                    "Opened {} at {}:{} in {:.1?}{mode}{decode_note}{bom_note}",
                     path_label, jump.line, jump.column, elapsed
                 ),
                 &language_activations,
@@ -162,11 +197,20 @@ impl KuroyaApp {
         } else {
             self.status = append_plugin_language_activation_status(
                 format!(
-                    "Opened {} in {:.1?}{mode}{decode_note}",
+                    "Opened {} in {:.1?}{mode}{decode_note}{bom_note}",
                     path_label, elapsed
                 ),
                 &language_activations,
             );
         }
     }
+}
+
+fn path_has_utf8_bom(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut bom = [0u8; 3];
+    file.read_exact(&mut bom)
+        .is_ok_and(|()| bom == [0xEF, 0xBB, 0xBF])
 }

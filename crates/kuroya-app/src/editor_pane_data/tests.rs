@@ -19,7 +19,7 @@ use super::{
 use crate::{
     KuroyaApp,
     app_startup_context::AppStartupContext,
-    editor_vim_key_events::{vim_clear_searches_for_test, vim_set_last_search_for_test},
+    editor_vim_key_events::{vim_clear_searches, vim_set_last_search_for_test},
     folding::FoldedRange,
     large_file_mode::{
         LARGE_FILE_MODE_LINE_RENDER_CHAR_LIMIT, LARGE_FILE_MODE_MAX_BYTES,
@@ -523,7 +523,7 @@ fn pane_data_clears_disabled_active_buffer_caches_in_large_file_mode() {
     let _ = app
         .editor_bracket_overlay_cache
         .bracket_matches(&app.buffers[0], EditorMatchBrackets::Always);
-    assert_eq!(app.buffer_find_cache.cached_buffer_id_for_test(), Some(7));
+    assert_eq!(app.buffer_find_cache.cached_buffer_ids_for_test(), vec![7]);
     assert!(app.editor_bracket_overlay_cache.contains_buffer_for_test(7));
 
     let len_chars = app.buffers[0].len_chars();
@@ -535,13 +535,17 @@ fn pane_data_clears_disabled_active_buffer_caches_in_large_file_mode() {
 
     assert!(!data.syntax_highlighting);
     assert!(data.find_matches.is_empty());
-    assert_eq!(app.buffer_find_cache.cached_buffer_id_for_test(), None);
+    assert!(
+        app.buffer_find_cache
+            .cached_buffer_ids_for_test()
+            .is_empty()
+    );
     assert!(!app.editor_bracket_overlay_cache.contains_buffer_for_test(7));
 }
 
 #[test]
 fn pane_data_uses_vim_search_matches() {
-    vim_clear_searches_for_test();
+    vim_clear_searches();
     let mut app = app_for_test(PathBuf::from("workspace"));
     app.settings.vim_keybindings = true;
     app.buffers.push(TextBuffer::from_text(
@@ -562,7 +566,7 @@ fn pane_data_uses_vim_search_matches() {
     let disabled = app.prepare_editor_pane_data(7, 0, 8.0, true, true);
 
     assert!(disabled.find_matches.is_empty());
-    vim_clear_searches_for_test();
+    vim_clear_searches();
 }
 
 #[test]
@@ -846,6 +850,50 @@ fn validation_decorations_follow_setting_readonly_and_large_file_mode() {
         false,
         true
     ));
+}
+
+#[test]
+fn diagnostic_tag_spans_stay_governed_by_tag_settings_not_validation_gate() {
+    let root = PathBuf::from("workspace");
+    let path = root.join("src/main.rs");
+    let mut app = app_for_test(root);
+    app.buffers.push(TextBuffer::from_text(
+        7,
+        Some(path.clone()),
+        "alpha beta\n".to_owned(),
+    ));
+    app.diagnostics.replace_lsp(
+        path.clone(),
+        vec![kuroya_core::Diagnostic {
+            path: path.clone(),
+            line: 1,
+            column: 1,
+            char_range: 0..5,
+            severity: kuroya_core::DiagnosticSeverity::Hint,
+            source: "rust-analyzer".to_owned(),
+            message: "unused".to_owned(),
+            unused: true,
+            deprecated: false,
+        }],
+    );
+
+    app.settings.render_validation_decorations = EditorRenderValidationDecorations::Off;
+    app.settings.show_unused = true;
+    app.settings.show_deprecated = true;
+
+    let data = app.prepare_editor_pane_data(7, 0, 8.0, true, true);
+
+    assert!(data.diagnostics_by_line.is_empty());
+    assert!(data.diagnostic_messages.is_empty());
+
+    assert_eq!(
+        data.diagnostic_tag_spans,
+        vec![(0..5, crate::editor_pane_support::DiagnosticTagKind::Unused)]
+    );
+
+    app.settings.show_unused = false;
+    let data = app.prepare_editor_pane_data(7, 0, 8.0, true, true);
+    assert!(data.diagnostic_tag_spans.is_empty());
 }
 
 #[test]

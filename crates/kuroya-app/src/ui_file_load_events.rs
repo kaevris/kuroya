@@ -45,6 +45,7 @@ impl KuroyaApp {
                 if !self.workspace_event_is_current(&root, generation) {
                     return;
                 }
+                let pending_panes = self.take_pending_panes_for_path(&path);
                 if self.clear_pending_file_load_state_for_path(&path) {
                     self.status = format!(
                         "Could not open {}: {}",
@@ -52,6 +53,8 @@ impl KuroyaApp {
                         display_error_label_cow(&error)
                     );
                 }
+
+                self.close_orphaned_panes(&pending_panes);
             }
             _ => {}
         }
@@ -76,6 +79,66 @@ mod tests {
         time::{Duration, Instant},
     };
     use tokio::runtime::Runtime;
+
+    #[test]
+    fn failed_file_load_closes_orphaned_pending_panes() {
+        let root = PathBuf::from("workspace");
+        let path = root.join("src/main.rs");
+        let mut app = app_for_test(root);
+        let orphan_pane = app.insert_editor_pane_right(None);
+        app.active_pane = orphan_pane;
+        app.focused_pane = Some(orphan_pane);
+        app.pending_pane_paths.insert(orphan_pane, path.clone());
+        app.pending_open_paths.insert(path.clone());
+
+        app.handle_file_load_event(crate::ui_events::UiEvent::FileLoadFailed {
+            root: app.workspace.root.clone(),
+            generation: app.workspace_event_generation,
+            path: path.clone(),
+            error: "denied".to_owned(),
+        });
+
+        assert_eq!(app.panes.len(), 1);
+        assert!(!app.panes.iter().any(|pane| pane.id == orphan_pane));
+        assert!(app.pending_pane_paths.is_empty());
+        assert_eq!(app.active_pane, 1);
+        assert_eq!(app.focused_pane, Some(1));
+        assert_eq!(app.status, "Could not open main.rs: denied");
+    }
+
+    #[test]
+    fn failed_file_load_keeps_orphan_panes_that_already_show_a_buffer() {
+        let root = PathBuf::from("workspace");
+        let path = root.join("src/main.rs");
+        let other_path = root.join("src/other.rs");
+        let mut app = app_for_test(root);
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(other_path),
+            "open".to_owned(),
+        ));
+        let orphan_pane = app.insert_editor_pane_right(None);
+        let assigned_pane = app.insert_editor_pane_right(None);
+        app.assign_buffer_to_pane(assigned_pane, 7);
+        app.pending_pane_paths =
+            HashMap::from([(orphan_pane, path.clone()), (assigned_pane, path.clone())]);
+        app.pending_open_paths.insert(path.clone());
+
+        app.handle_file_load_event(crate::ui_events::UiEvent::FileLoadFailed {
+            root: app.workspace.root.clone(),
+            generation: app.workspace_event_generation,
+            path: path.clone(),
+            error: "denied".to_owned(),
+        });
+
+        assert!(!app.panes.iter().any(|pane| pane.id == orphan_pane));
+        assert!(
+            app.panes
+                .iter()
+                .any(|pane| pane.id == assigned_pane && pane.active == Some(7))
+        );
+        assert!(app.pending_pane_paths.is_empty());
+    }
 
     #[test]
     fn failed_file_load_clears_pending_restore_state_for_path() {
@@ -210,6 +273,44 @@ mod tests {
 
         assert_eq!(app.buffer(99).unwrap().text(), "fn main() {}\n");
         assert!(!app.pending_open_paths.contains(&path));
+    }
+
+    #[test]
+    fn loaded_file_applies_pending_character_selection() {
+        let root = PathBuf::from("workspace");
+        let path = root.join("src/main.rs");
+        let mut app = app_for_test(root);
+        app.pending_open_paths.insert(path.clone());
+        app.pending_file_jump = Some(FileJump::char_selection(
+            path.clone(),
+            1,
+            8,
+            "na\u{00ef}ve".chars().count(),
+        ));
+
+        app.handle_file_load_event(crate::ui_events::UiEvent::FileLoaded {
+            root: app.workspace.root.clone(),
+            generation: app.workspace_event_generation,
+            path: path.clone(),
+            buffer: loaded_text_buffer(
+                99,
+                path,
+                "before na\u{00ef}ve after\n".to_owned(),
+                ".".to_owned(),
+            ),
+            elapsed: Duration::ZERO,
+            activate: true,
+            lossy: false,
+            binary: false,
+        });
+
+        let buffer = app.buffer(99).unwrap();
+        let selection_start = buffer.line_column_to_char(0, 7);
+        assert_eq!(
+            buffer.selections()[0].range(),
+            selection_start..selection_start + "na\u{00ef}ve".chars().count()
+        );
+        assert!(app.pending_file_jump.is_none());
     }
 
     #[test]

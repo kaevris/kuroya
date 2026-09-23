@@ -64,7 +64,7 @@ fn rank_completion_items_with_locality(
     }
 
     let prefix = CompletionPrefix::new(prefix);
-    // These stable sorts preserve the LSP-provided order for equal sort/rank keys.
+
     if items.iter().any(|item| item.sort_text.is_some()) {
         items.sort_by(compare_completion_sort_text);
     }

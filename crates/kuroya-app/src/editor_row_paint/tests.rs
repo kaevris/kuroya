@@ -1,18 +1,20 @@
 use super::{
-    MAX_WHITESPACE_SELECTION_RANGES_PER_ROW, RowTextMetrics, SelectionRangeCursor,
-    VisualColumnScanner, WhitespaceMarker, WhitespaceMarkerKind, WhitespaceMarkerPaintStrategy,
-    active_indent_guide_column, active_indent_guide_column_for_buffer, color_decorators_visible,
-    column_ruler_color, control_character_label, diff_empty_decoration_fill,
-    diff_empty_decoration_visible, diff_move_decoration_fill, diff_move_decoration_stripe_fill,
-    diff_move_decoration_visible, editor_row_line_snapshot, editor_row_wrap_width,
-    folded_region_highlight_fill, folded_region_highlight_visible, hex_color_decorations,
-    indent_guide_color, injected_language_render_rect, injected_language_render_rect_with_scanner,
-    leading_indent_guide_columns, limit_layout_job_line_rendering, line_highlight_fill,
-    line_highlight_visible, merge_conflict_line_fill, parse_hex_color,
-    rendered_trailing_whitespace_start, row_text_metrics, selection_ranges_for_snapshot,
-    trailing_whitespace_start, visible_whitespace_marker,
-    whitespace_marker_kind_for_selection_ranges, whitespace_marker_label,
-    whitespace_marker_paint_strategy, whitespace_marker_scan_needed,
+    BACKGROUND_IMAGE_LINE_HIGHLIGHT_MAX_ALPHA, BACKGROUND_IMAGE_SELECTION_MAX_ALPHA,
+    BACKGROUND_IMAGE_STICKY_SCROLL_MAX_ALPHA, MAX_WHITESPACE_SELECTION_RANGES_PER_ROW,
+    RowTextMetrics, SelectionRangeCursor, VisualColumnScanner, WhitespaceMarker,
+    WhitespaceMarkerKind, WhitespaceMarkerPaintStrategy, active_indent_guide_column,
+    active_indent_guide_column_for_buffer, color_decorators_visible, column_ruler_color,
+    control_character_label, diff_empty_decoration_fill, diff_empty_decoration_visible,
+    diff_move_decoration_fill, diff_move_decoration_stripe_fill, diff_move_decoration_visible,
+    editor_row_line_snapshot, editor_row_wrap_width, editor_selection_fill,
+    editor_sticky_scroll_fill, folded_region_highlight_fill, folded_region_highlight_visible,
+    hex_color_decorations, indent_guide_color, injected_language_render_rect,
+    injected_language_render_rect_with_scanner, leading_indent_guide_columns,
+    limit_layout_job_line_rendering, line_highlight_fill, line_highlight_visible,
+    merge_conflict_line_fill, parse_hex_color, rendered_trailing_whitespace_start,
+    row_text_metrics, selection_ranges_for_snapshot, trailing_whitespace_start,
+    visible_whitespace_marker, whitespace_marker_kind_for_selection_ranges,
+    whitespace_marker_label, whitespace_marker_paint_strategy, whitespace_marker_scan_needed,
     whitespace_marker_trailing_start, whitespace_selection_marker_scan_needed,
     whitespace_selection_ranges_for_marker_scan, whitespace_selection_ranges_for_snapshot,
 };
@@ -296,8 +298,20 @@ fn editor_row_chrome_colors_follow_theme_visuals() {
     visuals.selection.stroke.color = Color32::from_rgb(47, 111, 237);
 
     assert_eq!(
-        line_highlight_fill(&visuals),
+        line_highlight_fill(&visuals, false),
         visuals.widgets.active.weak_bg_fill
+    );
+    assert_eq!(
+        line_highlight_fill(&visuals, true).a(),
+        BACKGROUND_IMAGE_LINE_HIGHLIGHT_MAX_ALPHA
+    );
+    assert_eq!(
+        editor_selection_fill(Color32::from_rgb(20, 90, 180), true).a(),
+        BACKGROUND_IMAGE_SELECTION_MAX_ALPHA
+    );
+    assert_eq!(
+        editor_sticky_scroll_fill(Color32::from_rgb(20, 30, 40), true).a(),
+        BACKGROUND_IMAGE_STICKY_SCROLL_MAX_ALPHA
     );
     assert_eq!(
         column_ruler_color(&visuals),
@@ -326,6 +340,21 @@ fn folded_region_highlight_follows_setting_and_fold_state() {
     assert!(!folded_region_highlight_visible(false, true));
     assert!(!folded_region_highlight_visible(true, false));
     assert!(folded_region_highlight_fill(Color32::from_rgb(126, 136, 150)).a() > 0);
+}
+
+#[test]
+fn folded_region_highlight_fill_uses_straight_alpha_channels() {
+    let base = Color32::from_rgb(126, 136, 150);
+
+    assert_eq!(
+        folded_region_highlight_fill(base),
+        Color32::from_rgba_unmultiplied(126, 136, 150, 44)
+    );
+
+    assert_ne!(
+        folded_region_highlight_fill(base),
+        Color32::from_rgba_premultiplied(126, 136, 150, 44)
+    );
 }
 
 #[test]

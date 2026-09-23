@@ -97,13 +97,8 @@ pub(crate) fn write_text_atomic(path: &Path, text: &str) -> anyhow::Result<()> {
 }
 
 fn read_file_bytes_with_limit_sync(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
-    let file = open_read_target_sync(path)?;
-    let metadata = file.metadata().map_err(|error| error.to_string())?;
-    ensure_read_target_is_file(path, &metadata)?;
-    if file_size_exceeds_limit(metadata.len(), max_bytes) {
-        return Err(file_too_large_message(metadata.len(), max_bytes));
-    }
-    let capacity = read_buffer_capacity(metadata.len(), max_bytes);
+    let (file, byte_len) = open_read_file_with_limit_sync(path, max_bytes)?;
+    let capacity = read_buffer_capacity(byte_len, max_bytes);
 
     if max_bytes == 0 {
         let mut reader = file;
@@ -122,6 +117,19 @@ fn read_file_bytes_with_limit_sync(path: &Path, max_bytes: u64) -> Result<Vec<u8
     ensure_read_bytes_within_limit(bytes.len(), max_bytes)?;
 
     Ok(bytes)
+}
+
+pub(crate) fn open_read_file_with_limit_sync(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<(std::fs::File, u64), String> {
+    let file = open_read_target_sync(path)?;
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    ensure_read_target_is_file(path, &metadata)?;
+    if file_size_exceeds_limit(metadata.len(), max_bytes) {
+        return Err(file_too_large_message(metadata.len(), max_bytes));
+    }
+    Ok((file, metadata.len()))
 }
 
 fn open_read_target_sync(path: &Path) -> Result<std::fs::File, String> {

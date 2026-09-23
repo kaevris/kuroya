@@ -83,6 +83,7 @@ impl KuroyaApp {
     pub(crate) fn cancel_invalid_pending_workspace_switch(&mut self) -> bool {
         let invalid_target = match self.pending_workspace_switch.as_ref() {
             Some(PendingWorkspaceSwitch::Confirm { target })
+            | Some(PendingWorkspaceSwitch::ConfirmHomeDirectory { target })
             | Some(PendingWorkspaceSwitch::Saving { target, .. })
                 if !target.is_dir() =>
             {

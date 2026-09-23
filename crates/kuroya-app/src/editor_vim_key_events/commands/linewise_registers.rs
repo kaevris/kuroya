@@ -1,7 +1,10 @@
 use kuroya_core::{TextBuffer, TextEdit};
 use std::ops::Range;
 
-use super::super::state::vim_write_registers;
+use super::super::state::{
+    EditorVimRegisterWriteScope, vim_adjust_marks_for_edit, vim_write_registers,
+    vim_write_registers_with_scope,
+};
 use super::super::{
     EditorVimNamedRegister, EditorVimRegister, EditorVimRegisterKind, VIM_MAX_COUNT,
     vim_line_range_for_count,
@@ -33,7 +36,16 @@ fn vim_yank_lines_into_registers(
     let Some(range) = vim_line_range_for_count(buffer, count) else {
         return false;
     };
-    let Some(mut text) = buffer.text_range(range) else {
+    vim_yank_line_span_into_registers(buffer, range, unnamed_register, named_register)
+}
+
+pub(in crate::editor_vim_key_events) fn vim_yank_line_span_into_registers(
+    buffer: &TextBuffer,
+    span: Range<usize>,
+    unnamed_register: &mut Option<EditorVimRegister>,
+    named_register: Option<EditorVimNamedRegister>,
+) -> bool {
+    let Some(mut text) = buffer.text_range(span) else {
         return false;
     };
     if !text.ends_with('\n') {
@@ -48,6 +60,85 @@ fn vim_yank_lines_into_registers(
         },
     );
     true
+}
+
+pub(in crate::editor_vim_key_events) fn vim_delete_line_span_into_registers(
+    buffer: &mut TextBuffer,
+    span: Range<usize>,
+    unnamed_register: &mut Option<EditorVimRegister>,
+    named_register: Option<EditorVimNamedRegister>,
+) -> bool {
+    vim_apply_line_span_edit_into_registers(
+        buffer,
+        span,
+        unnamed_register,
+        named_register,
+        VimLineDeleteMode::Delete,
+    )
+}
+
+pub(in crate::editor_vim_key_events) fn vim_change_line_span_into_registers(
+    buffer: &mut TextBuffer,
+    span: Range<usize>,
+    unnamed_register: &mut Option<EditorVimRegister>,
+    named_register: Option<EditorVimNamedRegister>,
+) -> bool {
+    vim_apply_line_span_edit_into_registers(
+        buffer,
+        span,
+        unnamed_register,
+        named_register,
+        VimLineDeleteMode::Change,
+    )
+}
+
+fn vim_apply_line_span_edit_into_registers(
+    buffer: &mut TextBuffer,
+    span: Range<usize>,
+    unnamed_register: &mut Option<EditorVimRegister>,
+    named_register: Option<EditorVimNamedRegister>,
+    mode: VimLineDeleteMode,
+) -> bool {
+    let Some(mut text) = buffer.text_range(span.clone()) else {
+        return false;
+    };
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    let value = EditorVimRegister {
+        text,
+        kind: EditorVimRegisterKind::Linewise,
+    };
+    let inserted = match mode {
+        VimLineDeleteMode::Change => vim_line_change_replacement(buffer, &span),
+        VimLineDeleteMode::Delete => String::new(),
+    };
+    let range = match mode {
+        VimLineDeleteMode::Change => span,
+
+        VimLineDeleteMode::Delete => vim_line_delete_range_without_final_blank_row(buffer, span),
+    };
+    let deleted_start = buffer.char_position(range.start);
+    let deleted_end = buffer.char_position(range.end);
+    let changed = buffer.apply_edits(vec![TextEdit {
+        range,
+        inserted: inserted.clone(),
+    }]);
+    if changed {
+        vim_write_registers_with_scope(
+            unnamed_register,
+            named_register,
+            value,
+            EditorVimRegisterWriteScope::Delete,
+        );
+        vim_adjust_marks_for_edit(
+            buffer.id(),
+            (deleted_start.line, deleted_start.column),
+            (deleted_end.line, deleted_end.column),
+            &inserted,
+        );
+    }
+    changed
 }
 
 pub(in crate::editor_vim_key_events) fn vim_delete_lines_into_register(
@@ -115,23 +206,11 @@ fn vim_delete_lines_into_registers(
     named_register: Option<EditorVimNamedRegister>,
     mode: VimLineDeleteMode,
 ) -> bool {
-    vim_yank_lines_into_registers(buffer, count, unnamed_register, named_register);
-    vim_delete_lines(buffer, count, mode)
-}
-
-fn vim_delete_lines(buffer: &mut TextBuffer, count: usize, mode: VimLineDeleteMode) -> bool {
     let count = count.clamp(1, VIM_MAX_COUNT);
-    let Some(mut range) = vim_line_range_for_count(buffer, count) else {
+    let Some(range) = vim_line_range_for_count(buffer, count) else {
         return false;
     };
-    let inserted = match mode {
-        VimLineDeleteMode::Change => vim_line_change_replacement(buffer, &range),
-        VimLineDeleteMode::Delete => {
-            range = vim_line_delete_range_without_final_blank_row(buffer, range);
-            String::new()
-        }
-    };
-    buffer.apply_edits(vec![TextEdit { range, inserted }])
+    vim_apply_line_span_edit_into_registers(buffer, range, unnamed_register, named_register, mode)
 }
 
 #[derive(Clone, Copy)]

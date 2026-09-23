@@ -1,7 +1,8 @@
 use eframe::egui::{Key, Modifiers};
 
 use super::super::{
-    EditorVimCharFindMotion, EditorVimOperatorMotion, no_text_modifiers, vim_line_column_motion_key,
+    EditorVimCharFind, EditorVimCharFindMotion, EditorVimOperatorGoKind, EditorVimOperatorMotion,
+    EditorVimPendingKey, no_text_modifiers, vim_line_column_motion_key,
 };
 
 pub(in crate::editor_vim_key_events) fn vim_operator_motion_for_key(
@@ -26,7 +27,10 @@ pub(in crate::editor_vim_key_events) fn vim_operator_motion_for_key(
         (Key::E, false) => Some(EditorVimOperatorMotion::WordEnd),
         (Key::E, true) => Some(EditorVimOperatorMotion::BigWordEnd),
         (Key::Backspace, false) => Some(EditorVimOperatorMotion::CharacterBackward),
+        (Key::G, true) => Some(EditorVimOperatorMotion::LastLine),
         (Key::H, false) => Some(EditorVimOperatorMotion::CharacterBackward),
+        (Key::J, false) => Some(EditorVimOperatorMotion::LineDown),
+        (Key::K, false) => Some(EditorVimOperatorMotion::LineUp),
         (Key::L, false) => Some(EditorVimOperatorMotion::CharacterForward),
         (Key::Space, false) => Some(EditorVimOperatorMotion::CharacterForward),
         (Key::W, false) => Some(EditorVimOperatorMotion::WordForward),
@@ -51,6 +55,148 @@ pub(in crate::editor_vim_key_events) fn vim_operator_motion_for_key(
     }
 }
 
+pub(in crate::editor_vim_key_events) fn vim_operator_last_find_motion_for_key(
+    key: Key,
+    modifiers: Modifiers,
+    last_char_find: Option<EditorVimCharFind>,
+) -> Option<EditorVimOperatorMotion> {
+    if modifiers.command || modifiers.alt || modifiers.ctrl || modifiers.shift {
+        return None;
+    }
+    let last = last_char_find?;
+    match key {
+        Key::Semicolon => Some(EditorVimOperatorMotion::CharFind {
+            motion: last.motion,
+            target: last.target,
+        }),
+        Key::Comma => Some(EditorVimOperatorMotion::CharFind {
+            motion: last.motion.reversed(),
+            target: last.target,
+        }),
+        _ => None,
+    }
+}
+
+pub(in crate::editor_vim_key_events) fn vim_pending_key_last_find_operator_go(
+    pending_key: &EditorVimPendingKey,
+) -> Option<(usize, usize, EditorVimOperatorGoKind)> {
+    Some(match pending_key {
+        EditorVimPendingKey::ChangeLine(operator_count) => {
+            (*operator_count, 1, EditorVimOperatorGoKind::Change)
+        }
+        EditorVimPendingKey::ChangeLineIntoRegister {
+            operator_count,
+            register,
+        } => (
+            *operator_count,
+            1,
+            EditorVimOperatorGoKind::ChangeIntoRegister(*register),
+        ),
+        EditorVimPendingKey::ChangeMotionCount {
+            operator_count,
+            motion_count,
+        } => (
+            *operator_count,
+            *motion_count,
+            EditorVimOperatorGoKind::Change,
+        ),
+        EditorVimPendingKey::ChangeMotionCountIntoRegister {
+            operator_count,
+            motion_count,
+            register,
+        } => (
+            *operator_count,
+            *motion_count,
+            EditorVimOperatorGoKind::ChangeIntoRegister(*register),
+        ),
+        EditorVimPendingKey::DeleteLine(operator_count) => {
+            (*operator_count, 1, EditorVimOperatorGoKind::Delete)
+        }
+        EditorVimPendingKey::DeleteLineIntoRegister {
+            operator_count,
+            register,
+        } => (
+            *operator_count,
+            1,
+            EditorVimOperatorGoKind::DeleteIntoRegister(*register),
+        ),
+        EditorVimPendingKey::DeleteMotionCount {
+            operator_count,
+            motion_count,
+        } => (
+            *operator_count,
+            *motion_count,
+            EditorVimOperatorGoKind::Delete,
+        ),
+        EditorVimPendingKey::DeleteMotionCountIntoRegister {
+            operator_count,
+            motion_count,
+            register,
+        } => (
+            *operator_count,
+            *motion_count,
+            EditorVimOperatorGoKind::DeleteIntoRegister(*register),
+        ),
+        EditorVimPendingKey::YankLine(operator_count) => {
+            (*operator_count, 1, EditorVimOperatorGoKind::Yank)
+        }
+        EditorVimPendingKey::YankLineIntoRegister {
+            operator_count,
+            register,
+        } => (
+            *operator_count,
+            1,
+            EditorVimOperatorGoKind::YankIntoRegister(*register),
+        ),
+        EditorVimPendingKey::YankMotionCount {
+            operator_count,
+            motion_count,
+        } => (
+            *operator_count,
+            *motion_count,
+            EditorVimOperatorGoKind::Yank,
+        ),
+        EditorVimPendingKey::YankMotionCountIntoRegister {
+            operator_count,
+            motion_count,
+            register,
+        } => (
+            *operator_count,
+            *motion_count,
+            EditorVimOperatorGoKind::YankIntoRegister(*register),
+        ),
+        EditorVimPendingKey::ToggleCaseOperator(operator_count) => {
+            (*operator_count, 1, EditorVimOperatorGoKind::ToggleCase)
+        }
+        EditorVimPendingKey::ToggleCaseMotionCount {
+            operator_count,
+            motion_count,
+        } => (
+            *operator_count,
+            *motion_count,
+            EditorVimOperatorGoKind::ToggleCase,
+        ),
+        EditorVimPendingKey::ConvertCaseOperator {
+            operator_count,
+            conversion,
+        } => (
+            *operator_count,
+            1,
+            EditorVimOperatorGoKind::ConvertCase(*conversion),
+        ),
+        EditorVimPendingKey::ConvertCaseMotionCount {
+            operator_count,
+            motion_count,
+            conversion,
+        } => (
+            *operator_count,
+            *motion_count,
+            EditorVimOperatorGoKind::ConvertCase(*conversion),
+        ),
+        _ => return None,
+    })
+}
+
 pub(in crate::editor_vim_key_events) fn vim_operator_go_motion_for_key(
     key: Key,
     modifiers: Modifiers,
@@ -61,6 +207,7 @@ pub(in crate::editor_vim_key_events) fn vim_operator_go_motion_for_key(
     match (key, modifiers.shift) {
         (Key::E, false) => Some(EditorVimOperatorMotion::WordEndBackward),
         (Key::E, true) => Some(EditorVimOperatorMotion::BigWordEndBackward),
+        (Key::G, false) => Some(EditorVimOperatorMotion::FirstLine),
         (Key::N, false) => Some(EditorVimOperatorMotion::SearchMatch { reverse: false }),
         (Key::N, true) => Some(EditorVimOperatorMotion::SearchMatch { reverse: true }),
         (Key::Num3, true) => Some(EditorVimOperatorMotion::SearchWordUnderCursor {

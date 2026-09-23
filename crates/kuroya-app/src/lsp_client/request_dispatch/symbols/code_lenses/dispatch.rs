@@ -3,17 +3,17 @@ use super::pending::{
     register_code_lens_resolve_request, register_code_lenses_request,
     register_execute_command_request,
 };
+use crate::lsp_client::pending::PendingLspRequests;
 use crate::lsp_client::{
     pending::{
         MAX_LSP_OUTBOUND_JSON_PAYLOAD_BYTES, MAX_LSP_OUTBOUND_TEXT_PAYLOAD_CHARS,
-        PendingLspRequest, bounded_lsp_outbound_text, lsp_json_payload_is_bounded,
-        lsp_request_target_is_valid,
+        bounded_lsp_outbound_text, lsp_json_payload_is_bounded, lsp_request_target_is_valid,
     },
     request_dispatch::write_request_message,
 };
 use kuroya_core::{BufferId, LspCodeLens, LspWireMessage};
 use serde_json::Value;
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 use tokio::process::ChildStdin;
 
 pub(super) async fn dispatch_code_lenses(
@@ -22,7 +22,7 @@ pub(super) async fn dispatch_code_lenses(
     version: u64,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     if !lsp_request_target_is_valid(id, &path) {
         return true;
@@ -41,7 +41,7 @@ pub(super) async fn dispatch_code_lens_resolve(
     lens: LspCodeLens,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     if !lsp_request_target_is_valid(id, &path) {
         return true;
@@ -77,7 +77,7 @@ pub(super) async fn dispatch_execute_command(
     arguments: Option<Arc<Value>>,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     if !lsp_request_target_is_valid(id, &path) {
         return true;
@@ -110,7 +110,7 @@ pub(super) async fn dispatch_execute_command(
 
 fn reserve_optional_request_message(
     next_request_id: &mut u64,
-    pending_requests: &HashMap<u64, PendingLspRequest>,
+    pending_requests: &PendingLspRequests,
     build_message: impl FnOnce(u64) -> Option<LspWireMessage>,
 ) -> Option<(u64, Value)> {
     let mut candidate_next_request_id = *next_request_id;
@@ -150,14 +150,13 @@ mod tests {
         dispatch_execute_command_target, lsp_json_payload_arc_is_bounded,
         optional_lsp_json_payload_arc_is_bounded, reserve_optional_request_message,
     };
-    use crate::lsp_client::pending::PendingLspRequest;
     use crate::lsp_client::pending::{
         MAX_LSP_OUTBOUND_JSON_PAYLOAD_BYTES, MAX_LSP_OUTBOUND_TEXT_PAYLOAD_CHARS,
     };
+    use crate::lsp_client::pending::{PendingLspRequest, PendingLspRequests};
     use kuroya_core::{LspCodeLens, LspWireMessage};
     use serde_json::json;
     use std::{
-        collections::HashMap,
         path::{Path, PathBuf},
         sync::Arc,
     };
@@ -175,7 +174,7 @@ mod tests {
     #[test]
     fn optional_request_message_does_not_reserve_rejected_request_id() {
         let mut next_request_id = 9;
-        let pending_requests = HashMap::new();
+        let pending_requests = PendingLspRequests::default();
 
         let message =
             reserve_optional_request_message(&mut next_request_id, &pending_requests, |_| {
@@ -189,7 +188,7 @@ mod tests {
     #[test]
     fn optional_request_message_reserves_only_after_payload_is_sendable() {
         let mut next_request_id = 9;
-        let pending_requests = HashMap::new();
+        let pending_requests = PendingLspRequests::default();
 
         let (request_id, message) = reserve_optional_request_message(
             &mut next_request_id,
@@ -212,7 +211,7 @@ mod tests {
     #[test]
     fn optional_code_lens_resolve_message_preserves_raw_payload() {
         let mut next_request_id = 9;
-        let pending_requests = HashMap::new();
+        let pending_requests = PendingLspRequests::default();
         let resolve_payload = Arc::new(json!({
             "range": {
                 "start": { "line": 3, "character": 4 },
@@ -246,7 +245,7 @@ mod tests {
     #[test]
     fn optional_request_message_skips_active_pending_id() {
         let mut next_request_id = 9;
-        let pending_requests = HashMap::from([(9, hover(1))]);
+        let pending_requests = PendingLspRequests::from([(9, hover(1))]);
 
         let (request_id, message) = reserve_optional_request_message(
             &mut next_request_id,

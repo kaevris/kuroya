@@ -1,5 +1,9 @@
-use crate::{path_display::display_error_label_cow, ui_state::selected_row_scroll_offset};
-use eframe::egui::{Color32, RichText, ScrollArea, Ui};
+use crate::{
+    path_display::display_error_label_cow,
+    picker_ui::{PICKER_ROW_HEIGHT, picker_scroll_area, picker_selectable_row},
+    ui_state::selected_row_scroll_offset,
+};
+use eframe::egui::{self, Color32, RichText, Ui};
 use kuroya_core::{SearchMatch, SearchResult};
 use std::{
     borrow::Cow,
@@ -27,8 +31,8 @@ use labels::{
 
 const MAX_PROJECT_SEARCH_PREPARED_ROWS: usize = 512;
 
-pub(super) fn project_search_result_row_height(ui: &Ui) -> f32 {
-    ui.spacing().interact_size.y.max(22.0)
+pub(super) fn project_search_result_row_height(_ui: &Ui) -> f32 {
+    PICKER_ROW_HEIGHT
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,20 +92,25 @@ pub(super) fn render_project_search_results(
     }
 
     if let Some(summary) = project_search_result_summary(result, results_match_query) {
-        ui.label(RichText::new(summary).small());
+        ui.label(
+            RichText::new(summary)
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(3.0);
     }
     if !results_match_query {
         render_project_search_notice(
             ui,
-            "Results out of date",
-            "Press Enter or Search to refresh before opening a match.",
+            "Previous results",
+            "Search is updating for the current filters.",
             Color32::from_rgb(231, 185, 87),
         );
     }
     let row_count = project_search_render_row_count(result);
     let row_height = project_search_result_row_height(ui);
     let viewport_height = ui.available_height();
-    let mut scroll_area = ScrollArea::vertical();
+    let mut scroll_area = picker_scroll_area();
     if scroll_to_selection {
         scroll_area = scroll_area.vertical_scroll_offset(selected_row_scroll_offset(
             *selected_index,
@@ -121,16 +130,8 @@ pub(super) fn render_project_search_results(
                 label,
             } = row;
             let selected = index == *selected_index;
-            let text = if results_match_query {
-                RichText::new(label)
-            } else {
-                RichText::new(label).color(ui.visuals().weak_text_color())
-            };
-            let response = ui.selectable_label(selected, text);
+            let response = render_project_search_result_row(ui, &label, selected);
             let clicked = response.clicked();
-            if !results_match_query {
-                response.on_hover_text("Run project search to refresh these results");
-            }
             if clicked {
                 *selected_index = index;
                 if results_match_query {
@@ -139,14 +140,21 @@ pub(super) fn render_project_search_results(
             }
         });
         if includes_truncated_row {
-            ui.label(
-                RichText::new("More matches not shown")
-                    .small()
-                    .color(ui.visuals().weak_text_color()),
-            );
+            render_project_search_truncated_row(ui, row_height);
         }
     });
     open_target
+}
+
+fn render_project_search_result_row(ui: &mut Ui, label: &str, selected: bool) -> egui::Response {
+    picker_selectable_row(ui, selected, label).on_hover_text(label)
+}
+
+fn render_project_search_truncated_row(ui: &mut Ui, row_height: f32) {
+    ui.add_sized(
+        [ui.available_width(), row_height],
+        egui::Label::new(RichText::new("More matches not shown").weak()).truncate(),
+    );
 }
 
 fn clamp_project_search_result_selection(selected_index: &mut usize, result: &SearchResult) {
@@ -222,8 +230,8 @@ fn project_search_empty_state(
     }
     if !results_match_query {
         return ProjectSearchEmptyState {
-            title: "Results out of date".to_owned(),
-            detail: Some("Press Enter or Search to refresh.".to_owned()),
+            title: "Search updating".to_owned(),
+            detail: Some("Results will appear for the current filters.".to_owned()),
             color: Some(Color32::from_rgb(231, 185, 87)),
         };
     }
@@ -1205,8 +1213,8 @@ mod tests {
         assert_eq!(
             project_search_empty_state(&result, "needle", false),
             ProjectSearchEmptyState {
-                title: "Results out of date".to_owned(),
-                detail: Some("Press Enter or Search to refresh.".to_owned()),
+                title: "Search updating".to_owned(),
+                detail: Some("Results will appear for the current filters.".to_owned()),
                 color: Some(Color32::from_rgb(231, 185, 87)),
             }
         );
@@ -1223,8 +1231,8 @@ mod tests {
         assert_eq!(
             project_search_empty_state(&result, "needle", false),
             ProjectSearchEmptyState {
-                title: "Results out of date".to_owned(),
-                detail: Some("Press Enter or Search to refresh.".to_owned()),
+                title: "Search updating".to_owned(),
+                detail: Some("Results will appear for the current filters.".to_owned()),
                 color: Some(Color32::from_rgb(231, 185, 87)),
             }
         );

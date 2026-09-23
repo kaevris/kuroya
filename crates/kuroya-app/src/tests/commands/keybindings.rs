@@ -630,7 +630,7 @@ fn keybinding_panel_cancel_capture_clears_state_and_status_without_saving() {
     let mut app = app_for_keybindings_test(root.clone(), EditorSettings::default());
     let original_bindings = app.settings.keymap.bindings.clone();
     app.keybinding_capture_command = Some(Command::Undo);
-    app.status = "Capturing shortcut; press keys, or press Esc twice to cancel".to_owned();
+    app.status = "Capturing shortcut; press keys, or press Esc twice to bind Escape".to_owned();
 
     app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
         captured: Some(CapturedKeybinding::Cancel),
@@ -644,8 +644,8 @@ fn keybinding_panel_cancel_capture_clears_state_and_status_without_saving() {
 }
 
 #[test]
-fn keybinding_panel_first_escape_assigns_escape_and_keeps_capture_open() {
-    let root = temp_root("keybinding-panel-first-escape-capture");
+fn keybinding_panel_first_escape_arms_opt_in_without_binding() {
+    let root = temp_root("keybinding-panel-first-escape-arms");
     let mut settings = EditorSettings::default();
     settings.keymap.bindings = vec![KeyBinding {
         chord: "Ctrl+Z".to_owned(),
@@ -663,23 +663,99 @@ fn keybinding_panel_first_escape_assigns_escape_and_keeps_capture_open() {
     assert!(app.keybinding_escape_cancel.is_some());
     assert_eq!(
         keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
+        Some("Ctrl+Z".to_owned())
+    );
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::ToggleQuickOpen),
+        None
+    );
+    assert_eq!(app.status, "Press Esc again to bind Escape");
+    assert!(!settings_path(&root).exists());
+}
+
+#[test]
+fn keybinding_panel_second_escape_binds_escape() {
+    let root = temp_root("keybinding-panel-second-escape-binds");
+    let mut settings = EditorSettings::default();
+    settings.keymap.bindings = vec![KeyBinding {
+        chord: "Ctrl+Z".to_owned(),
+        command: Command::Undo,
+    }];
+    let mut app = app_for_keybindings_test(root.clone(), settings);
+    app.keybinding_capture_command = Some(Command::Undo);
+
+    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+        captured: Some(CapturedKeybinding::Escape),
+        ..PendingKeybindingsPanelActions::default()
+    });
+    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+        captured: Some(CapturedKeybinding::Escape),
+        ..PendingKeybindingsPanelActions::default()
+    });
+
+    assert_eq!(app.keybinding_capture_command, None);
+    assert!(app.keybinding_escape_cancel.is_none());
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
         Some("Escape".to_owned())
     );
     assert_eq!(
         keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::ToggleQuickOpen),
         None
     );
-    assert_eq!(
-        app.status,
-        "Bound Undo to Escape; press Esc again to cancel"
-    );
+    assert_eq!(app.status, "Bound Undo to Escape");
     let saved = fs::read_to_string(settings_path(&root)).expect("settings should be saved");
     assert!(saved.contains("chord = \"Escape\""));
+    assert!(!saved.contains("chord = \"Ctrl+Z\""));
 }
 
 #[test]
-fn keybinding_panel_second_escape_restores_previous_bindings_and_cancels() {
-    let root = temp_root("keybinding-panel-second-escape-cancels");
+fn keybinding_panel_second_escape_conflict_keeps_capture_open() {
+    let root = temp_root("keybinding-panel-second-escape-conflict");
+    let mut settings = EditorSettings::default();
+    settings.keymap.bindings = vec![
+        KeyBinding {
+            chord: "Escape".to_owned(),
+            command: Command::ToggleQuickOpen,
+        },
+        KeyBinding {
+            chord: "Ctrl+Z".to_owned(),
+            command: Command::Undo,
+        },
+    ];
+    let mut app = app_for_keybindings_test(root.clone(), settings);
+    app.keybinding_capture_command = Some(Command::Undo);
+
+    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+        captured: Some(CapturedKeybinding::Escape),
+        ..PendingKeybindingsPanelActions::default()
+    });
+    assert_eq!(app.status, "Press Esc again to bind Escape");
+    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+        captured: Some(CapturedKeybinding::Escape),
+        ..PendingKeybindingsPanelActions::default()
+    });
+
+    assert_eq!(app.keybinding_capture_command, Some(Command::Undo));
+    assert!(app.keybinding_escape_cancel.is_none());
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
+        Some("Ctrl+Z".to_owned())
+    );
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::ToggleQuickOpen),
+        Some("Escape".to_owned())
+    );
+    assert_eq!(
+        app.status,
+        "Could not bind Undo to Escape: already used by Quick Open"
+    );
+    assert!(!settings_path(&root).exists());
+}
+
+#[test]
+fn keybinding_panel_escape_after_arm_expiry_rearms_without_binding() {
+    let root = temp_root("keybinding-panel-escape-rearms-after-expiry");
     let mut settings = EditorSettings::default();
     settings.keymap.bindings = vec![KeyBinding {
         chord: "Ctrl+Z".to_owned(),
@@ -692,44 +768,14 @@ fn keybinding_panel_second_escape_restores_previous_bindings_and_cancels() {
         captured: Some(CapturedKeybinding::Escape),
         ..PendingKeybindingsPanelActions::default()
     });
-    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
-        captured: Some(CapturedKeybinding::Escape),
-        ..PendingKeybindingsPanelActions::default()
-    });
+    let deadline = app
+        .keybinding_escape_cancel
+        .as_ref()
+        .expect("escape capture should be armed")
+        .deadline;
+    assert!(app.finish_expired_keybinding_escape_capture(deadline));
 
-    assert_eq!(app.keybinding_capture_command, None);
-    assert!(app.keybinding_escape_cancel.is_none());
-    assert_eq!(
-        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
-        Some("Ctrl+Z".to_owned())
-    );
-    assert_eq!(
-        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::ToggleQuickOpen),
-        None
-    );
-    assert_eq!(app.status, "Canceled shortcut capture");
-    let saved = fs::read_to_string(settings_path(&root)).expect("settings should be saved");
-    assert!(saved.contains("chord = \"Ctrl+Z\""));
-    assert!(!saved.contains("chord = \"Escape\""));
-}
-
-#[test]
-fn keybinding_panel_first_escape_rejects_conflict_and_keeps_capture_open() {
-    let root = temp_root("keybinding-panel-first-escape-conflict");
-    let mut settings = EditorSettings::default();
-    settings.keymap.bindings = vec![
-        KeyBinding {
-            chord: "Escape".to_owned(),
-            command: Command::ToggleQuickOpen,
-        },
-        KeyBinding {
-            chord: "Ctrl+Z".to_owned(),
-            command: Command::Undo,
-        },
-    ];
-    let mut app = app_for_keybindings_test(root.clone(), settings);
     app.keybinding_capture_command = Some(Command::Undo);
-
     app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
         captured: Some(CapturedKeybinding::Escape),
         ..PendingKeybindingsPanelActions::default()
@@ -741,60 +787,13 @@ fn keybinding_panel_first_escape_rejects_conflict_and_keeps_capture_open() {
         keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
         Some("Ctrl+Z".to_owned())
     );
-    assert_eq!(
-        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::ToggleQuickOpen),
-        Some("Escape".to_owned())
-    );
-    assert_eq!(
-        app.status,
-        "Could not bind Undo to Escape: already used by Quick Open; press Esc again to cancel"
-    );
+    assert_eq!(app.status, "Press Esc again to bind Escape");
     assert!(!settings_path(&root).exists());
 }
 
 #[test]
-fn keybinding_panel_second_escape_after_conflict_cancels_without_saving() {
-    let root = temp_root("keybinding-panel-second-escape-conflict-cancels");
-    let mut settings = EditorSettings::default();
-    settings.keymap.bindings = vec![
-        KeyBinding {
-            chord: "Escape".to_owned(),
-            command: Command::ToggleQuickOpen,
-        },
-        KeyBinding {
-            chord: "Ctrl+Z".to_owned(),
-            command: Command::Undo,
-        },
-    ];
-    let mut app = app_for_keybindings_test(root.clone(), settings);
-    app.keybinding_capture_command = Some(Command::Undo);
-
-    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
-        captured: Some(CapturedKeybinding::Escape),
-        ..PendingKeybindingsPanelActions::default()
-    });
-    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
-        captured: Some(CapturedKeybinding::Escape),
-        ..PendingKeybindingsPanelActions::default()
-    });
-
-    assert_eq!(app.keybinding_capture_command, None);
-    assert!(app.keybinding_escape_cancel.is_none());
-    assert_eq!(
-        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
-        Some("Ctrl+Z".to_owned())
-    );
-    assert_eq!(
-        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::ToggleQuickOpen),
-        Some("Escape".to_owned())
-    );
-    assert_eq!(app.status, "Canceled shortcut capture");
-    assert!(!settings_path(&root).exists());
-}
-
-#[test]
-fn keybinding_panel_cancel_after_escape_restores_previous_bindings() {
-    let root = temp_root("keybinding-panel-cancel-after-escape-restores");
+fn keybinding_panel_cancel_after_escape_cancels_without_saving() {
+    let root = temp_root("keybinding-panel-cancel-after-escape");
     let mut settings = EditorSettings::default();
     settings.keymap.bindings = vec![KeyBinding {
         chord: "Ctrl+Z".to_owned(),
@@ -823,13 +822,11 @@ fn keybinding_panel_cancel_after_escape_restores_previous_bindings() {
         None
     );
     assert_eq!(app.status, "Canceled shortcut capture");
-    let saved = fs::read_to_string(settings_path(&root)).expect("settings should be saved");
-    assert!(saved.contains("chord = \"Ctrl+Z\""));
-    assert!(!saved.contains("chord = \"Escape\""));
+    assert!(!settings_path(&root).exists());
 }
 
 #[test]
-fn keybinding_panel_chord_after_escape_restores_previous_bindings_before_saving() {
+fn keybinding_panel_chord_after_escape_arms_binds_normally() {
     let root = temp_root("keybinding-panel-chord-after-escape-restores");
     let mut settings = EditorSettings::default();
     settings.keymap.bindings = vec![KeyBinding {
@@ -976,8 +973,8 @@ fn keybinding_panel_toggle_command_after_escape_restores_previous_bindings() {
 }
 
 #[test]
-fn keybinding_panel_second_escape_restores_pruned_bindings_after_stale_cleanup() {
-    let root = temp_root("keybinding-panel-second-escape-prunes-stale");
+fn keybinding_panel_second_escape_binds_and_cleans_stale_bindings() {
+    let root = temp_root("keybinding-panel-second-escape-cleans-stale");
     let mut settings = EditorSettings::default();
     settings.keymap.bindings = vec![
         KeyBinding {
@@ -1012,7 +1009,7 @@ fn keybinding_panel_second_escape_restores_pruned_bindings_after_stale_cleanup()
         captured: Some(CapturedKeybinding::Escape),
         ..PendingKeybindingsPanelActions::default()
     });
-    assert!(app.status.contains("cleaned 2 stale shortcuts"));
+    assert_eq!(app.status, "Press Esc again to bind Escape");
 
     app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
         captured: Some(CapturedKeybinding::Escape),
@@ -1023,7 +1020,7 @@ fn keybinding_panel_second_escape_restores_pruned_bindings_after_stale_cleanup()
     assert!(app.keybinding_escape_cancel.is_none());
     assert_eq!(
         keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
-        Some("Ctrl+Z".to_owned())
+        Some("Escape".to_owned())
     );
     assert_eq!(
         keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::ToggleQuickOpen),
@@ -1045,7 +1042,10 @@ fn keybinding_panel_second_escape_restores_pruned_bindings_after_stale_cleanup()
         keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::NavigateForward),
         None
     );
-    assert_eq!(app.status, "Canceled shortcut capture");
+    assert_eq!(
+        app.status,
+        "Bound Undo to Escape; cleaned 2 stale shortcuts"
+    );
 
     let reloaded = EditorSettings::load_or_create_with_recovery(&settings_path(&root))
         .expect("settings should reload")
@@ -1054,7 +1054,7 @@ fn keybinding_panel_second_escape_restores_pruned_bindings_after_stale_cleanup()
 }
 
 #[test]
-fn keybinding_panel_escape_capture_finalizes_after_cancel_window() {
+fn keybinding_panel_escape_arm_expiry_cancels_without_binding() {
     let root = temp_root("keybinding-panel-escape-capture-expiry");
     let mut settings = EditorSettings::default();
     settings.keymap.bindings = vec![KeyBinding {
@@ -1068,11 +1068,11 @@ fn keybinding_panel_escape_capture_finalizes_after_cancel_window() {
         captured: Some(CapturedKeybinding::Escape),
         ..PendingKeybindingsPanelActions::default()
     });
-    assert!(app.status.ends_with("; press Esc again to cancel"));
+    assert_eq!(app.status, "Press Esc again to bind Escape");
     let deadline = app
         .keybinding_escape_cancel
         .as_ref()
-        .expect("escape capture should wait for cancel")
+        .expect("escape capture should be armed")
         .deadline;
 
     assert!(app.finish_expired_keybinding_escape_capture(deadline));
@@ -1081,9 +1081,10 @@ fn keybinding_panel_escape_capture_finalizes_after_cancel_window() {
     assert!(app.keybinding_escape_cancel.is_none());
     assert_eq!(
         keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
-        Some("Escape".to_owned())
+        Some("Ctrl+Z".to_owned())
     );
-    assert_eq!(app.status, "Bound Undo to Escape");
+    assert_eq!(app.status, "Canceled shortcut capture");
+    assert!(!settings_path(&app.workspace.root).exists());
 }
 
 #[test]
@@ -1158,6 +1159,153 @@ fn keybinding_panel_captured_chord_persists_when_unbound() {
         Some("Ctrl+K".to_owned())
     );
     remove_root(&root);
+}
+
+#[test]
+fn saving_keybinding_warns_when_new_chord_is_shadowed() {
+    let root = temp_root("keybinding-save-shadowed");
+    let mut settings = EditorSettings::default();
+    settings.keymap.bindings = vec![KeyBinding {
+        chord: "Ctrl+S".to_owned(),
+        command: Command::SaveActive,
+    }];
+    let mut app = app_for_keybindings_test(root.clone(), settings);
+    app.keybinding_capture_command = Some(Command::SaveAs);
+
+    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+        captured: Some(CapturedKeybinding::Chord("Ctrl+Shift+S".to_owned())),
+        ..PendingKeybindingsPanelActions::default()
+    });
+
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::SaveAs),
+        Some("Ctrl+Shift+S".to_owned())
+    );
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::SaveActive),
+        Some("Ctrl+S".to_owned())
+    );
+    assert_eq!(
+        app.status,
+        "Warning: Ctrl+Shift+S is shadowed by existing Ctrl+S binding"
+    );
+    let saved = fs::read_to_string(settings_path(&root)).expect("settings should be saved");
+    assert!(saved.contains("chord = \"Ctrl+Shift+S\""));
+    remove_root(&root);
+}
+
+#[test]
+fn saving_keybinding_warns_when_new_chord_shadows_existing_binding() {
+    let root = temp_root("keybinding-save-shadows-existing");
+    let mut settings = EditorSettings::default();
+    settings.keymap.bindings = vec![KeyBinding {
+        chord: "Ctrl+Shift+S".to_owned(),
+        command: Command::SaveAs,
+    }];
+    let mut app = app_for_keybindings_test(root.clone(), settings);
+    app.keybinding_capture_command = Some(Command::SaveActive);
+
+    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+        captured: Some(CapturedKeybinding::Chord("Ctrl+S".to_owned())),
+        ..PendingKeybindingsPanelActions::default()
+    });
+
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::SaveActive),
+        Some("Ctrl+S".to_owned())
+    );
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::SaveAs),
+        Some("Ctrl+Shift+S".to_owned())
+    );
+    assert_eq!(
+        app.status,
+        "Warning: Ctrl+S shadows existing Ctrl+Shift+S binding"
+    );
+    let saved = fs::read_to_string(settings_path(&root)).expect("settings should be saved");
+    assert!(saved.contains("chord = \"Ctrl+S\""));
+    remove_root(&root);
+}
+
+#[test]
+fn resetting_keybinding_restores_factory_default_chord() {
+    let root = temp_root("keybinding-reset-restores-default");
+    let mut app = app_for_keybindings_test(root.clone(), EditorSettings::default());
+    app.save_keybinding_chord(Command::Undo, "Ctrl+Shift+Z".to_owned());
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
+        Some("Ctrl+Shift+Z".to_owned())
+    );
+
+    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+        reset_binding: Some(Command::Undo),
+        ..PendingKeybindingsPanelActions::default()
+    });
+
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
+        Some("Ctrl+Z".to_owned())
+    );
+    assert_eq!(app.status, "Restored default shortcut Ctrl+Z for Undo");
+    let saved = fs::read_to_string(settings_path(&root)).expect("settings should be saved");
+    assert!(saved.contains("chord = \"Ctrl+Z\""));
+    remove_root(&root);
+}
+
+#[test]
+fn resetting_keybinding_restores_default_after_clear() {
+    let root = temp_root("keybinding-reset-after-clear");
+    let mut app = app_for_keybindings_test(root.clone(), EditorSettings::default());
+    app.remove_keybinding_for_command(Command::Undo);
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
+        None
+    );
+
+    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+        reset_binding: Some(Command::Undo),
+        ..PendingKeybindingsPanelActions::default()
+    });
+
+    assert_eq!(
+        keybinding_chord_for_command(&app.settings.keymap.bindings, &Command::Undo),
+        Some("Ctrl+Z".to_owned())
+    );
+    assert_eq!(app.status, "Restored default shortcut Ctrl+Z for Undo");
+    let saved = fs::read_to_string(settings_path(&root)).expect("settings should be saved");
+    assert!(saved.contains("chord = \"Ctrl+Z\""));
+    remove_root(&root);
+}
+
+#[test]
+fn resetting_keybinding_reports_when_already_at_default() {
+    let root = temp_root("keybinding-reset-already-default");
+    let mut app = app_for_keybindings_test(root.clone(), EditorSettings::default());
+    let original_bindings = app.settings.keymap.bindings.clone();
+
+    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+        reset_binding: Some(Command::Undo),
+        ..PendingKeybindingsPanelActions::default()
+    });
+
+    assert_eq!(app.settings.keymap.bindings, original_bindings);
+    assert_eq!(app.status, "Undo already uses the default shortcut Ctrl+Z");
+    assert!(!settings_path(&root).exists());
+}
+
+#[test]
+fn resetting_keybinding_without_factory_default_keeps_bindings_unchanged() {
+    let root = temp_root("keybinding-reset-no-default");
+    let mut app = app_for_keybindings_test(root.clone(), EditorSettings::default());
+    let original_bindings = app.settings.keymap.bindings.clone();
+
+    app.apply_keybindings_panel_actions(PendingKeybindingsPanelActions {
+        reset_binding: Some(Command::OpenFile(PathBuf::from("notes.md"))),
+        ..PendingKeybindingsPanelActions::default()
+    });
+
+    assert_eq!(app.settings.keymap.bindings, original_bindings);
+    assert!(!settings_path(&root).exists());
 }
 
 fn app_for_keybindings_test(root: PathBuf, settings: EditorSettings) -> KuroyaApp {

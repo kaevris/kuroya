@@ -1,13 +1,20 @@
-use crate::ui_state::{clamp_selection, handle_list_navigation_keys, selection_page_step};
+use crate::{
+    ui_icon_shapes::draw_icon,
+    ui_icons::IconKind,
+    ui_state::{clamp_selection, handle_list_navigation_keys, selection_page_step},
+    update_checker::DEFAULT_UPDATE_GITHUB_REPOSITORY,
+};
 use eframe::egui;
-use kuroya_core::EditorSettings;
+use kuroya_core::{EditorSettings, SETTINGS_SCHEMA_VERSION};
 use std::ops::RangeInclusive;
 
 mod appearance;
+mod discord;
 mod editor;
 mod files;
 mod general;
 mod lsp;
+mod plugins;
 mod scrollbars;
 mod terminal;
 mod vim;
@@ -21,7 +28,9 @@ pub(super) const SETTINGS_SECTION_FILES: usize = 5;
 pub(super) const SETTINGS_SECTION_APPEARANCE: usize = 6;
 pub(super) const SETTINGS_SECTION_SOURCE_CONTROL: usize = 7;
 pub(super) const SETTINGS_SECTION_DEVELOPER: usize = 8;
-pub(super) const SETTINGS_SECTIONS: [&str; 9] = [
+pub(super) const SETTINGS_SECTION_PLUGINS: usize = 9;
+pub(super) const SETTINGS_SECTION_DISCORD: usize = 10;
+pub(super) const SETTINGS_SECTIONS: [&str; 11] = [
     "General",
     "Editor",
     "LSP",
@@ -31,6 +40,21 @@ pub(super) const SETTINGS_SECTIONS: [&str; 9] = [
     "Appearance",
     "Source Control",
     "Developer",
+    "Plugins",
+    "Discord",
+];
+const SETTINGS_SECTION_ICONS: [IconKind; SETTINGS_SECTIONS.len()] = [
+    IconKind::Settings,
+    IconKind::Code,
+    IconKind::Lsp,
+    IconKind::Keyboard,
+    IconKind::Terminal,
+    IconKind::File,
+    IconKind::Theme,
+    IconKind::GitBranch,
+    IconKind::Command,
+    IconKind::Command,
+    IconKind::Command,
 ];
 pub(super) const SETTINGS_DISPLAY_TEXT_MAX_CHARS: usize = 240;
 pub(super) const SETTINGS_TEXT_INPUT_MAX_CHARS: usize = 8_192;
@@ -57,6 +81,8 @@ pub(super) const SETTINGS_TARGET_FILES_SAVE_ACTIONS: &str = "settings.files.save
 pub(super) const SETTINGS_TARGET_FILES_SAVE_CLEANUP: &str = "settings.files.save_cleanup";
 pub(super) const SETTINGS_TARGET_APPEARANCE: &str = "settings.appearance";
 pub(super) const SETTINGS_TARGET_DEVELOPER: &str = "settings.developer";
+pub(super) const SETTINGS_TARGET_PLUGINS: &str = "settings.plugins";
+pub(super) const SETTINGS_TARGET_DISCORD: &str = "settings.discord";
 
 pub(super) struct SettingsHighlightState<'a> {
     active_target: Option<&'a str>,
@@ -136,10 +162,10 @@ pub(super) fn settings_target_block<R>(
 }
 
 pub(super) fn render_settings_sidebar(ui: &mut egui::Ui, selected: &mut usize) {
-    ui.spacing_mut().item_spacing = egui::vec2(0.0, 3.0);
+    ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
     clamp_selection(selected, SETTINGS_SECTIONS.len());
     let width = settings_sidebar_row_width(ui.available_width());
-    let row_height = 32.0;
+    let row_height = 40.0;
     let focus_id = ui.make_persistent_id("settings-sidebar-keyboard");
     let row_ids: [egui::Id; SETTINGS_SECTIONS.len()] =
         std::array::from_fn(|index| ui.make_persistent_id(("settings-sidebar-section", index)));
@@ -168,7 +194,7 @@ pub(super) fn render_settings_sidebar(ui: &mut egui::Ui, selected: &mut usize) {
             ui.memory_mut(|memory| memory.request_focus(focus_id));
         }
         let is_selected = *selected == index;
-        let has_focus = response.has_focus() || (sidebar_focused && is_selected);
+        let has_focus = is_selected && (response.has_focus() || sidebar_focused);
 
         response.widget_info(|| {
             egui::WidgetInfo::selected(
@@ -182,31 +208,14 @@ pub(super) fn render_settings_sidebar(ui: &mut egui::Ui, selected: &mut usize) {
         if is_selected || response.hovered() || has_focus {
             let visuals = ui.visuals();
             let fill = if is_selected {
-                visuals.selection.bg_fill
+                visuals.widgets.active.weak_bg_fill
             } else if has_focus {
                 visuals.widgets.active.bg_fill
             } else {
                 visuals.widgets.hovered.bg_fill
             };
             ui.painter()
-                .rect_filled(rect, egui::CornerRadius::same(4), fill);
-        }
-
-        if is_selected {
-            let marker = egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height()));
-            ui.painter().rect_filled(
-                marker,
-                egui::CornerRadius::same(1),
-                ui.visuals().selection.stroke.color,
-            );
-        }
-        if has_focus {
-            ui.painter().rect_stroke(
-                rect.shrink(1.0),
-                egui::CornerRadius::same(4),
-                egui::Stroke::new(1.0, ui.visuals().selection.stroke.color),
-                egui::StrokeKind::Inside,
-            );
+                .rect_filled(rect, egui::CornerRadius::same(6), fill);
         }
 
         let text_color = if is_selected {
@@ -214,14 +223,104 @@ pub(super) fn render_settings_sidebar(ui: &mut egui::Ui, selected: &mut usize) {
         } else {
             ui.visuals().weak_text_color()
         };
+        let icon_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 20.0, rect.center().y),
+            egui::vec2(20.0, 20.0),
+        );
+        draw_icon(ui, icon_rect, SETTINGS_SECTION_ICONS[index], text_color);
         ui.painter().text(
-            rect.left_center() + egui::vec2(12.0, 0.0),
+            rect.left_center() + egui::vec2(42.0, 0.0),
             egui::Align2::LEFT_CENTER,
             *label,
             egui::TextStyle::Button.resolve(ui.style()),
             text_color,
         );
     }
+}
+
+pub(super) fn render_settings_section_picker(ui: &mut egui::Ui, selected: &mut usize) {
+    clamp_selection(selected, SETTINGS_SECTIONS.len());
+    egui::ComboBox::from_id_salt("settings-section-picker")
+        .selected_text(SETTINGS_SECTIONS[*selected])
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for (index, label) in SETTINGS_SECTIONS.iter().enumerate() {
+                ui.selectable_value(selected, index, *label);
+            }
+        });
+}
+
+pub(super) fn settings_control_row(
+    ui: &mut egui::Ui,
+    title: &str,
+    description: &str,
+    add_control: impl FnOnce(&mut egui::Ui),
+) {
+    let available_width = ui.available_width().max(0.0);
+    if available_width >= 460.0 {
+        let row_height = 58.0;
+        let control_width = (available_width * 0.28).clamp(120.0, 220.0);
+        let gap = ui.spacing().item_spacing.x;
+        let (row_rect, _) = ui.allocate_exact_size(
+            egui::vec2(available_width, row_height),
+            egui::Sense::hover(),
+        );
+        let control_left = (row_rect.right() - control_width).max(row_rect.left());
+        let label_right = (control_left - gap).max(row_rect.left());
+        let label_rect = egui::Rect::from_min_max(
+            row_rect.left_top(),
+            egui::pos2(label_right, row_rect.bottom()),
+        );
+        let control_rect = egui::Rect::from_min_max(
+            egui::pos2(control_left, row_rect.top()),
+            row_rect.right_bottom(),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(label_rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| {
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(title).strong());
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(description).color(ui.visuals().weak_text_color()),
+                    )
+                    .truncate(),
+                );
+            },
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(control_rect)
+                .layout(egui::Layout::right_to_left(egui::Align::Center)),
+            add_control,
+        );
+    } else {
+        ui.vertical(|ui| {
+            ui.label(egui::RichText::new(title).strong());
+            ui.label(egui::RichText::new(description).color(ui.visuals().weak_text_color()));
+            ui.add_space(4.0);
+            add_control(ui);
+        });
+        ui.add_space(8.0);
+    }
+    ui.add_space(2.0);
+}
+
+pub(super) fn settings_toggle_row(
+    ui: &mut egui::Ui,
+    title: &str,
+    description: &str,
+    value: &mut bool,
+) {
+    settings_control_row(ui, title, description, |ui| {
+        settings_switch(ui, value, title).on_hover_text(title);
+    });
+}
+
+pub(super) fn settings_switch(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
+    crate::ui_switch::ui_switch_with_label(ui, value, label)
 }
 
 fn settings_sidebar_row_width(available_width: f32) -> f32 {
@@ -469,6 +568,10 @@ pub(super) fn render_editor_settings(
     highlight: &mut SettingsHighlightState<'_>,
 ) {
     editor::render_editor_settings(ui, draft, highlight);
+    #[cfg(debug_assertions)]
+    if std::env::var("KUROYA_DEBUG_NO_SB").is_ok() {
+        return;
+    }
     scrollbars::render_scrollbar_settings_with_highlight(ui, draft, highlight);
 }
 
@@ -494,12 +597,32 @@ pub(super) fn render_developer_settings(
     highlight: &mut SettingsHighlightState<'_>,
 ) {
     settings_target_block(ui, highlight, SETTINGS_TARGET_DEVELOPER, |ui| {
+        ui.label(egui::RichText::new("Application").strong());
+        egui::Grid::new("settings_developer_application_grid")
+            .num_columns(2)
+            .spacing([18.0, 10.0])
+            .show(ui, |ui| {
+                developer_info_row(ui, "Version", env!("CARGO_PKG_VERSION"));
+                developer_info_row(ui, "Package", env!("CARGO_PKG_NAME"));
+                developer_info_row(ui, "Build", developer_build_profile());
+                developer_info_row(ui, "Target", &developer_target_label());
+                developer_info_row(ui, "Settings schema", &SETTINGS_SCHEMA_VERSION.to_string());
+                developer_info_row(
+                    ui,
+                    "Update source",
+                    &developer_update_source_label(&draft.updates_github_repository),
+                );
+            });
+
+        ui.add_space(12.0);
+        ui.label(egui::RichText::new("Devtools").strong());
         egui::Grid::new("settings_developer_devtools_grid")
             .num_columns(2)
             .spacing([18.0, 10.0])
             .show(ui, |ui| {
                 ui.label("Devtools logging");
-                ui.checkbox(
+                settings_switch(
+                    ui,
                     &mut draft.devtools_verbose_logging,
                     "Verbose devtools logging",
                 );
@@ -507,11 +630,55 @@ pub(super) fn render_developer_settings(
 
                 ui.label("Devtools profiling");
                 ui.add_enabled_ui(cfg!(debug_assertions), |ui| {
-                    ui.checkbox(&mut draft.devtools_profiling_enabled, "Enable profiling");
+                    settings_switch(
+                        ui,
+                        &mut draft.devtools_profiling_enabled,
+                        "Enable profiling",
+                    );
                 });
                 ui.end_row();
             });
     });
+}
+
+fn developer_info_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.label(label);
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(value)
+                .monospace()
+                .small()
+                .color(ui.visuals().text_color()),
+        )
+        .wrap(),
+    );
+    ui.end_row();
+}
+
+fn developer_build_profile() -> &'static str {
+    if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    }
+}
+
+fn developer_target_label() -> String {
+    format!("{}/{}", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn developer_update_source_label(repository: &str) -> String {
+    let default_label = format!("{DEFAULT_UPDATE_GITHUB_REPOSITORY} (default)");
+    bounded_settings_display_text(repository, SETTINGS_DISPLAY_TEXT_MAX_CHARS, &default_label)
+}
+
+pub(super) fn render_plugins_settings(
+    ui: &mut egui::Ui,
+    draft: &mut EditorSettings,
+    discovered_plugins: &[kuroya_core::PluginDescriptor],
+    highlight: &mut SettingsHighlightState<'_>,
+) {
+    plugins::render_plugins_settings_with_highlight(ui, draft, discovered_plugins, highlight);
 }
 
 pub(super) fn render_vim_settings(
@@ -546,6 +713,14 @@ pub(super) fn render_files_settings(
     files::render_files_settings_with_highlight(ui, draft, highlight);
 }
 
+pub(super) fn render_discord_settings(
+    ui: &mut egui::Ui,
+    draft: &mut EditorSettings,
+    highlight: &mut SettingsHighlightState<'_>,
+) {
+    discord::render_discord_settings(ui, draft, highlight);
+}
+
 pub(super) fn render_appearance_settings(
     ui: &mut egui::Ui,
     draft: &mut EditorSettings,
@@ -557,6 +732,8 @@ pub(super) fn render_appearance_settings(
     clear_editor_font: &mut bool,
     choose_ui_font: &mut bool,
     clear_ui_font: &mut bool,
+    choose_background_image: &mut bool,
+    clear_background_image: &mut bool,
     status: &mut Option<String>,
     highlight: &mut SettingsHighlightState<'_>,
 ) {
@@ -571,6 +748,8 @@ pub(super) fn render_appearance_settings(
         clear_editor_font,
         choose_ui_font,
         clear_ui_font,
+        choose_background_image,
+        clear_background_image,
         status,
         highlight,
     );
@@ -579,12 +758,12 @@ pub(super) fn render_appearance_settings(
 #[cfg(test)]
 mod tests {
     use super::{
-        SETTINGS_DISPLAY_TEXT_MAX_CHARS, SETTINGS_SECTION_DEVELOPER, SETTINGS_SECTION_EDITOR,
-        SETTINGS_SECTION_GENERAL, SETTINGS_SECTION_LSP, SETTINGS_SECTION_VIM, SETTINGS_SECTIONS,
-        SETTINGS_TEXT_INPUT_MAX_CHARS, bounded_settings_display_text,
-        bounded_settings_multiline_input, bounded_singleline_text_edit,
-        finite_f32_drag_display_value, guarded_f32_drag_value, render_settings_sidebar,
-        settings_sidebar_row_width,
+        SETTINGS_DISPLAY_TEXT_MAX_CHARS, SETTINGS_SECTION_DISCORD, SETTINGS_SECTION_EDITOR,
+        SETTINGS_SECTION_GENERAL, SETTINGS_SECTION_LSP, SETTINGS_SECTION_PLUGINS,
+        SETTINGS_SECTION_VIM, SETTINGS_SECTIONS, SETTINGS_TEXT_INPUT_MAX_CHARS,
+        bounded_settings_display_text, bounded_settings_multiline_input,
+        bounded_singleline_text_edit, developer_update_source_label, finite_f32_drag_display_value,
+        guarded_f32_drag_value, render_settings_sidebar, settings_sidebar_row_width,
     };
     use eframe::egui::{self, Event, Key, Modifiers, RawInput};
 
@@ -629,7 +808,7 @@ mod tests {
 
         run_settings_sidebar_frame(&ctx, &mut selected, None, None);
 
-        assert_eq!(selected, SETTINGS_SECTION_DEVELOPER);
+        assert_eq!(selected, SETTINGS_SECTION_DISCORD);
     }
 
     #[test]
@@ -646,11 +825,15 @@ mod tests {
                 "Appearance",
                 "Source Control",
                 "Developer",
+                "Plugins",
+                "Discord",
             ]
         );
         assert_eq!(SETTINGS_SECTIONS[SETTINGS_SECTION_LSP], "LSP");
         assert_eq!(SETTINGS_SECTIONS[SETTINGS_SECTION_VIM], "Vim");
-        assert_eq!(SETTINGS_SECTION_DEVELOPER, SETTINGS_SECTIONS.len() - 1);
+        assert_eq!(SETTINGS_SECTIONS[SETTINGS_SECTION_PLUGINS], "Plugins");
+        assert_eq!(SETTINGS_SECTIONS[SETTINGS_SECTION_DISCORD], "Discord");
+        assert_eq!(SETTINGS_SECTION_DISCORD, SETTINGS_SECTIONS.len() - 1);
     }
 
     #[test]
@@ -681,6 +864,28 @@ mod tests {
             bounded_settings_display_text("\u{202e}\n", 32, " Bundled\nfont "),
             "Bundled font"
         );
+    }
+
+    #[test]
+    fn developer_update_source_label_uses_default_for_blank_values() {
+        assert_eq!(
+            developer_update_source_label("\u{202e}\n"),
+            "kaevris/kuroya (default)"
+        );
+    }
+
+    #[test]
+    fn developer_update_source_label_bounds_custom_values() {
+        let raw = format!(
+            "owner/repo{}\u{202e}\n",
+            "a".repeat(SETTINGS_DISPLAY_TEXT_MAX_CHARS)
+        );
+        let display = developer_update_source_label(&raw);
+
+        assert!(!display.contains('\u{202e}'));
+        assert!(!display.contains('\n'));
+        assert!(display.ends_with("..."));
+        assert!(display.chars().count() <= SETTINGS_DISPLAY_TEXT_MAX_CHARS);
     }
 
     #[test]

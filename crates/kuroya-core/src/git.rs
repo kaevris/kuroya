@@ -31,13 +31,13 @@ pub use self::diff::{
     clamp_diff_context_lines, clamp_diff_hide_unchanged_regions_minimum_line_count,
     clamp_diff_hide_unchanged_regions_reveal_line_count, clamp_diff_max_computation_time_ms,
     clamp_diff_max_file_size_mb, diff_max_file_size_bytes,
-    try_unified_diff_between_texts_with_options, unified_diff_between_texts,
-    unified_diff_between_texts_with_options,
+    try_unified_diff_between_texts_with_options,
 };
 use self::paths::{
-    DiscardPlan, GitRequestedPath, discover_worktree_repository, first_status_entry_path_label,
-    git_path_display, git_path_label_from_path, git_status_relative_path,
-    normalize_git_relative_path, status_entry_matches_requested_keys,
+    DiscardPlan, GitRequestedPath, GitWorktreePathContext, discover_worktree_repository,
+    extend_status_entry_paths, first_status_entry_path_label, git_path_display,
+    git_path_label_from_path, git_status_relative_path, normalize_git_relative_path,
+    status_entry_matches_requested_keys,
 };
 #[cfg(test)]
 use self::paths::{
@@ -46,11 +46,11 @@ use self::paths::{
     status_path_matches_requested_keys, worktree_relative_path,
 };
 pub use self::status::{GitStatusCounts, GitStatusEntry};
-use self::status::{GitStatusLookup, status_entries};
+use self::status::{GitStatusLookup, counts_from_status_lookups, status_entries};
 use anyhow::{Context, anyhow};
 use git2::{
-    BlameOptions, Index, IndexEntry, IndexTime, ObjectType, Oid, Repository, Sort, StashFlags,
-    StatusOptions, build::CheckoutBuilder,
+    BlameOptions, DiffFindOptions, Index, IndexEntry, IndexTime, ObjectType, Oid, Repository, Sort,
+    StashFlags, StatusOptions, Statuses, build::CheckoutBuilder,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -190,6 +190,8 @@ pub const MIN_GIT_COMMIT_SHORT_HASH_LENGTH: usize = 7;
 pub const DEFAULT_GIT_COMMIT_SHORT_HASH_LENGTH: usize = 7;
 pub const MAX_GIT_COMMIT_SHORT_HASH_LENGTH: usize = 40;
 const MAX_GIT_COMMIT_HISTORY_LIMIT: usize = 10_000;
+
+const MAX_GIT_COMMIT_DIFF_PATCH_BYTES: usize = 3 * 1024 * 1024;
 pub const MIN_GIT_STATUS_LIMIT: usize = 0;
 pub const DEFAULT_GIT_STATUS_LIMIT: usize = 10_000;
 pub const MAX_GIT_STATUS_LIMIT: usize = 1_000_000;
@@ -263,6 +265,17 @@ pub struct GitSnapshot {
     counts: GitStatusCounts,
     status_limited: bool,
     remote_divergence: Option<GitRemoteDivergence>,
+    scan_error: Option<String>,
+
+    revision: u64,
+}
+
+const MAX_GIT_SCAN_ERROR_CHARS: usize = 200;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GitScopedStatus {
+    pub entries: Vec<GitStatusEntry>,
+    pub status_limited: bool,
 }
 
 impl GitSnapshot {
@@ -309,8 +322,9 @@ impl GitSnapshot {
         similarity_threshold: usize,
         open_parent_repositories: bool,
     ) -> Self {
-        let Ok(repo) = scan_repository(workspace_root, open_parent_repositories) else {
-            return Self::default();
+        let repo = match scan_repository(workspace_root, open_parent_repositories) {
+            Ok(repo) => repo,
+            Err(error) => return snapshot_from_scan_failure(None, &error),
         };
         let Some(workdir) = repo.workdir().map(Path::to_path_buf) else {
             return Self::default();
@@ -331,71 +345,34 @@ impl GitSnapshot {
             .exclude_submodules(submodules.exclude_all)
             .rename_threshold(clamp_git_similarity_threshold(similarity_threshold) as u16);
 
-        let Ok(statuses) = repo.statuses(Some(&mut options)) else {
-            return Self::default();
+        let statuses = match repo.statuses(Some(&mut options)) {
+            Ok(statuses) => statuses,
+            Err(error) => return snapshot_from_scan_failure(Some(workdir), &error),
         };
 
         let status_limit = clamp_git_status_limit(status_limit);
-        let status_count = statuses.len();
-        let entry_capacity = status_count.saturating_mul(2).min(status_limit);
-        let status_capacity = status_count.min(status_limit);
-        let mut entries = Vec::with_capacity(entry_capacity);
-        let mut files = HashMap::with_capacity(status_capacity);
-        let mut counts = GitStatusCounts::default();
-        let mut emitted_statuses = 0usize;
-        let mut status_limited = false;
-        for (status_index, entry) in statuses.iter().enumerate() {
-            let Some(relative) = entry.path().ok().and_then(git_status_relative_path) else {
-                continue;
-            };
-            if submodules.excludes(&relative) {
-                continue;
-            }
-            let path = workdir.join(&relative);
-            let mut lookup: Option<GitStatusLookup> = None;
-            for (kind, stage) in status_entries(entry.status()) {
-                if emitted_statuses >= status_limit {
-                    status_limited = true;
-                    break;
-                }
-                counts.record(kind);
-                emitted_statuses += 1;
-                match lookup.as_mut() {
-                    Some(lookup) => lookup.record(kind, stage),
-                    None => lookup = Some(GitStatusLookup::new(kind, stage)),
-                }
-                entries.push(GitStatusEntry {
-                    path: path.clone(),
-                    status: kind,
-                    stage,
-                });
-            }
-            if let Some(lookup) = lookup {
-                files
-                    .entry(path)
-                    .and_modify(|existing: &mut GitStatusLookup| existing.merge(lookup))
-                    .or_insert(lookup);
-            }
-            if emitted_statuses >= status_limit && status_index + 1 < status_count {
-                status_limited = true;
-                break;
-            }
-        }
-        sort_status_entries(&mut entries);
+        let collected = collect_status_entries(&statuses, &workdir, &submodules, status_limit);
+        let counts = counts_from_status_lookups(collected.lookups.values());
 
         Self {
             root: Some(workdir),
             branch: branch_name(&repo),
-            entries,
-            statuses: files,
+            entries: collected.entries,
+            statuses: collected.lookups,
             counts,
-            status_limited,
+            status_limited: collected.status_limited,
             remote_divergence: upstream_divergence(&repo).ok().flatten(),
+            scan_error: None,
+            revision: 1,
         }
     }
 
     pub fn root(&self) -> Option<&Path> {
         self.root.as_deref()
+    }
+
+    pub fn has_repository(&self) -> bool {
+        self.root.is_some()
     }
 
     pub fn branch(&self) -> Option<&str> {
@@ -416,10 +393,24 @@ impl GitSnapshot {
         &self.entries
     }
 
+    pub fn entries_slice_sorted(&self) -> &[GitStatusEntry] {
+        debug_assert!(entries_are_display_sorted(&self.entries));
+        &self.entries
+    }
+
     pub fn entries(&self) -> Vec<GitStatusEntry> {
-        let mut entries = self.entries.clone();
-        sort_status_entries(&mut entries);
-        entries
+        debug_assert!(entries_are_display_sorted(&self.entries));
+        self.entries.clone()
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn advance_revision_past(&mut self, previous_revision: u64) {
+        if self.revision <= previous_revision {
+            self.revision = previous_revision.wrapping_add(1);
+        }
     }
 
     pub fn counts(&self) -> GitStatusCounts {
@@ -434,6 +425,15 @@ impl GitSnapshot {
         self.remote_divergence
     }
 
+    pub fn scan_error(&self) -> Option<&str> {
+        self.scan_error.as_deref()
+    }
+
+    pub fn with_scan_error(mut self, error: String) -> Self {
+        self.scan_error = Some(error);
+        self
+    }
+
     pub fn len(&self) -> usize {
         self.statuses.len()
     }
@@ -441,6 +441,87 @@ impl GitSnapshot {
     pub fn is_empty(&self) -> bool {
         self.statuses.is_empty()
     }
+
+    pub fn merge_scoped_statuses(
+        &mut self,
+        root: &Path,
+        queried_paths: &[PathBuf],
+        result_entries: Vec<GitStatusEntry>,
+        status_limit: usize,
+    ) -> bool {
+        if self.root.is_none() {
+            return false;
+        }
+        let status_limit = clamp_git_status_limit(status_limit);
+        let result_count = result_entries.len();
+        let result_paths = result_entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<BTreeSet<_>>();
+
+        let mut changed = false;
+        let mut replaced_paths = BTreeSet::new();
+        for queried in queried_paths {
+            let absolute = absolute_query_path(root, queried);
+            if !result_paths.contains(&absolute) && self.statuses.remove(&absolute).is_some() {
+                replaced_paths.insert(absolute);
+                changed = true;
+            }
+        }
+
+        let mut upserted_paths = BTreeSet::new();
+        for (path, lookup) in scoped_lookups(&result_entries) {
+            if self.statuses.get(&path) == Some(&lookup) {
+                continue;
+            }
+            self.statuses.insert(path.clone(), lookup);
+            upserted_paths.insert(path);
+            changed = true;
+        }
+
+        if result_count >= status_limit {
+            self.status_limited = true;
+        }
+        if !changed {
+            return false;
+        }
+
+        self.entries.retain(|entry| {
+            !replaced_paths.contains(&entry.path) && !upserted_paths.contains(&entry.path)
+        });
+        self.entries
+            .extend(result_entries.into_iter().filter(|entry| {
+                upserted_paths.contains(&entry.path) && !replaced_paths.contains(&entry.path)
+            }));
+        sort_status_entries(&mut self.entries);
+        self.counts = counts_from_status_lookups(self.statuses.values());
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
+}
+
+fn absolute_query_path(root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    }
+}
+
+fn scoped_lookups(result_entries: &[GitStatusEntry]) -> BTreeMap<PathBuf, GitStatusLookup> {
+    let mut lookups: BTreeMap<PathBuf, GitStatusLookup> = BTreeMap::new();
+    for entry in result_entries {
+        match lookups.get_mut(&entry.path) {
+            Some(lookup) => lookup.record(entry.status, entry.stage),
+            None => {
+                lookups.insert(
+                    entry.path.clone(),
+                    GitStatusLookup::new(entry.status, entry.stage),
+                );
+            }
+        }
+    }
+    lookups
 }
 
 fn sort_status_entries(entries: &mut [GitStatusEntry]) {
@@ -449,6 +530,104 @@ fn sort_status_entries(entries: &mut [GitStatusEntry]) {
             .cmp(&right.stage)
             .then_with(|| left.path.cmp(&right.path))
     });
+}
+
+fn entries_are_display_sorted(entries: &[GitStatusEntry]) -> bool {
+    use std::cmp::Ordering;
+    entries.windows(2).all(|window| {
+        window[0]
+            .stage
+            .cmp(&window[1].stage)
+            .then_with(|| window[0].path.cmp(&window[1].path))
+            != Ordering::Greater
+    })
+}
+
+#[derive(Debug, Default)]
+struct CollectedStatusEntries {
+    entries: Vec<GitStatusEntry>,
+    lookups: HashMap<PathBuf, GitStatusLookup>,
+    status_limited: bool,
+}
+
+fn collect_status_entries(
+    statuses: &Statuses<'_>,
+    workdir: &Path,
+    submodules: &GitSubmoduleDetection,
+    status_limit: usize,
+) -> CollectedStatusEntries {
+    let status_count = statuses.len();
+    let entry_capacity = status_count.saturating_mul(2).min(status_limit);
+    let status_capacity = status_count.min(status_limit);
+    let mut collected = CollectedStatusEntries {
+        entries: Vec::with_capacity(entry_capacity),
+        lookups: HashMap::with_capacity(status_capacity),
+        status_limited: false,
+    };
+    for (status_index, entry) in statuses.iter().enumerate() {
+        let Some(relative) = entry.path().ok().and_then(git_status_relative_path) else {
+            continue;
+        };
+        if submodules.excludes(&relative) {
+            continue;
+        }
+        let path = workdir.join(&relative);
+        let mut lookup: Option<GitStatusLookup> = None;
+        for (kind, stage) in status_entries(entry.status()) {
+            if collected.entries.len() >= status_limit {
+                collected.status_limited = true;
+                break;
+            }
+            match lookup.as_mut() {
+                Some(lookup) => lookup.record(kind, stage),
+                None => lookup = Some(GitStatusLookup::new(kind, stage)),
+            }
+            collected.entries.push(GitStatusEntry {
+                path: path.clone(),
+                status: kind,
+                stage,
+            });
+        }
+        if let Some(lookup) = lookup {
+            collected
+                .lookups
+                .entry(path)
+                .and_modify(|existing: &mut GitStatusLookup| existing.merge(lookup))
+                .or_insert(lookup);
+        }
+        if collected.entries.len() >= status_limit && status_index + 1 < status_count {
+            collected.status_limited = true;
+            break;
+        }
+    }
+    sort_status_entries(&mut collected.entries);
+    collected
+}
+
+fn snapshot_from_scan_failure(root: Option<PathBuf>, error: &git2::Error) -> GitSnapshot {
+    if error.code() == git2::ErrorCode::NotFound {
+        return GitSnapshot::default();
+    }
+    GitSnapshot {
+        root,
+        branch: None,
+        entries: Vec::new(),
+        statuses: HashMap::new(),
+        counts: GitStatusCounts::default(),
+        status_limited: false,
+        remote_divergence: None,
+        scan_error: Some(bounded_scan_error_message(error)),
+        revision: 1,
+    }
+}
+
+fn bounded_scan_error_message(error: &git2::Error) -> String {
+    error
+        .to_string()
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(MAX_GIT_SCAN_ERROR_CHARS)
+        .collect()
 }
 
 fn scan_repository(
@@ -460,6 +639,113 @@ fn scan_repository(
     } else {
         Repository::open(workspace_root)
     }
+}
+
+pub fn status_entries_for_paths(
+    repo: &Repository,
+    paths: &[PathBuf],
+    status_limit: usize,
+    ignore_submodules: bool,
+    detect_submodules: bool,
+    detect_submodules_limit: usize,
+    similarity_threshold: usize,
+) -> Result<GitScopedStatus, git2::Error> {
+    let status_limit = clamp_git_status_limit(status_limit);
+    let Some(workdir) = repo.workdir().map(Path::to_path_buf) else {
+        return Ok(GitScopedStatus::default());
+    };
+    if paths.is_empty() {
+        return Ok(GitScopedStatus::default());
+    }
+
+    let worktree = GitWorktreePathContext::for_repo(repo).map_err(scoped_status_path_error)?;
+    let pathspecs = scoped_status_pathspecs(&worktree, paths)?;
+    let submodules = git_submodule_detection(
+        repo,
+        ignore_submodules,
+        detect_submodules,
+        detect_submodules_limit,
+    );
+    let statuses = scoped_status_list(
+        repo,
+        &pathspecs,
+        submodules.exclude_all,
+        Some(clamp_git_similarity_threshold(similarity_threshold) as u16),
+    )?;
+    let collected = collect_status_entries(&statuses, &workdir, &submodules, status_limit);
+
+    Ok(GitScopedStatus {
+        entries: collected.entries,
+        status_limited: collected.status_limited,
+    })
+}
+
+fn scoped_status_path_error(error: anyhow::Error) -> git2::Error {
+    git2::Error::from_str(&error.to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn git_scoped_status_snapshot(
+    snapshot: &GitSnapshot,
+    paths: &[PathBuf],
+    status_limit: usize,
+    ignore_submodules: bool,
+    detect_submodules: bool,
+    detect_submodules_limit: usize,
+    similarity_threshold: usize,
+    open_parent_repositories: bool,
+) -> Option<GitSnapshot> {
+    let root = snapshot.root()?;
+    let repo = scan_repository(root, open_parent_repositories).ok()?;
+    let scoped = status_entries_for_paths(
+        &repo,
+        paths,
+        status_limit,
+        ignore_submodules,
+        detect_submodules,
+        detect_submodules_limit,
+        similarity_threshold,
+    )
+    .ok()?;
+    let mut updated = snapshot.clone();
+    updated.merge_scoped_statuses(root, paths, scoped.entries, status_limit);
+    Some(updated)
+}
+
+fn scoped_status_pathspecs(
+    worktree: &GitWorktreePathContext,
+    paths: &[PathBuf],
+) -> Result<Vec<String>, git2::Error> {
+    let mut pathspecs = Vec::with_capacity(paths.len());
+    for path in paths {
+        let relative = worktree
+            .relative_path(path)
+            .map_err(scoped_status_path_error)?;
+        pathspecs.push(git_path_display(&relative));
+    }
+    Ok(pathspecs)
+}
+
+fn scoped_status_list<'repo>(
+    repo: &'repo Repository,
+    pathspecs: &[String],
+    exclude_submodules: bool,
+    rename_threshold: Option<u16>,
+) -> Result<Statuses<'repo>, git2::Error> {
+    let mut options = StatusOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .renames_head_to_index(true)
+        .renames_index_to_workdir(true)
+        .exclude_submodules(exclude_submodules);
+    if let Some(threshold) = rename_threshold {
+        options.rename_threshold(threshold);
+    }
+    for pathspec in pathspecs {
+        options.pathspec(pathspec.as_str());
+    }
+    repo.statuses(Some(&mut options))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -568,6 +854,13 @@ pub fn list_commit_history_with_timeline_date(
 
     let short_hash_length = clamp_git_commit_short_hash_length(short_hash_length);
     let repo = Repository::discover(workspace_root)?;
+
+    if let Err(error) = repo.head() {
+        if error.code() == git2::ErrorCode::UnbornBranch {
+            return Ok(Vec::new());
+        }
+        return Err(error.into());
+    }
     let mut revwalk = repo.revwalk()?;
     revwalk.push_head()?;
     revwalk.set_sorting(Sort::TIME | Sort::TOPOLOGICAL)?;
@@ -598,6 +891,12 @@ pub fn list_commit_history_with_timeline_date(
     Ok(commits)
 }
 
+fn commit_diff_find_options() -> DiffFindOptions {
+    let mut find_options = DiffFindOptions::new();
+    find_options.renames(true);
+    find_options
+}
+
 pub fn unified_diff_for_commit(workspace_root: &Path, commit_ref: &str) -> anyhow::Result<String> {
     let commit_ref = commit_ref.trim();
     if commit_ref.is_empty() {
@@ -612,8 +911,9 @@ pub fn unified_diff_for_commit(workspace_root: &Path, commit_ref: &str) -> anyho
     } else {
         None
     };
-    let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)?;
-    diff_to_patch_text(&diff)
+    let mut diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)?;
+    diff.find_similar(Some(&mut commit_diff_find_options()))?;
+    diff_to_patch_text(&diff, MAX_GIT_COMMIT_DIFF_PATCH_BYTES)
 }
 
 pub fn unified_diff_for_stash(workspace_root: &Path, index: usize) -> anyhow::Result<String> {
@@ -626,13 +926,15 @@ pub fn unified_diff_for_stash(workspace_root: &Path, index: usize) -> anyhow::Re
     } else {
         None
     };
-    let diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)?;
-    let mut patch = diff_to_patch_text(&diff)?;
+    let mut diff = repo.diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)?;
+    diff.find_similar(Some(&mut commit_diff_find_options()))?;
+    let mut patch = diff_to_patch_text(&diff, MAX_GIT_COMMIT_DIFF_PATCH_BYTES)?;
 
-    if commit.parent_count() > 2 {
+    if commit.parent_count() > 2 && patch.len() < MAX_GIT_COMMIT_DIFF_PATCH_BYTES {
         let untracked_tree = commit.parent(2)?.tree()?;
         let untracked_diff = repo.diff_tree_to_tree(None, Some(&untracked_tree), None)?;
-        patch.push_str(&diff_to_patch_text(&untracked_diff)?);
+        let remaining = MAX_GIT_COMMIT_DIFF_PATCH_BYTES - patch.len();
+        patch.push_str(&diff_to_patch_text(&untracked_diff, remaining)?);
     }
 
     Ok(patch)
@@ -1179,20 +1481,57 @@ pub fn stage_paths<'a>(
     paths: impl IntoIterator<Item = &'a Path>,
 ) -> anyhow::Result<()> {
     let (repo, worktree) = discover_worktree_repository(workspace_root)?;
-    let mut index = repo.index()?;
+    let requested = paths
+        .into_iter()
+        .map(|path| worktree.relative_path(path))
+        .collect::<anyhow::Result<BTreeSet<_>>>()?;
+    if requested.is_empty() {
+        return Ok(());
+    }
 
-    for path in paths {
-        let relative = worktree.relative_path(path)?;
-        if worktree.absolute_path(&relative).exists() {
-            index.add_path(&relative)?;
-        } else {
-            index.remove_path(&relative)?;
+    let mut targets = requested.clone();
+    targets.extend(status_matched_paths(&repo, &requested)?);
+
+    let mut index = repo.index()?;
+    for relative in &targets {
+        if worktree.absolute_path(relative).exists() {
+            index.add_path(relative)?;
+        } else if index.get_path(relative, 0).is_some() {
+            index.remove_path(relative)?;
         }
-        clear_index_conflict_for_path(&mut index, &relative)?;
+        clear_index_conflict_for_path(&mut index, relative)?;
     }
 
     index.write()?;
     Ok(())
+}
+
+fn status_matched_paths(
+    repo: &Repository,
+    requested: &BTreeSet<PathBuf>,
+) -> anyhow::Result<BTreeSet<PathBuf>> {
+    let requested_keys = requested
+        .iter()
+        .map(|relative| git_path_display(relative))
+        .collect::<BTreeSet<_>>();
+    let mut options = StatusOptions::new();
+    options
+        .include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .renames_head_to_index(true)
+        .renames_index_to_workdir(true);
+    let statuses = repo.statuses(Some(&mut options))?;
+
+    let mut matched = BTreeSet::new();
+    for entry in statuses.iter() {
+        if entry.status().is_conflicted()
+            || !status_entry_matches_requested_keys(&entry, &requested_keys)
+        {
+            continue;
+        }
+        extend_status_entry_paths(&entry, &mut matched);
+    }
+    Ok(matched)
 }
 
 fn clear_index_conflict_for_path(index: &mut Index, relative: &Path) -> anyhow::Result<()> {
@@ -1261,18 +1600,25 @@ pub fn unstage_paths<'a>(
     paths: impl IntoIterator<Item = &'a Path>,
 ) -> anyhow::Result<()> {
     let (repo, worktree) = discover_worktree_repository(workspace_root)?;
-    let pathspecs = paths
+    let requested = paths
         .into_iter()
-        .map(|path| {
-            worktree
-                .relative_path(path)
-                .map(|relative| git_path_display(&relative))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .map(|path| worktree.relative_path(path))
+        .collect::<anyhow::Result<BTreeSet<_>>>()?;
+    if requested.is_empty() {
+        return Ok(());
+    }
+
+    let mut targets = requested.clone();
+    targets.extend(status_matched_paths(&repo, &requested)?);
+
     let head = repo
         .head()
         .ok()
         .and_then(|head| head.peel(ObjectType::Any).ok());
+    let pathspecs = targets
+        .iter()
+        .map(|relative| git_path_display(relative))
+        .collect::<Vec<_>>();
 
     repo.reset_default(head.as_ref(), pathspecs)?;
     Ok(())
@@ -1300,13 +1646,12 @@ pub fn discard_paths<'a>(
         return Ok(());
     }
 
-    let mut options = StatusOptions::new();
-    options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .renames_head_to_index(true)
-        .renames_index_to_workdir(true);
-    let statuses = repo.statuses(Some(&mut options))?;
+    let absolute_paths = requested
+        .iter()
+        .map(|path| worktree.absolute_path(&path.relative))
+        .collect::<Vec<_>>();
+    let pathspecs = scoped_status_pathspecs(&worktree, &absolute_paths)?;
+    let statuses = scoped_status_list(&repo, &pathspecs, false, None)?;
     let mut plan = DiscardPlan::default();
 
     {

@@ -10,13 +10,16 @@ use crate::{
         line_number_label,
     },
     editor_row_overlays::code_lens_command_at_pointer,
-    editor_row_paint::paint_editor_row,
+    editor_row_paint::{editor_row_wrap_width, limit_layout_job_line_rendering, paint_editor_row},
+    editor_row_render_cache::{EditorRowRenderKey, GpuRowRenderScope},
     editor_text_geometry::{char_offset_for_visual_column, visual_width},
     folding::{FoldedRange, best_folding_range_starting_at, folded_range_starting_at},
     source_control_blame_runtime::git_blame_editor_decoration_hover_text,
     syntax_tree_cache::TreeSitterInjection,
 };
-use eframe::egui::{self, Color32, PointerButton, Rect, WidgetInfo, pos2, vec2};
+use eframe::egui::{
+    self, Color32, FontFamily, FontId, PointerButton, Rect, WidgetInfo, pos2, vec2,
+};
 use kuroya_core::{
     DEFAULT_EDITOR_STOP_RENDERING_LINE_AFTER, DiagnosticSeverity, EditorBracketPairGuideMode,
     EditorColorDecoratorsActivatedOn, EditorCursorSmoothCaretAnimation, EditorCursorStyle,
@@ -82,6 +85,7 @@ pub(crate) struct EditorRowContext<'a> {
     pub(crate) font_size: f32,
     pub(crate) text_color: Color32,
     pub(crate) weak_text_color: Color32,
+    pub(crate) background_image_active: bool,
     pub(crate) selection_bg_fill: Color32,
     pub(crate) warn_fg_color: Color32,
     pub(crate) line_numbers: EditorLineNumbers,
@@ -203,6 +207,7 @@ pub(crate) fn render_editor_row(
     line_idx: usize,
     highlighted_job: Option<egui::text::LayoutJob>,
     bracket_colors: &[BracketColor],
+    gpu_row_render: Option<&mut GpuRowRenderScope<'_>>,
     row: &EditorRowContext<'_>,
     pending_actions: &mut PendingEditorPaneActions,
 ) {
@@ -478,11 +483,41 @@ pub(crate) fn render_editor_row(
     }
     register_editor_row_accessibility(&response, line_idx, row);
 
+    let prepared_galley = gpu_row_render.and_then(|scope| {
+        let job = highlighted_job.as_ref()?;
+        let wrap_max_width = editor_row_wrap_width(
+            rect.width(),
+            row.gutter_width,
+            row.word_wrap,
+            row.word_wrap_column,
+            row.char_width,
+        );
+        let stop_rendering_line_after = row.stop_rendering_line_after;
+        let key = EditorRowRenderKey::new(
+            row.buffer.id(),
+            row.buffer.version(),
+            line_idx,
+            wrap_max_width.to_bits(),
+            &FontId::new(row.font_size, FontFamily::Monospace),
+            scope.theme_revision,
+            row.text_color,
+            row.tab_width,
+            stop_rendering_line_after,
+        );
+        Some(scope.cache.get_or_compute(key, || {
+            let mut job = job.clone();
+            limit_layout_job_line_rendering(&mut job, stop_rendering_line_after);
+            job.wrap.max_width = wrap_max_width;
+            ui.fonts_mut(|fonts| fonts.layout_job(job))
+        }))
+    });
+
     paint_editor_row(
         ui,
         rect,
         line_idx,
         highlighted_job,
+        prepared_galley,
         bracket_colors,
         row,
         row_hovered,

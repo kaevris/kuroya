@@ -103,6 +103,7 @@ impl TerminalPane {
         self.prune_stale_session_state();
         let panel_size = bounded_terminal_layout_size(ui.available_size_before_wrap());
         ui.set_min_size(panel_size);
+        let panel_rect = ui.min_rect();
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         self.render_header(ui);
         if self.search_open {
@@ -114,9 +115,40 @@ impl TerminalPane {
             bounded_terminal_layout_size(vec2(available.x, available.y.max(64.0))),
             command_bus,
         );
+        self.render_paste_notice(ui, panel_rect);
         self.render_multiline_paste_warning(ui.ctx());
         self.render_kill_confirmation(ui.ctx());
         self.render_rename_terminal_dialog(ui.ctx());
+    }
+
+    fn render_paste_notice(&mut self, ui: &mut egui::Ui, panel_rect: Rect) {
+        self.expire_paste_notice();
+        let Some((message, remaining)) = self
+            .active_paste_notice()
+            .map(|(message, remaining)| (message.to_owned(), remaining))
+        else {
+            return;
+        };
+        ui.ctx().request_repaint_after(remaining);
+
+        let text_color = ui.visuals().warn_fg_color;
+        let background = blend_color(terminal_background(ui), text_color, 0.08);
+        let painter = ui.painter_at(panel_rect);
+        let font = FontId::proportional(12.5);
+        let galley = painter.layout_no_wrap(message, font, text_color);
+        let margin = vec2(10.0, 6.0);
+        let size = galley.size() + margin * 2.0;
+        let rect = Align2::RIGHT_BOTTOM
+            .align_size_within_rect(size, panel_rect.shrink(8.0))
+            .intersect(panel_rect);
+        painter.rect_filled(rect, 6.0, background);
+        painter.rect_stroke(
+            rect,
+            6.0,
+            Stroke::new(1.0, text_color),
+            egui::StrokeKind::Inside,
+        );
+        painter.galley(rect.left_top() + margin, galley, text_color);
     }
 
     fn render_header(&mut self, ui: &mut egui::Ui) {
@@ -844,6 +876,9 @@ impl TerminalPane {
         let accent = terminal_accent(ui);
         let selection_fill = blend_color(accent, terminal_background, 0.58);
         let search_fill = blend_color(Color32::from_rgb(231, 185, 87), terminal_background, 0.42);
+
+        let active_search_fill =
+            blend_color(Color32::from_rgb(255, 152, 0), terminal_background, 0.85);
         let ansi_palette = colors::terminal_ansi_palette_from_colors(
             terminal_background,
             default_text,
@@ -860,8 +895,11 @@ impl TerminalPane {
             &ansi_palette,
         );
         let search_spans = if self.search_open {
+            let active = self.active_terminal_search_screen_match(screen);
             self.cached_terminal_search_query()
-                .map(|query| terminal_visible_search_spans_with_normalized_query(screen, query))
+                .map(|query| {
+                    terminal_visible_search_spans_with_normalized_query(screen, query, active)
+                })
                 .unwrap_or_default()
         } else {
             Vec::new()
@@ -914,8 +952,14 @@ impl TerminalPane {
                     let search_match_cell = search_spans
                         .get(row_search_span_index)
                         .is_some_and(|span| span.contains_cell(row, col));
+                    let active_search_match_cell = search_match_cell
+                        && search_spans
+                            .get(row_search_span_index)
+                            .is_some_and(|span| span.active);
                     if !select_all && selected_text_cell {
                         painter.rect_filled(cell_rect, 0.0, selection_fill);
+                    } else if active_search_match_cell {
+                        painter.rect_filled(cell_rect, 0.0, active_search_fill);
                     } else if search_match_cell {
                         painter.rect_filled(cell_rect, 0.0, search_fill);
                     } else if colors.background != terminal_background {
@@ -926,6 +970,8 @@ impl TerminalPane {
                     if !text.is_empty() {
                         let text_background = if select_all || selected_text_cell {
                             selection_fill
+                        } else if active_search_match_cell {
+                            active_search_fill
                         } else if search_match_cell {
                             search_fill
                         } else {
@@ -1387,6 +1433,9 @@ impl TerminalPane {
         let mut cancel = false;
 
         egui::Window::new("Paste Multiple Lines")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 24.0,
+            ))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -1424,6 +1473,9 @@ impl TerminalPane {
         let mut cancel = false;
 
         egui::Window::new("Kill Terminal")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 24.0,
+            ))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -1466,6 +1518,9 @@ impl TerminalPane {
         let mut cancel = false;
 
         egui::Window::new("Rename Terminal")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 24.0,
+            ))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

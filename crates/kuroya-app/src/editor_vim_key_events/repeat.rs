@@ -3,6 +3,7 @@ use kuroya_core::TextBuffer;
 use super::{
     EditorVimLastChange, EditorVimMode, EditorVimOperatorGoKind, EditorVimOperatorMotion,
     EditorVimRegister, EditorVimRepeatAction, VIM_MAX_COUNT, VimKeyResult,
+    vim_apply_change_operator_motion, vim_apply_change_operator_motion_into_named_register,
     vim_apply_operator_motion, vim_apply_operator_motion_into_named_register, vim_combined_count,
     vim_convert_case_operator_motion, vim_toggle_case_operator_motion, vim_yank_operator_motion,
     vim_yank_operator_motion_into_named_register,
@@ -41,7 +42,7 @@ pub(super) fn handle_vim_operator_go_motion_key_event(
     let count = vim_combined_count(operator_count, motion_count);
     match operator {
         EditorVimOperatorGoKind::Change => {
-            let changed = vim_apply_operator_motion(
+            let changed = vim_apply_change_operator_motion(
                 buffer,
                 operator_count,
                 motion_count,
@@ -58,7 +59,7 @@ pub(super) fn handle_vim_operator_go_motion_key_event(
             )
         }
         EditorVimOperatorGoKind::ChangeIntoRegister(register) => {
-            let changed = vim_apply_operator_motion_into_named_register(
+            let changed = vim_apply_change_operator_motion_into_named_register(
                 buffer,
                 operator_count,
                 motion_count,
@@ -149,16 +150,17 @@ pub(super) fn handle_vim_operator_go_motion_key_event(
 pub(super) fn vim_record_insert_change(
     last_change: &mut Option<EditorVimLastChange>,
     action: EditorVimRepeatAction,
+    count: usize,
 ) {
     *last_change = Some(EditorVimLastChange {
         action,
-        count: 1,
+        count: count.clamp(1, VIM_MAX_COUNT),
         insert_replay: Vec::new(),
     });
 }
 
 impl EditorVimRepeatAction {
-    pub(super) fn accepts_inserted_text(self) -> bool {
+    pub(super) fn accepts_inserted_text(&self) -> bool {
         matches!(
             self,
             Self::ChangeLines
@@ -180,7 +182,7 @@ impl EditorVimRepeatAction {
         )
     }
 
-    pub(super) fn is_plain_insert(self) -> bool {
+    pub(super) fn is_plain_insert(&self) -> bool {
         matches!(
             self,
             Self::AppendAfterCursor

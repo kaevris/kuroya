@@ -20,7 +20,8 @@ pub(in crate::editor_vim_key_events) fn vim_apply_last_change(
 ) -> bool {
     let count = repeat_count.unwrap_or(change.count).clamp(1, VIM_MAX_COUNT);
     let action = change.action;
-    let outcome = vim_apply_repeat_action(buffer, action, count, unnamed_register, indent_unit);
+    let outcome =
+        vim_apply_repeat_action(buffer, action.clone(), count, unnamed_register, indent_unit);
 
     if action.accepts_inserted_text() && !change.insert_replay.is_empty() {
         let insert_count = if action.is_plain_insert() { count } else { 1 };

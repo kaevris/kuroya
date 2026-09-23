@@ -28,7 +28,13 @@ impl KuroyaApp {
         if !self.require_trusted_source_control_mutation("discarding changes") {
             return;
         }
-        let paths = self.git.entries().into_iter().map(|entry| entry.path);
+
+        let paths = self
+            .git
+            .entries_slice_sorted()
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
         let Some(paths) = self.current_source_control_discard_paths(paths) else {
             return;
         };
@@ -101,6 +107,9 @@ impl KuroyaApp {
         let title = prompt.title();
 
         egui::Window::new(title)
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 24.0,
+            ))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

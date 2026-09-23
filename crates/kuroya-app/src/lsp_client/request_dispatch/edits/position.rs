@@ -1,8 +1,8 @@
+use crate::lsp_client::pending::PendingLspRequests;
 mod completion;
 mod signature;
 
-use crate::lsp_client::{commands::LspClientCommand, pending::PendingLspRequest};
-use std::collections::HashMap;
+use crate::lsp_client::commands::LspClientCommand;
 use tokio::process::ChildStdin;
 
 enum PositionEditRequestKind {
@@ -26,7 +26,7 @@ pub(super) async fn handle_position_edit_request_command(
     command: LspClientCommand,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     let Some(kind) = position_edit_request_kind(&command) else {
         return true;

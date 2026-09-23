@@ -3,7 +3,8 @@ use kuroya_core::TextBuffer;
 
 use super::super::search::vim_clear_search_input;
 use super::super::visual::{
-    vim_set_visual_character_selection, vim_visual_character_clamped_cursor,
+    vim_set_visual_character_selection, vim_set_visual_line_selection,
+    vim_visual_character_clamped_cursor,
 };
 use super::super::{
     EditorVimPendingKey, VimKeyResult, vim_clear_command_input, vim_count_digit,
@@ -48,6 +49,16 @@ pub(super) fn handle_vim_direct_pending_starter_key(
             *pending = Some(EditorVimPendingKey::VisualCharacter {
                 anchor: cursor,
                 cursor,
+            });
+            Some(VimKeyResult::handled(suppress_text))
+        }
+        Key::V if modifiers.shift => {
+            let cursor = vim_visual_character_clamped_cursor(buffer, buffer.cursor());
+            vim_set_visual_line_selection(buffer, cursor, cursor);
+            *pending = Some(EditorVimPendingKey::VisualLine {
+                anchor: cursor,
+                cursor,
+                count: None,
             });
             Some(VimKeyResult::handled(suppress_text))
         }

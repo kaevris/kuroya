@@ -4,6 +4,7 @@ mod code_action_signature_formatting;
 mod completion_snippet;
 mod hierarchy_symbol;
 mod uri;
+mod watched_files;
 mod workspace_edit;
 mod workspace_symbol;
 
@@ -153,6 +154,56 @@ fn parses_publish_diagnostics_notification() {
 }
 
 #[test]
+fn publish_diagnostics_without_severity_default_to_error() {
+    let uri = path_to_file_uri(Path::new("src/main.rs"));
+    let value = json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": {
+            "uri": uri,
+            "diagnostics": [{
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 1 }
+                },
+                "message": "missing severity"
+            }]
+        }
+    });
+
+    let (_, _, diagnostics) = parse_publish_diagnostics(&value).unwrap();
+
+    assert_eq!(diagnostics.len(), 1);
+
+    assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Error);
+
+    let params = PublishDiagnosticsParams {
+        uri,
+        version: None,
+        diagnostics: vec![LspDiagnostic {
+            range: LspRange {
+                start: LspPosition {
+                    line: 0,
+                    character: 0,
+                },
+                end: LspPosition {
+                    line: 0,
+                    character: 1,
+                },
+            },
+            severity: None,
+            source: None,
+            tags: Vec::new(),
+            message: "missing severity".to_owned(),
+        }],
+    };
+
+    let (_, _, diagnostics) = diagnostics_from_lsp(params).unwrap();
+
+    assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Error);
+}
+
+#[test]
 fn lsp_ranges_reject_overflow_and_reversed_coordinates() {
     let overflow = json!({
         "start": { "line": u64::MAX, "character": 0 },
@@ -178,9 +229,218 @@ fn lsp_ranges_reject_overflow_and_reversed_coordinates() {
 }
 
 #[test]
-fn deserialized_diagnostics_reject_invalid_ranges() {
+fn parse_prepare_rename_response_reads_object_range_and_placeholder() {
+    let response = json!({
+        "id": 9,
+        "result": {
+            "range": {
+                "start": { "line": 2, "character": 4 },
+                "end": { "line": 2, "character": 12 }
+            },
+            "placeholder": "old_symbol"
+        }
+    });
+
+    assert_eq!(
+        parse_prepare_rename_response(&response),
+        Some(LspPrepareRename {
+            start_line: 3,
+            start_column: 5,
+            end_line: 3,
+            end_column: 13,
+            placeholder: Some("old_symbol".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn parse_prepare_rename_response_reads_bare_range_and_deprecated_start_end_shapes() {
+    let bare_range = json!({
+        "id": 9,
+        "result": {
+            "start": { "line": 0, "character": 0 },
+            "end": { "line": 0, "character": 4 }
+        }
+    });
+    let wrapped_range = json!({
+        "id": 9,
+        "result": {
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 4 }
+            }
+        }
+    });
+    let expected = Some(LspPrepareRename {
+        start_line: 1,
+        start_column: 1,
+        end_line: 1,
+        end_column: 5,
+        placeholder: None,
+    });
+
+    assert_eq!(parse_prepare_rename_response(&bare_range), expected);
+    assert_eq!(parse_prepare_rename_response(&wrapped_range), expected);
+}
+
+#[test]
+fn parse_prepare_rename_response_rejects_null_malformed_and_reversed_results() {
+    let null_result = json!({ "id": 9, "result": null });
+    assert_eq!(parse_prepare_rename_response(&null_result), None);
+
+    let missing_range = json!({ "id": 9, "result": { "placeholder": "orphan" } });
+    assert_eq!(parse_prepare_rename_response(&missing_range), None);
+
+    let reversed = json!({
+        "id": 9,
+        "result": {
+            "range": {
+                "start": { "line": 5, "character": 4 },
+                "end": { "line": 5, "character": 2 }
+            }
+        }
+    });
+    assert_eq!(parse_prepare_rename_response(&reversed), None);
+
+    let malformed = json!({
+        "id": 9,
+        "result": {
+            "range": {
+                "start": { "line": -1, "character": 0 },
+                "end": { "line": 0, "character": 0 }
+            }
+        }
+    });
+    assert_eq!(parse_prepare_rename_response(&malformed), None);
+
+    assert_eq!(parse_prepare_rename_response(&json!({ "id": 9 })), None);
+}
+
+#[test]
+fn parse_prepare_rename_response_bounds_and_drops_placeholder_text() {
+    let oversized = "x".repeat(MAX_LSP_PREPARE_RENAME_PLACEHOLDER_CHARS + 1);
+    let response = json!({
+        "id": 9,
+        "result": {
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "placeholder": oversized
+        }
+    });
+
+    let parsed = parse_prepare_rename_response(&response).expect("oversized placeholder parses");
+    assert_eq!(
+        parsed.placeholder,
+        Some("x".repeat(MAX_LSP_PREPARE_RENAME_PLACEHOLDER_CHARS))
+    );
+
+    let non_string_placeholder = json!({
+        "id": 9,
+        "result": {
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            },
+            "placeholder": 42
+        }
+    });
+    let parsed = parse_prepare_rename_response(&non_string_placeholder).expect("parses");
+    assert_eq!(parsed.placeholder, None);
+}
+
+#[test]
+fn prepare_rename_request_encodes_text_document_position_params() {
+    let message = LspWireMessage::prepare_rename(11, Path::new("src/main.rs"), 3, 7);
+    let LspWireMessage::Request { id, method, params } = message else {
+        panic!("expected a request message");
+    };
+
+    assert_eq!(id, 11);
+    assert_eq!(method, "textDocument/prepareRename");
+    assert_eq!(
+        params
+            .get("textDocument")
+            .and_then(|document| document.get("uri"))
+            .and_then(Value::as_str),
+        Some(path_to_file_uri(Path::new("src/main.rs")).as_str())
+    );
+    assert_eq!(
+        params.get("position"),
+        Some(&json!({ "line": 3, "character": 7 }))
+    );
+}
+
+#[test]
+fn initialize_request_advertises_rename_prepare_support() {
+    let LspWireMessage::Request { method, params, .. } =
+        LspWireMessage::initialize(1, Path::new("workspace"))
+    else {
+        panic!("expected the initialize request");
+    };
+
+    assert_eq!(method, "initialize");
+    assert_eq!(
+        params
+            .get("capabilities")
+            .and_then(|capabilities| capabilities.get("textDocument"))
+            .and_then(|text_document| text_document.get("rename"))
+            .and_then(|rename| rename.get("prepareSupport"))
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+}
+
+#[test]
+fn deserialized_diagnostics_skip_malformed_entries_instead_of_dropping_publish() {
     let uri = path_to_file_uri(Path::new("src/main.rs"));
     let params = PublishDiagnosticsParams {
+        uri: uri.clone(),
+        version: Some(7),
+        diagnostics: vec![
+            LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 4,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 2,
+                    },
+                },
+                severity: None,
+                source: None,
+                tags: Vec::new(),
+                message: "bad range".to_owned(),
+            },
+            LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 2,
+                        character: 1,
+                    },
+                    end: LspPosition {
+                        line: 2,
+                        character: 5,
+                    },
+                },
+                severity: Some(1),
+                source: None,
+                tags: Vec::new(),
+                message: "good range".to_owned(),
+            },
+        ],
+    };
+
+    let (_, version, diagnostics) = diagnostics_from_lsp(params).unwrap();
+    assert_eq!(version, Some(7));
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].line, 3);
+    assert_eq!(diagnostics[0].message, "good range");
+
+    let all_malformed = PublishDiagnosticsParams {
         uri,
         version: None,
         diagnostics: vec![LspDiagnostic {
@@ -200,8 +460,103 @@ fn deserialized_diagnostics_reject_invalid_ranges() {
             message: "bad range".to_owned(),
         }],
     };
+    let (_, _, diagnostics) = diagnostics_from_lsp(all_malformed).unwrap();
+    assert!(diagnostics.is_empty());
+}
 
-    assert!(diagnostics_from_lsp(params).is_none());
+#[test]
+fn deserialized_multi_line_ranges_store_line_end_sentinel() {
+    let uri = path_to_file_uri(Path::new("src/main.rs"));
+    let params = PublishDiagnosticsParams {
+        uri,
+        version: None,
+        diagnostics: vec![
+            LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 2,
+                        character: 4,
+                    },
+                    end: LspPosition {
+                        line: 6,
+                        character: 9,
+                    },
+                },
+                severity: None,
+                source: None,
+                tags: Vec::new(),
+                message: "multi line".to_owned(),
+            },
+            LspDiagnostic {
+                range: LspRange {
+                    start: LspPosition {
+                        line: 0,
+                        character: 3,
+                    },
+                    end: LspPosition {
+                        line: 0,
+                        character: 3,
+                    },
+                },
+                severity: None,
+                source: None,
+                tags: Vec::new(),
+                message: "zero width single line".to_owned(),
+            },
+        ],
+    };
+
+    let (_, _, diagnostics) = diagnostics_from_lsp(params).unwrap();
+
+    assert_eq!(diagnostics.len(), 2);
+
+    assert_eq!(diagnostics[0].line, 3);
+    assert_eq!(diagnostics[0].column, 5);
+    assert_eq!(diagnostics[0].char_range, 4..usize::MAX);
+
+    assert_eq!(diagnostics[1].char_range, 3..4);
+}
+
+#[test]
+fn published_diagnostics_skip_malformed_entries_and_store_multi_line_sentinel() {
+    let uri = path_to_file_uri(Path::new("src/main.rs"));
+    let value = json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": {
+            "uri": uri,
+            "diagnostics": [
+                {
+                    "range": "garbage",
+                    "message": "malformed"
+                },
+                {
+                    "range": {
+                        "start": { "line": 0, "character": 1 },
+                        "end": { "line": 3, "character": 7 }
+                    },
+                    "message": "multi line"
+                },
+                {
+                    "range": {
+                        "start": { "line": 1, "character": 2 },
+                        "end": { "line": 1, "character": 6 }
+                    },
+                    "message": "single line"
+                }
+            ]
+        }
+    });
+
+    let (_, _, diagnostics) = parse_publish_diagnostics(&value).unwrap();
+
+    assert_eq!(diagnostics.len(), 2);
+    assert_eq!(diagnostics[0].line, 1);
+    assert_eq!(diagnostics[0].column, 2);
+    assert_eq!(diagnostics[0].char_range, 1..usize::MAX);
+    assert_eq!(diagnostics[0].message, "multi line");
+    assert_eq!(diagnostics[1].char_range, 2..6);
+    assert_eq!(diagnostics[1].message, "single line");
 }
 
 #[test]

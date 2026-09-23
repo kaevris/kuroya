@@ -222,7 +222,12 @@ impl KuroyaApp {
     }
 
     pub(crate) fn open_all_file_changes(&mut self) {
-        let entries = self.git.entries();
+        let entries = self
+            .git
+            .entries_slice_sorted()
+            .iter()
+            .map(|entry| (entry.path.clone(), entry.stage))
+            .collect::<Vec<_>>();
         if entries.is_empty() {
             self.status = "No source control changes".to_owned();
             return;
@@ -230,13 +235,13 @@ impl KuroyaApp {
 
         let count = entries.len();
         let request_id = self.reserve_source_control_diff_open_request_id();
-        for entry in entries {
-            match entry.stage {
+        for (path, stage) in entries {
+            match stage {
                 GitChangeStage::Staged => {
-                    self.open_staged_file_changes_with_request_id(entry.path, request_id)
+                    self.open_staged_file_changes_with_request_id(path, request_id)
                 }
                 GitChangeStage::Unstaged => {
-                    self.open_file_changes_with_request_id(entry.path, request_id)
+                    self.open_file_changes_with_request_id(path, request_id)
                 }
             }
         }
@@ -252,22 +257,24 @@ impl KuroyaApp {
     }
 
     fn open_all_file_changes_for_stage(&mut self, stage: GitChangeStage) {
+        let paths = self
+            .git
+            .entries_slice_sorted()
+            .iter()
+            .filter(|entry| entry.stage == stage)
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
         let mut count = 0usize;
         let mut request_id = None;
-        for entry in self
-            .git
-            .entries()
-            .into_iter()
-            .filter(|entry| entry.stage == stage)
-        {
+        for path in paths {
             let request_id = *request_id
                 .get_or_insert_with(|| self.reserve_source_control_diff_open_request_id());
             match stage {
                 GitChangeStage::Staged => {
-                    self.open_staged_file_changes_with_request_id(entry.path, request_id)
+                    self.open_staged_file_changes_with_request_id(path, request_id)
                 }
                 GitChangeStage::Unstaged => {
-                    self.open_file_changes_with_request_id(entry.path, request_id)
+                    self.open_file_changes_with_request_id(path, request_id)
                 }
             }
             count += 1;
@@ -301,17 +308,19 @@ impl KuroyaApp {
     }
 
     pub(crate) fn copy_all_changes_patch(&mut self, _ctx: &Context) {
-        let inputs = self.source_control_patch_copy_inputs(self.git.entries());
+        let inputs = self.source_control_patch_copy_inputs(self.git.entries_slice_sorted());
         self.spawn_source_control_patch_copy(SourceControlPatchCopyRequest::All, inputs);
     }
 
     pub(crate) fn copy_stage_patch(&mut self, _ctx: &Context, stage: GitChangeStage) {
         let entries = self
             .git
-            .entries()
-            .into_iter()
-            .filter(|entry| entry.stage == stage);
-        let inputs = self.source_control_patch_copy_inputs(entries);
+            .entries_slice_sorted()
+            .iter()
+            .filter(|entry| entry.stage == stage)
+            .cloned()
+            .collect::<Vec<_>>();
+        let inputs = self.source_control_patch_copy_inputs(&entries);
         self.spawn_source_control_patch_copy(
             SourceControlPatchCopyRequest::Stage { stage },
             inputs,
@@ -724,15 +733,12 @@ impl KuroyaApp {
 
     fn source_control_patch_copy_inputs(
         &self,
-        entries: impl IntoIterator<Item = kuroya_core::GitStatusEntry>,
+        entries: &[kuroya_core::GitStatusEntry],
     ) -> Vec<SourceControlPatchCopyInput> {
-        let entries = entries.into_iter();
-        let (lower_bound, _) = entries.size_hint();
-        let mut inputs = Vec::with_capacity(lower_bound);
-        for entry in entries {
-            inputs.push(self.source_control_patch_copy_input(entry.path, entry.stage));
-        }
-        inputs
+        entries
+            .iter()
+            .map(|entry| self.source_control_patch_copy_input(entry.path.clone(), entry.stage))
+            .collect()
     }
 
     fn source_control_patch_copy_input(

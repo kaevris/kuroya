@@ -1,6 +1,7 @@
 use crate::{
     KuroyaApp,
     buffer_close_lifecycle::buffer_close_status_label,
+    fs_watcher::note_app_write,
     path_display::{display_error_label_cow, display_path_label_cow},
     save_lifecycle::{
         FinishedSaveRequest, apply_save_completion, finish_current_save_request,
@@ -46,11 +47,11 @@ impl KuroyaApp {
                     if close_requested {
                         self.restore_dirty_close_guard_after_close_save(id);
                     }
-                    self.status = file_save_event_status(format!(
+                    self.set_status_with_toast(file_save_event_status(format!(
                         "Saved {}; {} is already open",
                         display_path_label_cow(&path),
                         self.file_io_buffer_label(target_id)
-                    ));
+                    )));
                     if let Some(queued_path) = queued_save_path {
                         self.resume_queued_save_after_current_event(id, queued_path);
                     }
@@ -60,6 +61,7 @@ impl KuroyaApp {
                 let old_diagnostic_path = self
                     .buffer(id)
                     .map(|buffer| self.diagnostic_path_for(buffer));
+                note_app_write(&path);
                 let still_dirty = self
                     .buffer_mut(id)
                     .is_some_and(|buffer| apply_save_completion(buffer, path.clone(), version));
@@ -95,9 +97,10 @@ impl KuroyaApp {
                 if lsp_sync.save {
                     self.notify_lsp_save(id);
                 }
-                self.spawn_git_auto_refresh();
+                self.spawn_git_refresh_for_saved_path(&path);
+                self.refresh_local_history_browser_after_save(&path);
                 if !preserve_conflict_status {
-                    self.status = save_completion_status(&path, still_dirty);
+                    self.set_status_with_toast(save_completion_status(&path, still_dirty));
                 }
                 if let Some(queued_path) = queued_save_path {
                     self.resume_queued_save_after_current_event(id, queued_path);
@@ -118,7 +121,7 @@ impl KuroyaApp {
                         && let Some(close_status) = close_status
                         && !preserve_conflict_status
                     {
-                        self.status = close_status;
+                        self.set_status_with_toast(close_status);
                     }
                 } else if close_requested {
                     self.restore_dirty_close_guard_after_close_save(id);
@@ -144,20 +147,20 @@ impl KuroyaApp {
                     FinishedSaveRequest::Stale => return,
                 };
                 if let Some(queued_path) = queued_save_path {
-                    self.status = file_save_event_status(format!(
+                    self.set_status_with_toast(file_save_event_status(format!(
                         "Retrying queued save after {} failed",
                         display_path_label_cow(&path)
-                    ));
+                    )));
                     self.resume_queued_save_after_current_event(id, queued_path);
                 } else {
                     if self.close_after_save == Some(id) {
                         self.restore_dirty_close_guard_after_close_save(id);
                     }
-                    self.status = file_save_event_status(format!(
+                    self.set_status_with_toast(file_save_event_status(format!(
                         "Could not save {}: {}",
                         display_path_label_cow(&path),
                         display_error_label_cow(&error)
-                    ));
+                    )));
                 }
                 self.pause_pending_workspace_switch_after_save_failure(id);
                 self.pause_pending_exit_after_save_failure(id);
@@ -176,7 +179,10 @@ impl KuroyaApp {
         if self.save_needs_observed_external_change_confirmation(id, &queued_path) {
             self.save_conflict_buffer.get_or_insert(id);
             self.set_active_buffer(id);
-            self.status = format!("{} changed on disk", self.file_io_buffer_label(id));
+            self.set_status_with_toast(format!(
+                "{} changed on disk",
+                self.file_io_buffer_label(id)
+            ));
             return;
         }
 
@@ -253,6 +259,33 @@ mod tests {
         });
 
         assert_eq!(app.status, "before");
+    }
+
+    #[test]
+    fn same_path_save_completion_records_recent_app_write_marker() {
+        let root = PathBuf::from("workspace");
+        let path = root.join("src/kuroya-save-marker/main.rs");
+        let mut app = app_for_test(root.clone());
+        let mut buffer = TextBuffer::from_text(7, Some(path.clone()), "dirty".to_owned());
+        buffer.mark_dirty();
+        let version = buffer.version();
+        app.buffers.push(buffer);
+        app.in_flight_saves.insert(7);
+
+        assert!(!crate::fs_watcher::is_recent_app_write(&path));
+        app.handle_file_save_event(UiEvent::FileSaved {
+            root,
+            generation: app.workspace_event_generation,
+            id: 7,
+            path: path.clone(),
+            version,
+        });
+
+        assert!(!app.buffer(7).unwrap().is_dirty());
+        assert!(crate::fs_watcher::is_recent_app_write(&path));
+        assert!(!crate::fs_watcher::is_recent_app_write(
+            &path.with_file_name("lib.rs")
+        ));
     }
 
     #[test]

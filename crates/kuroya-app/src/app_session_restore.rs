@@ -20,13 +20,14 @@ use crate::{
         normalize_navigation_history,
     },
     layout::{
-        clamp_diagnostics_panel_width, clamp_explorer_width, clamp_project_search_width,
-        clamp_source_control_width, clamp_symbols_panel_width, clamp_terminal_height,
+        clamp_diagnostics_panel_width, clamp_explorer_width, clamp_source_control_width,
+        clamp_symbols_panel_width, clamp_terminal_height,
     },
     lsp_workspace_symbol_ranking::{
         MAX_WORKSPACE_SYMBOL_QUERY_MEMORY, normalize_workspace_symbol_query_memory,
     },
-    persistence::{BufferViewState, PaneBufferViewState, PersistedSession},
+    path_display::sanitized_display_label_cow,
+    persistence::{BufferViewState, PaneBufferViewState, PersistedSession, SkippedRecoveredBuffer},
     persistence_session::normalize_persisted_session_paths_for_restore,
     project_search_state::{MAX_PROJECT_SEARCH_RECENT_QUERIES, normalize_recent_project_searches},
     quick_open::{
@@ -52,13 +53,19 @@ use crate::{
 };
 use kuroya_core::{BufferId, TerminalHideOnStartup, TextBuffer};
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     ffi::OsStr,
+    fmt::Write as _,
     mem,
     path::{Component, Path, PathBuf},
 };
 
 mod panes;
+
+const RESTORED_SESSION_STATUS_MAX_CHARS: usize = 160;
+const RECOVERY_SKIP_GROUP_MAX: usize = 4;
+const RECOVERY_SKIP_GROUP_LABEL_MAX_CHARS: usize = 48;
 
 #[derive(Clone, Copy)]
 struct PendingViewportScroll {
@@ -147,11 +154,11 @@ impl KuroyaApp {
                 .extend(explorer_ancestor_paths(&self.workspace.root, path));
         }
         self.project_search = session.project_search_open;
-        self.project_search_placement = session.project_search_placement;
-        self.project_search_width = clamp_project_search_width(session.project_search_width);
+        self.project_search_focus_query = self.project_search;
         self.project_search_query = mem::take(&mut session.project_search_query);
         self.project_search_case_sensitive = session.project_search_case_sensitive;
         self.project_search_whole_word = session.project_search_whole_word;
+        self.project_search_regex = session.project_search_regex;
         self.project_search_include = mem::take(&mut session.project_search_include);
         self.project_search_exclude = mem::take(&mut session.project_search_exclude);
         self.project_search_recent = normalize_recent_project_searches(
@@ -229,6 +236,7 @@ impl KuroyaApp {
         self.source_control_branch_operation_in_flight_request_ids
             .clear();
         self.source_control_stash_message = mem::take(&mut session.source_control_stash_message);
+        self.source_control_stash_query = mem::take(&mut session.source_control_stash_query);
         self.source_control_stashes_open = session.source_control_stashes_open;
         self.source_control_stashes.clear();
         self.source_control_stash_selected = 0;
@@ -286,6 +294,7 @@ impl KuroyaApp {
         );
         self.folded_ranges = folded_ranges_from_session(&session.fold_states);
 
+        let saved_open_file_order = session.open_files.clone();
         let mut restored_by_path = HashMap::with_capacity(session.recovery.len());
         for (recovery_index, recovered) in session.recovery.into_iter().enumerate() {
             let id = self.next_id();
@@ -331,7 +340,12 @@ impl KuroyaApp {
             }
             self.buffers.push(buffer);
             self.spawn_diagnostics_for(id);
+            if path.is_some() {
+                self.notify_lsp_open(id);
+            }
         }
+
+        reorder_restored_buffers_to_saved_order(&mut self.buffers, &saved_open_file_order);
 
         let pane_weights = session.pane_weights;
         let pane_ids_by_index = self.restore_session_panes(
@@ -378,15 +392,7 @@ impl KuroyaApp {
             self.pending_active_path = None;
         }
 
-        self.status = if session.recovery_skipped.is_empty() {
-            format!("Restored {} recovered buffers", self.buffers.len())
-        } else {
-            format!(
-                "Restored {} recovered buffers; {} oversized buffers were not snapshotted",
-                self.buffers.len(),
-                session.recovery_skipped.len()
-            )
-        };
+        self.status = restored_session_status(self.buffers.len(), &session.recovery_skipped);
     }
 
     fn clear_session_restore_runtime_state(&mut self) {
@@ -429,6 +435,7 @@ impl KuroyaApp {
         self.editor_selection_clipboard = None;
         self.ime_preedit = None;
         self.pending_language_sync.clear();
+        self.pending_lsp_resync.clear();
     }
 
     fn restore_session_pane_view_states(
@@ -585,6 +592,76 @@ pub(crate) fn restore_session_workspace_root_matches(
     session_root.as_os_str().is_empty() || trusted_workspace_paths_match(current_root, session_root)
 }
 
+fn restored_session_status(restored_count: usize, skipped: &[SkippedRecoveredBuffer]) -> String {
+    let mut status = format!("Restored {restored_count} recovered buffers");
+    if let Some(summary) = recovery_skip_summary(skipped) {
+        let _ = write!(status, "; {summary}");
+    }
+
+    match sanitized_display_label_cow(
+        &status,
+        RESTORED_SESSION_STATUS_MAX_CHARS,
+        "Restored buffers",
+    ) {
+        Cow::Borrowed(_) => status,
+        Cow::Owned(label) => label,
+    }
+}
+
+fn recovery_skip_summary(skipped: &[SkippedRecoveredBuffer]) -> Option<String> {
+    if skipped.is_empty() {
+        return None;
+    }
+
+    let mut groups: Vec<(Cow<'_, str>, usize)> = Vec::new();
+    for entry in skipped {
+        let label = recovery_skip_reason_label(&entry.reason);
+        match groups.iter_mut().find(|(existing, _)| *existing == label) {
+            Some(group) => group.1 += 1,
+            None => {
+                if groups.len() < RECOVERY_SKIP_GROUP_MAX {
+                    groups.push((label, 1));
+                }
+            }
+        }
+    }
+    let details = groups
+        .iter()
+        .map(|(label, count)| format!("{count} {label}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let noun = if skipped.len() == 1 {
+        "buffer"
+    } else {
+        "buffers"
+    };
+    Some(format!(
+        "skipped {} {noun} not snapshotted: {details}",
+        skipped.len()
+    ))
+}
+
+fn recovery_skip_reason_label(reason: &str) -> Cow<'_, str> {
+    if reason.contains("count limit") {
+        Cow::Borrowed("count limit")
+    } else if reason.contains("per-buffer") {
+        Cow::Borrowed("per-buffer limit")
+    } else if reason.contains("total") {
+        Cow::Borrowed("total limit")
+    } else if reason.contains("duplicate") {
+        Cow::Borrowed("duplicate path")
+    } else {
+        Cow::Owned(
+            sanitized_display_label_cow(
+                reason,
+                RECOVERY_SKIP_GROUP_LABEL_MAX_CHARS,
+                "unspecified reason",
+            )
+            .into_owned(),
+        )
+    }
+}
+
 fn clear_restore_path_state(session: &mut PersistedSession) {
     session.open_files.clear();
     session.active_path = None;
@@ -658,6 +735,28 @@ fn pending_legacy_viewport_scroll(
             .min(buffer.len_lines().saturating_sub(1)),
         horizontal_offset: horizontal_scroll_offset_from_view_state(view_state),
     }
+}
+
+fn reorder_restored_buffers_to_saved_order(buffers: &mut Vec<TextBuffer>, saved_order: &[PathBuf]) {
+    if buffers.len() < 2 || saved_order.is_empty() {
+        return;
+    }
+    let mut keyed: Vec<(usize, TextBuffer)> = std::mem::take(buffers)
+        .into_iter()
+        .map(|buffer| {
+            let saved_position = buffer
+                .path()
+                .and_then(|path| {
+                    saved_order
+                        .iter()
+                        .position(|saved| paths_match_exact_or_lexically(saved, path))
+                })
+                .unwrap_or(usize::MAX);
+            (saved_position, buffer)
+        })
+        .collect();
+    keyed.sort_by_key(|(saved_position, _)| *saved_position);
+    buffers.extend(keyed.into_iter().map(|(_, buffer)| buffer));
 }
 
 fn restorable_session_open_files(

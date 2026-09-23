@@ -2,6 +2,7 @@ use super::capture::{handle_vim_key_capture, store_vim_key_capture_state, vim_ke
 use crate::preference_panels::sections::{
     SETTINGS_TARGET_VIM_KEYBINDINGS, SettingsHighlightState, settings_target_block,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::EditorSettings;
 
@@ -26,7 +27,7 @@ pub(super) fn render_vim_settings(
             .spacing([18.0, 10.0])
             .show(ui, |ui| {
                 ui.label("Mode");
-                ui.checkbox(&mut draft.vim_keybindings, "Enabled");
+                ui_switch(ui, &mut draft.vim_keybindings);
                 ui.end_row();
 
                 ui.label("Custom bindings");
