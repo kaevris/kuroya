@@ -476,6 +476,138 @@ fn restored_session_status_bounds_unknown_skip_reasons() {
 }
 
 #[test]
+fn restore_session_reports_actual_recovery_skip_reasons() {
+    let root = temp_root("restore-skip-reasons");
+    fs::create_dir_all(&root).unwrap();
+
+    let mut app = app_for_test(root.clone());
+    app.restore_session(PersistedSession {
+        workspace_root: root.clone(),
+        recent_projects: Vec::new(),
+        recovery: vec![RecoveredBuffer {
+            path: None,
+            display_name: "kept.rs".to_owned(),
+            text: "recovered\n".to_owned(),
+        }],
+        recovery_skipped: vec![
+            SkippedRecoveredBuffer {
+                path: None,
+                display_name: "large-a.rs".to_owned(),
+                bytes: 4096,
+                reason: "exceeds per-buffer recovery limit (1024 bytes)".to_owned(),
+            },
+            SkippedRecoveredBuffer {
+                path: None,
+                display_name: "large-b.rs".to_owned(),
+                bytes: 4096,
+                reason: "exceeds per-buffer recovery limit (1024 bytes)".to_owned(),
+            },
+            SkippedRecoveredBuffer {
+                path: None,
+                display_name: "dupe.rs".to_owned(),
+                bytes: 32,
+                reason: "duplicate recovery path already captured by newer dirty buffer".to_owned(),
+            },
+            SkippedRecoveredBuffer {
+                path: None,
+                display_name: "late.rs".to_owned(),
+                bytes: 4096,
+                reason: "exceeds total recovery limit (4096 bytes)".to_owned(),
+            },
+        ],
+        ..PersistedSession::default()
+    });
+
+    assert_eq!(app.buffers.len(), 1);
+    assert_eq!(
+        app.status,
+        "Restored 1 recovered buffers; skipped 4 buffers not snapshotted: \
+         2 per-buffer limit, 1 duplicate path, 1 total limit"
+    );
+    drop(app);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn restore_session_notifies_lsp_for_recovered_dirty_disk_buffers() {
+    let root = temp_root("restore-lsp-open");
+    let source = root.join("src").join("main.rs");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, b"fn main() {}\n").unwrap();
+
+    let mut app = app_for_test(root.clone());
+    app.lsp_clients
+        .insert("rust".to_owned(), LspClientHandle::accepting_for_test());
+
+    app.restore_session(PersistedSession {
+        workspace_root: root.clone(),
+        recovery: vec![RecoveredBuffer {
+            path: Some(source.clone()),
+            display_name: "main.rs".to_owned(),
+            text: "fn main() { recovered }\n".to_owned(),
+        }],
+        recent_projects: Vec::new(),
+        ..PersistedSession::default()
+    });
+
+    assert_eq!(app.buffers.len(), 1);
+    assert!(app.buffers[0].path().is_some());
+    assert!(app.buffers[0].is_dirty());
+    assert!(
+        app.lsp_trace
+            .iter()
+            .any(|entry| entry.method == "textDocument/didOpen")
+    );
+
+    drop(app);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn restore_session_skips_lsp_open_for_unpathed_recovered_buffers() {
+    let root = temp_root("restore-lsp-open-unpathed");
+    fs::create_dir_all(&root).unwrap();
+
+    let mut app = app_for_test(root.clone());
+    app.lsp_clients
+        .insert("rust".to_owned(), LspClientHandle::accepting_for_test());
+
+    app.restore_session(PersistedSession {
+        workspace_root: root.clone(),
+        recovery: vec![RecoveredBuffer {
+            path: None,
+            display_name: "scratch.rs".to_owned(),
+            text: "recovered\n".to_owned(),
+        }],
+        recent_projects: Vec::new(),
+        ..PersistedSession::default()
+    });
+
+    assert_eq!(app.buffers.len(), 1);
+    assert_eq!(app.buffers[0].path(), None);
+    assert!(app.lsp_trace.is_empty());
+}
+
+#[test]
+fn restored_session_status_bounds_unknown_skip_reasons() {
+    let skipped = vec![SkippedRecoveredBuffer {
+        path: None,
+        display_name: "legacy.rs".to_owned(),
+        bytes: 4096,
+        reason: format!("legacy reason \u{202e}{}", "x".repeat(300)),
+    }];
+
+    let status = restored_session_status(2, &skipped);
+
+    assert!(status.starts_with("Restored 2 recovered buffers; skipped 1 buffer not snapshotted: "));
+    assert!(!status.contains('\u{202e}'));
+    assert!(status.chars().count() <= RESTORED_SESSION_STATUS_MAX_CHARS);
+
+    let empty_status = restored_session_status(3, &[]);
+    assert_eq!(empty_status, "Restored 3 recovered buffers");
+}
+
+#[test]
 fn terminal_restore_visibility_requires_workspace_trust() {
     let root = temp_root("terminal-restore-untrusted");
     fs::create_dir_all(&root).unwrap();
@@ -1234,6 +1366,94 @@ fn restore_session_orders_recovered_buffers_by_saved_open_file_order() {
 
     drop(app);
     remove_dir_all_retry(&root);
+}
+
+#[test]
+fn restore_session_restores_project_search_toggles() {
+    let root = temp_root("project-search-toggles");
+    fs::create_dir_all(&root).unwrap();
+
+    let mut app = app_for_test(root.clone());
+
+    app.restore_session(PersistedSession {
+        workspace_root: root.clone(),
+        project_search_open: true,
+        project_search_query: "needle".to_owned(),
+        project_search_case_sensitive: true,
+        project_search_whole_word: true,
+        project_search_regex: true,
+        project_search_include: "src/**/*.rs".to_owned(),
+        project_search_exclude: "target/**".to_owned(),
+        recent_projects: Vec::new(),
+        recovery: Vec::new(),
+        ..PersistedSession::default()
+    });
+
+    assert!(app.project_search);
+    assert_eq!(app.project_search_query, "needle");
+    assert!(app.project_search_case_sensitive);
+    assert!(app.project_search_whole_word);
+    assert!(app.project_search_regex);
+    assert_eq!(app.project_search_include, "src/**/*.rs");
+    assert_eq!(app.project_search_exclude, "target/**");
+
+    drop(app);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn build_session_persists_project_search_toggles() {
+    let root = temp_root("project-search-toggles-save");
+    fs::create_dir_all(&root).unwrap();
+
+    let mut app = app_for_test(root.clone());
+    app.project_search_regex = true;
+
+    let session = app.build_session();
+
+    assert!(session.project_search_regex);
+
+    drop(app);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn restore_session_orders_recovered_buffers_by_saved_open_file_order() {
+    let root = temp_root("recovered-buffer-saved-order");
+    fs::create_dir_all(&root).unwrap();
+    let first = root.join("src/a.rs");
+    let last = root.join("src/c.rs");
+
+    let mut app = app_for_test(root.clone());
+
+    app.restore_session(PersistedSession {
+        workspace_root: root.clone(),
+        open_files: vec![first.clone(), root.join("src/b.rs"), last.clone()],
+        recovery: vec![
+            RecoveredBuffer {
+                path: Some(last.clone()),
+                display_name: "c.rs".to_owned(),
+                text: "recovered last\n".to_owned(),
+            },
+            RecoveredBuffer {
+                path: Some(first.clone()),
+                display_name: "a.rs".to_owned(),
+                text: "recovered first\n".to_owned(),
+            },
+        ],
+        recent_projects: Vec::new(),
+        ..PersistedSession::default()
+    });
+
+    let restored_paths = app
+        .buffers
+        .iter()
+        .map(|buffer| buffer.path().expect("recovered buffer path").to_path_buf())
+        .collect::<Vec<_>>();
+    assert_eq!(restored_paths, vec![first, last]);
+
+    drop(app);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
