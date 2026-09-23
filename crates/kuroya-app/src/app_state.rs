@@ -73,7 +73,7 @@ use kuroya_core::{
     LspSemanticToken, LspTextEdit, LspTypeHierarchyItem, LspWorkspaceSymbol, PluginActivationState,
     PluginCommandRegistry, PluginDescriptor, PluginDiscoveryError, PluginLanguageRegistry,
     PluginRuntimeRegistry, PluginSyntaxRegistry, PluginThemeRegistry, ProjectIndex,
-    ProjectSearchMetadataCache, SearchResult, TextBuffer, Workspace, WorkspaceTask,
+    ProjectSearchMetadataCache, SearchResult, TextBuffer, ThemeSettings, Workspace, WorkspaceTask,
     WorkspaceTaskKind, keymap::KeyBinding,
 };
 use std::{
@@ -584,6 +584,7 @@ pub(crate) struct KuroyaApp {
     pub(crate) last_autosave_window_focused: bool,
     pub(crate) last_autosave_focused_pane: Option<PaneId>,
     pub(crate) last_session_save: Instant,
+    pub(crate) theme_preview: Option<ThemeSettings>,
     pub(crate) theme_dirty: bool,
     pub(crate) fonts_dirty: bool,
 }

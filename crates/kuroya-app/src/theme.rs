@@ -42,6 +42,17 @@ pub(crate) struct ThemePalette {
     pub(crate) error: egui::Color32,
 }
 
+pub(crate) fn theme_preview_target(
+    applied: &ThemeSettings,
+    draft: &ThemeSettings,
+    settings_panel_open: bool,
+) -> Option<ThemeSettings> {
+    if !settings_panel_open || applied == draft {
+        return None;
+    }
+    Some(draft.clone())
+}
+
 pub(crate) fn apply_theme(ctx: &Context, theme: &ThemeSettings) {
     let palette = theme_palette(theme);
     let mut visuals = egui::Visuals::dark();
@@ -421,7 +432,7 @@ mod tests {
         bounded_plugin_theme_reference_part_cow, colors, plugin_theme_display_label_bounded,
         plugin_theme_display_label_bounded_cow, plugin_theme_reference_label, rgb,
         selected_theme_index, selected_theme_index_with_plugins, theme_display_label,
-        theme_display_label_cow, theme_palette,
+        theme_display_label_cow, theme_palette, theme_preview_target,
     };
     use egui::Context;
     use kuroya_core::{
@@ -911,5 +922,23 @@ mod tests {
         let palette = theme_palette(&theme);
 
         assert_eq!(palette.selection, rgb([18, 64, 118]));
+    }
+
+    #[test]
+    fn theme_preview_target_previews_the_draft_only_while_the_panel_is_open_with_a_different_theme()
+    {
+        let applied = ThemeSettings::default();
+        let draft = ThemeSettings::built_in_presets()
+            .into_iter()
+            .find(|theme| theme.name == "Graphite")
+            .expect("Graphite preset should exist");
+
+        assert_eq!(
+            theme_preview_target(&applied, &draft, true),
+            Some(draft.clone())
+        );
+        assert_eq!(theme_preview_target(&applied, &draft, false), None);
+        assert_eq!(theme_preview_target(&applied, &applied, true), None);
+        assert_eq!(theme_preview_target(&applied, &applied, false), None);
     }
 }

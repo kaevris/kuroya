@@ -523,6 +523,7 @@ impl KuroyaApp {
             last_autosave_window_focused: true,
             last_autosave_focused_pane: None,
             last_session_save: now,
+            theme_preview: None,
             theme_dirty: false,
             fonts_dirty: false,
         }

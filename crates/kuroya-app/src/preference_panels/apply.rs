@@ -158,6 +158,7 @@ impl KuroyaApp {
                 self.settings.active_custom_theme_path.clone(),
             )
         {
+            self.theme_preview = None;
             self.theme_dirty = true;
             self.theme_picker_selected = self.selected_theme_picker_index();
         }
@@ -412,6 +413,28 @@ mod tests {
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
     use tokio::runtime::Runtime;
+
+    #[test]
+    fn apply_settings_panel_clears_the_theme_preview_without_reverting() {
+        let root = temp_root("apply-clears-theme-preview");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        let draft_theme = ThemeSettings::built_in_presets()
+            .into_iter()
+            .find(|theme| theme.name == "Graphite")
+            .expect("Graphite preset should exist");
+        app.settings_panel_draft.theme = draft_theme.clone();
+        let ctx = eframe::egui::Context::default();
+        app.sync_theme_preview(&ctx);
+        assert!(app.theme_preview.is_some());
+
+        app.apply_settings_panel();
+
+        assert_eq!(app.settings.theme, draft_theme);
+        assert!(app.theme_preview.is_none());
+        assert!(app.theme_dirty);
+        assert!(app.status.starts_with("Saved settings"));
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn apply_settings_panel_schedules_refresh_when_code_lens_is_reenabled() {

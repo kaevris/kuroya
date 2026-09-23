@@ -2062,6 +2062,45 @@ mod tests {
         assert!(!app.settings_panel_open);
     }
 
+    #[test]
+    fn previewing_a_theme_in_the_settings_panel_reverts_when_the_panel_closes() {
+        let root = settings_test_root("settings-theme-preview-revert");
+        let mut app = settings_test_app(root.clone());
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 850.0));
+        app.settings_panel_open = true;
+
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        let draft_theme = kuroya_core::ThemeSettings::built_in_presets()
+            .into_iter()
+            .find(|theme| theme.name == "Graphite")
+            .expect("Graphite preset should exist");
+        app.settings_panel_draft.theme = draft_theme.clone();
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        app.sync_theme_preview(&ctx);
+
+        assert_eq!(app.theme_preview.as_ref(), Some(&draft_theme));
+        assert_eq!(
+            ctx.style().visuals.extreme_bg_color,
+            crate::theme::theme_palette(&draft_theme).background
+        );
+        assert_eq!(app.settings.theme, kuroya_core::ThemeSettings::default());
+
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+        assert!(!app.settings_panel_open);
+
+        app.sync_theme_preview(&ctx);
+
+        assert!(app.theme_preview.is_none());
+        assert_eq!(
+            ctx.style().visuals.extreme_bg_color,
+            crate::theme::theme_palette(&app.settings.theme).background
+        );
+        assert_eq!(app.settings_panel_draft.theme, app.settings.theme);
+        assert!(!crate::workspace_state::settings_path(&root).exists());
+    }
+
     fn settings_frame(
         app: &mut crate::KuroyaApp,
         ctx: &egui::Context,

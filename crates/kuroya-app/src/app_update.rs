@@ -9,6 +9,38 @@ use kuroya_core::window_zoom_factor;
 use std::{mem, path::PathBuf, time::Instant};
 
 impl KuroyaApp {
+    pub(crate) fn sync_dirty_theme(&mut self, ctx: &Context) {
+        if self.theme_dirty {
+            self.theme_dirty = false;
+            if self.theme_preview.is_none() {
+                theme::apply_theme(ctx, &self.settings.theme);
+            }
+        }
+    }
+
+    pub(crate) fn sync_theme_preview(&mut self, ctx: &Context) {
+        let target = theme::theme_preview_target(
+            &self.settings.theme,
+            &self.settings_panel_draft.theme,
+            self.settings_panel_open,
+        );
+        match target {
+            Some(preview) => {
+                if self.theme_preview.as_ref() != Some(&preview) {
+                    self.theme_preview = Some(preview.clone());
+                    theme::apply_theme(ctx, &preview);
+                    ctx.request_repaint();
+                }
+            }
+            None => {
+                if self.theme_preview.take().is_some() {
+                    theme::apply_theme(ctx, &self.settings.theme);
+                    ctx.request_repaint();
+                }
+            }
+        }
+    }
+
     pub(crate) fn drain_terminal_output_for_frame(&mut self) -> (usize, bool) {
         let terminal_events = self.terminal.drain_output();
         if !self.running_workspace_tasks.is_empty() {
@@ -35,10 +67,8 @@ impl eframe::App for KuroyaApp {
             fonts::apply_typography(ctx, &self.settings);
             self.fonts_dirty = false;
         }
-        if self.theme_dirty {
-            theme::apply_theme(ctx, &self.settings.theme);
-            self.theme_dirty = false;
-        }
+        self.sync_dirty_theme(ctx);
+        self.sync_theme_preview(ctx);
         self.terminal.set_repaint_context(ctx.clone());
         self.record_profile_mark(profiling, &mut profile_mark, "frame", "setup");
         let ui_events = self.handle_events_with_context(ctx);
@@ -235,7 +265,7 @@ mod tests {
         startup_arguments::StartupTarget, terminal::TerminalPane,
         ui_event_channel::send_critical_ui_event, ui_events::UiEvent,
     };
-    use kuroya_core::{EditorSettings, Workspace};
+    use kuroya_core::{EditorSettings, ThemeSettings, Workspace};
     use std::{
         fs,
         path::PathBuf,
@@ -497,6 +527,218 @@ mod tests {
         assert!(app.pending_open_paths.contains(&target));
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sync_theme_preview_previews_the_draft_theme_while_the_settings_panel_is_open() {
+        let root = temp_root("theme-preview-draft");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        let draft_theme = graphite_preset();
+        app.settings_panel_open = true;
+        app.settings_panel_draft.theme = draft_theme.clone();
+        let ctx = Context::default();
+
+        app.sync_theme_preview(&ctx);
+
+        assert_eq!(app.theme_preview.as_ref(), Some(&draft_theme));
+        assert_eq!(app.settings.theme, ThemeSettings::default());
+        assert_eq!(
+            ctx.style().visuals.extreme_bg_color,
+            theme::theme_palette(&draft_theme).background
+        );
+        assert!(!crate::workspace_state::settings_path(&root).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sync_theme_preview_skips_reapply_while_the_previewed_theme_is_unchanged() {
+        let root = temp_root("theme-preview-idempotent");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        let draft_theme = graphite_preset();
+        app.settings_panel_open = true;
+        app.settings_panel_draft.theme = draft_theme.clone();
+        let ctx = Context::default();
+        app.sync_theme_preview(&ctx);
+        let sentinel = egui_visuals_sentinel();
+
+        ctx.set_visuals(sentinel.clone());
+        app.sync_theme_preview(&ctx);
+
+        assert_eq!(ctx.style().visuals, sentinel);
+        assert_eq!(app.theme_preview.as_ref(), Some(&draft_theme));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sync_theme_preview_reverts_to_the_applied_theme_when_the_settings_panel_closes() {
+        let root = temp_root("theme-preview-revert-on-close");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        let draft_theme = graphite_preset();
+        app.settings_panel_open = true;
+        app.settings_panel_draft.theme = draft_theme.clone();
+        let ctx = Context::default();
+        app.sync_theme_preview(&ctx);
+        assert_eq!(app.theme_preview.as_ref(), Some(&draft_theme));
+
+        app.settings_panel_open = false;
+        app.sync_theme_preview(&ctx);
+
+        assert!(app.theme_preview.is_none());
+        assert_eq!(
+            ctx.style().visuals.extreme_bg_color,
+            theme::theme_palette(&app.settings.theme).background
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sync_theme_preview_re_selecting_the_applied_theme_clears_the_preview() {
+        let root = temp_root("theme-preview-reselect-applied");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        let applied_theme = app.settings.theme.clone();
+        app.settings_panel_open = true;
+        app.settings_panel_draft.theme = graphite_preset();
+        let ctx = Context::default();
+        app.sync_theme_preview(&ctx);
+        assert!(app.theme_preview.is_some());
+
+        app.settings_panel_draft.theme = applied_theme.clone();
+        app.sync_theme_preview(&ctx);
+
+        assert!(app.theme_preview.is_none());
+        assert_eq!(
+            ctx.style().visuals.extreme_bg_color,
+            theme::theme_palette(&applied_theme).background
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sync_theme_preview_previews_plugin_themes_and_the_picker_index_follows_the_draft() {
+        let root = temp_root("theme-preview-plugin");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        app.plugin_themes = solar_plugin_registry();
+        let registration = app.plugin_themes.themes()[0].clone();
+        let label = theme::plugin_theme_display_label_bounded(&registration);
+        let draft_theme = ThemeSettings {
+            name: label,
+            ..ThemeSettings::default()
+        };
+        app.settings_panel_open = true;
+        app.settings_panel_draft.theme = draft_theme.clone();
+        app.settings_panel_draft.active_custom_theme_path = None;
+        let ctx = Context::default();
+
+        app.sync_theme_preview(&ctx);
+
+        assert_eq!(app.theme_preview.as_ref(), Some(&draft_theme));
+        assert_eq!(app.settings.theme, ThemeSettings::default());
+        let draft_picker_index =
+            crate::theme_picker_panel::selected_theme_picker_index_for_settings(
+                &app.workspace.root,
+                &app.settings_panel_draft,
+                &app.plugin_themes,
+            );
+        assert_eq!(draft_picker_index, ThemeSettings::built_in_presets().len());
+        assert_eq!(app.selected_theme_picker_index(), 0);
+        assert!(!crate::workspace_state::settings_path(&root).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sync_dirty_theme_defers_the_saved_theme_while_a_preview_is_active() {
+        let root = temp_root("theme-dirty-defers-to-preview");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        let draft_theme = graphite_preset();
+        app.settings_panel_open = true;
+        app.settings_panel_draft.theme = draft_theme.clone();
+        let ctx = Context::default();
+        app.sync_theme_preview(&ctx);
+        app.theme_dirty = true;
+        let sentinel = egui_visuals_sentinel();
+
+        ctx.set_visuals(sentinel.clone());
+        app.sync_dirty_theme(&ctx);
+
+        assert!(!app.theme_dirty);
+        assert_eq!(ctx.style().visuals, sentinel);
+        assert_eq!(app.theme_preview.as_ref(), Some(&draft_theme));
+
+        app.sync_theme_preview(&ctx);
+
+        assert_eq!(app.theme_preview.as_ref(), Some(&draft_theme));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sync_dirty_theme_applies_the_saved_theme_without_a_preview() {
+        let root = temp_root("theme-dirty-applies-saved");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        app.theme_dirty = true;
+        let ctx = Context::default();
+
+        app.sync_dirty_theme(&ctx);
+
+        assert!(!app.theme_dirty);
+        assert!(app.theme_preview.is_none());
+        assert_eq!(
+            ctx.style().visuals.extreme_bg_color,
+            theme::theme_palette(&app.settings.theme).background
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn graphite_preset() -> ThemeSettings {
+        ThemeSettings::built_in_presets()
+            .into_iter()
+            .find(|theme| theme.name == "Graphite")
+            .expect("Graphite preset should exist")
+    }
+
+    fn solar_plugin_registry() -> kuroya_core::PluginThemeRegistry {
+        use kuroya_core::{
+            PLUGIN_API_VERSION, PluginCapabilities, PluginContributions, PluginDescriptor,
+            PluginManifest, PluginThemeContribution,
+        };
+        use std::path::PathBuf;
+
+        kuroya_core::PluginThemeRegistry::from_plugins(&[PluginDescriptor {
+            root: PathBuf::from("workspace/.kuroya/plugins/solar"),
+            manifest: PluginManifest {
+                api_version: PLUGIN_API_VERSION.to_owned(),
+                id: "solar.plugin".to_owned(),
+                name: "Solar".to_owned(),
+                version: "0.1.0".to_owned(),
+                entry: None,
+                activation_events: Vec::new(),
+                capabilities: PluginCapabilities {
+                    themes: true,
+                    ..PluginCapabilities::default()
+                },
+                contributes: PluginContributions {
+                    themes: vec![PluginThemeContribution {
+                        id: "solar-dark".to_owned(),
+                        label: "Solar Dark".to_owned(),
+                        path: PathBuf::from("workspace/.kuroya/plugins/solar/themes/dark.toml"),
+                    }],
+                    ..PluginContributions::default()
+                },
+            },
+        }])
+    }
+
+    fn egui_visuals_sentinel() -> eframe::egui::Visuals {
+        eframe::egui::Visuals {
+            extreme_bg_color: eframe::egui::Color32::from_rgb(1, 2, 3),
+            ..eframe::egui::Visuals::default()
+        }
     }
 
     fn app_for_test(root: PathBuf) -> KuroyaApp {
