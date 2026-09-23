@@ -13,7 +13,7 @@ use crate::{
     startup_arguments::StartupTarget,
     startup_tasks::GitScanRootCacheEntry,
     syntax::PluginSyntaxLoad,
-    update_checker::{UpdateCheckOutcome, UpdateInstallerReady},
+    update_checker::{AvailableUpdate, UpdateCheckOutcome, UpdateInstallerReady},
     virtual_diff_runtime::{VirtualDiffOpenOutcome, VirtualDiffOpenRequest},
     virtual_revision_runtime::{VirtualRevisionOpenOutcome, VirtualRevisionOpenRequest},
 };
@@ -585,10 +585,7 @@ pub(crate) enum UiEvent {
         plugin_id: String,
         path: PathBuf,
     },
-    /// Staged by `kuroya.buffer_set_text` during a plugin command run and
-    /// sent after the run finishes (on success or failure, whichever the
-    /// plugin produced). The UI thread applies the text to the open buffer
-    /// with full undo support.
+
     PluginBufferTextApply {
         plugin_id: String,
         path: PathBuf,
@@ -618,18 +615,16 @@ pub(crate) enum UiEvent {
         error: String,
     },
     UpdateInstallerReady(UpdateInstallerReady),
-    UpdateDownloadFailed {
+    UpdateDownloadProgress {
         latest_version: String,
+        asset_name: String,
+        bytes_downloaded: u64,
+    },
+    UpdateDownloadFailed {
+        available: AvailableUpdate,
         error: String,
     },
-    /// Delivered once by the startup session-load task spawned in
-    /// `AppStartupContext`/`KuroyaApp::new`. Carries the saved session read
-    /// off-thread (boxed to keep the enum variant small) or the load warning
-    /// when the load failed, plus the startup target that must be handled
-    /// only after the restore, so the deferred path applies state in the
-    /// same order the previous synchronous startup did. `root` is the
-    /// workspace root the load was started for; events for a root the app no
-    /// longer occupies are ignored.
+
     StartupSessionLoaded {
         root: PathBuf,
         target: Option<StartupTarget>,

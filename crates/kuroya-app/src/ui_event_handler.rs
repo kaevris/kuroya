@@ -1037,11 +1037,19 @@ impl KuroyaApp {
                 UiEvent::UpdateInstallerReady(update) => {
                     self.apply_update_installer_ready(update);
                 }
-                UiEvent::UpdateDownloadFailed {
+                UiEvent::UpdateDownloadProgress {
                     latest_version,
-                    error,
+                    asset_name,
+                    bytes_downloaded,
                 } => {
-                    self.apply_update_download_failed(latest_version, error);
+                    self.apply_update_download_progress(
+                        latest_version,
+                        asset_name,
+                        bytes_downloaded,
+                    );
+                }
+                UiEvent::UpdateDownloadFailed { available, error } => {
+                    self.apply_update_download_failed(available, error);
                 }
                 UiEvent::StartupSessionLoaded {
                     root,
@@ -1091,11 +1099,6 @@ impl KuroyaApp {
         self.spawn_open_file(path);
     }
 
-    /// Applies text a plugin staged via `kuroya.buffer_set_text` to the open
-    /// buffer with the same path. Uses `replace_text_from_ui`, so the change
-    /// lands in the undo history (Ctrl+Z reverts it) and the buffer-scoped
-    /// editor caches are invalidated exactly like a manual edit. When the
-    /// buffer was closed while the plugin ran, the staged text is dropped.
     fn apply_plugin_buffer_text_apply(
         &mut self,
         _plugin_id: String,

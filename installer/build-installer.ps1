@@ -138,6 +138,8 @@ try {
         New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot 'dist') | Out-Null
         Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'dist') -Filter 'Kuroya-Setup-*.exe' -ErrorAction SilentlyContinue |
             Remove-Item -Force
+        Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'dist') -Filter 'Kuroya-Setup-*.exe.sha256' -ErrorAction SilentlyContinue |
+            Remove-Item -Force
     }
 
     $compilerArguments = @("/DSourceRoot=$RepoRoot", "/DAppVersion=$Version")

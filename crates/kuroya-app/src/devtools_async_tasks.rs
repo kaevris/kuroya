@@ -442,9 +442,11 @@ pub(crate) fn async_task_event_label(event: &UiEvent) -> Option<AsyncTaskEventLa
             "Update Download",
             async_task_detail(&update.latest_version),
         )),
-        UiEvent::UpdateDownloadFailed { latest_version, .. } => {
-            Some(failed("Update Download", async_task_detail(latest_version)))
-        }
+        UiEvent::UpdateDownloadProgress { .. } => None,
+        UiEvent::UpdateDownloadFailed { available, .. } => Some(failed(
+            "Update Download",
+            async_task_detail(&available.latest_version),
+        )),
         UiEvent::QuickOpenRanked { .. } => None,
         UiEvent::PluginOpenFileRequested { .. } => None,
         UiEvent::PluginBufferTextApply { .. } => None,

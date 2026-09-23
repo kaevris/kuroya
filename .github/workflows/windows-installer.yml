@@ -60,11 +60,26 @@ jobs:
         shell: pwsh
         run: ./installer/build-installer.ps1
 
+      - name: Generate installer checksum
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -LiteralPath dist -Filter 'Kuroya-Setup-*.exe' | Select-Object -First 1
+          if (-not $installer) {
+            throw 'No installer asset found in dist.'
+          }
+
+          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksumPath = "$($installer.FullName).sha256"
+          "$hash  $($installer.Name)" | Set-Content -LiteralPath $checksumPath -Encoding ascii
+          Get-Content -LiteralPath $checksumPath
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: kuroya-windows-installer
-          path: dist/Kuroya-Setup-*.exe
+          path: |
+            dist/Kuroya-Setup-*.exe
+            dist/Kuroya-Setup-*.exe.sha256
           if-no-files-found: error
 
       - name: Attach installer to GitHub release
@@ -78,6 +93,11 @@ jobs:
             throw 'No installer asset found in dist.'
           }
 
+          $checksum = Get-ChildItem -LiteralPath dist -Filter 'Kuroya-Setup-*.exe.sha256' | Select-Object -First 1
+          if (-not $checksum) {
+            throw 'No installer checksum sidecar found in dist.'
+          }
+
           $tag = $env:GITHUB_REF_NAME
           gh release view $tag *> $null
           if ($LASTEXITCODE -ne 0) {
@@ -87,7 +107,7 @@ jobs:
             }
           }
 
-          gh release upload $tag $asset.FullName --clobber
+          gh release upload $tag $asset.FullName $checksum.FullName --clobber
           if ($LASTEXITCODE -ne 0) {
             throw "Could not upload $($asset.Name) to release $tag"
           }
