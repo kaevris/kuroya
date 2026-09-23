@@ -165,6 +165,13 @@ fn draft_apply_copy_fixture() -> EditorSettings {
     EditorSettings {
         font_size: 15.0,
         ui_font_size: 14.0,
+        lsp_suggest_missing_servers: true,
+        background_image_enabled: true,
+        background_image_path: Some("C:/images/background.png".to_owned()),
+        background_image_scope: kuroya_core::EditorBackgroundImageScope::FullApp,
+        background_image_dim: 0.42,
+        background_image_fit: kuroya_core::EditorBackgroundImageFit::Contain,
+        background_image_position: kuroya_core::EditorBackgroundImagePosition::Bottom,
         editor_font_path: Some("fonts/editor.ttf".to_owned()),
         ui_font_path: Some("fonts/ui.ttf".to_owned()),
         font_family: " Cascadia Code ".to_owned(),
@@ -224,6 +231,13 @@ fn draft_apply_copy_fixture() -> EditorSettings {
                 after: String::new(),
                 command: Some(Command::RequestHover),
             }],
+        },
+        discord: kuroya_core::DiscordSettings {
+            presence_enabled: true,
+            client_id: "1552355674346754098".to_owned(),
+            show_details: false,
+            show_workspace: false,
+            show_elapsed: false,
         },
         quick_suggestions: true,
         quick_suggestions_delay_ms: 25,
@@ -344,7 +358,8 @@ fn draft_apply_copy_fixture() -> EditorSettings {
         format_on_paste: true,
         paste_as_enabled: false,
         paste_as_show_paste_selector: EditorPasteAsShowPasteSelector::Never,
-        autosave: false,
+        // Non-default now that autosave ships off.
+        autosave: true,
         autosave_mode: EditorAutoSaveMode::OnFocusChange,
         autosave_delay_ms: 1_500,
         smooth_scrolling: false,
@@ -411,12 +426,17 @@ fn draft_apply_copy_fixture() -> EditorSettings {
         status_bar_visible: false,
         devtools_verbose_logging: true,
         devtools_profiling_enabled: true,
+        plugins: kuroya_core::settings::PluginSettings {
+            enabled: false,
+            disabled_ids: vec!["legacy.plugin".to_owned()],
+        },
         lsp_servers: vec![LspServerConfig {
             language: "rust".to_owned(),
             command: "rust-analyzer".to_owned(),
             args: vec!["--log-file".to_owned(), "rust-analyzer.log".to_owned()],
             extensions: vec!["rs".to_owned()],
             root_markers: vec!["Cargo.toml".to_owned()],
+            enabled: true,
         }],
         window_zoom_level: 1.25,
         line_numbers: EditorLineNumbers::Relative,
@@ -495,6 +515,12 @@ fn draft_apply_copy_fixture() -> EditorSettings {
         diff_word_wrap: DiffWordWrap::Off,
         diff_only_show_accessible_viewer: true,
         diff_is_in_embedded_editor: true,
+        project_index_max_files: 25_000,
+        project_index_exclude_globs: vec!["dist".to_owned(), "cache".to_owned()],
+        project_index_include_hidden_dirs: true,
+        project_search_exclude_globs: vec!["generated".to_owned(), "tmp".to_owned()],
+        project_search_max_file_size_mb: 8,
+        project_search_max_results: 1_234,
         git_enabled: false,
         git_add_ai_co_author: kuroya_core::GitAddAiCoAuthor::All,
         git_allow_force_push: true,
@@ -543,7 +569,6 @@ fn draft_apply_copy_fixture() -> EditorSettings {
         git_rebase_when_sync: true,
         git_remember_post_commit_command: true,
         git_replace_tags_when_pull: true,
-        git_scan_repositories: vec![" ../repo ".to_owned(), "".to_owned()],
         git_support_cancellation: true,
         git_terminal_authentication: false,
         git_terminal_git_editor: true,
@@ -737,6 +762,24 @@ fn draft_apply_copies_word_separators() {
 
     assert_eq!(settings.font_size, 15.0);
     assert_eq!(settings.ui_font_size, 14.0);
+    assert!(settings.background_image_enabled);
+    assert_eq!(
+        settings.background_image_path.as_deref(),
+        Some("C:/images/background.png")
+    );
+    assert_eq!(settings.background_image_dim, 0.42);
+    assert_eq!(
+        settings.background_image_scope,
+        kuroya_core::EditorBackgroundImageScope::FullApp
+    );
+    assert_eq!(
+        settings.background_image_fit,
+        kuroya_core::EditorBackgroundImageFit::Contain
+    );
+    assert_eq!(
+        settings.background_image_position,
+        kuroya_core::EditorBackgroundImagePosition::Bottom
+    );
     assert_eq!(settings.font_family, " Cascadia Code ");
     assert_eq!(settings.font_weight, "600");
     assert_eq!(settings.font_ligatures, EDITOR_FONT_LIGATURES_ON);
@@ -975,7 +1018,7 @@ fn draft_apply_copies_word_separators() {
     assert!(!settings.parameter_hints_cycle);
     assert!(settings.format_on_save);
     assert!(settings.format_on_paste);
-    assert!(!settings.autosave);
+    assert!(settings.autosave);
     assert_eq!(settings.autosave_mode, EditorAutoSaveMode::OnFocusChange);
     assert_eq!(settings.autosave_delay_ms, 1_500);
     assert!(!settings.smooth_scrolling);
@@ -1068,6 +1111,8 @@ fn draft_apply_copies_word_separators() {
     assert!(!settings.status_bar_visible);
     assert!(settings.devtools_verbose_logging);
     assert!(settings.devtools_profiling_enabled);
+    assert!(!settings.plugins.enabled);
+    assert_eq!(settings.plugins.disabled_ids, ["legacy.plugin"]);
     assert_eq!(settings.window_zoom_level, 1.25);
     assert_eq!(settings.line_numbers, EditorLineNumbers::Relative);
     assert_eq!(
@@ -1279,7 +1324,6 @@ fn draft_apply_copies_word_separators() {
     assert!(settings.git_rebase_when_sync);
     assert!(settings.git_remember_post_commit_command);
     assert!(settings.git_replace_tags_when_pull);
-    assert_eq!(settings.git_scan_repositories, [" ../repo ".to_owned()]);
     assert!(settings.git_support_cancellation);
     assert!(!settings.git_terminal_authentication);
     assert!(settings.git_terminal_git_editor);
@@ -1580,6 +1624,37 @@ fn apply_settings_panel_draft_rejects_terminal_cwd_control_characters() {
 }
 
 #[test]
+fn apply_settings_panel_draft_preserves_lsp_server_enabled_flag() {
+    let mut settings = EditorSettings::default();
+    let draft = EditorSettings {
+        lsp_servers: vec![LspServerConfig {
+            language: "rust".to_owned(),
+            command: "rust-analyzer".to_owned(),
+            args: Vec::new(),
+            extensions: Vec::new(),
+            root_markers: vec!["Cargo.toml".to_owned()],
+            enabled: false,
+        }],
+        ..EditorSettings::default()
+    };
+
+    apply_settings_panel_draft(&mut settings, &draft, "", "");
+
+    assert_eq!(settings.lsp_servers.len(), 1);
+    assert!(
+        !settings.lsp_servers[0].enabled,
+        "disabling a server must survive apply"
+    );
+    assert!(
+        settings
+            .lsp_server_configs()
+            .iter()
+            .all(|server| server.language != "rust"),
+        "disabled servers must not reach the LSP runtime"
+    );
+}
+
+#[test]
 fn apply_settings_panel_draft_normalizes_lsp_server_configs() {
     let mut settings = EditorSettings {
         lsp_servers: vec![LspServerConfig {
@@ -1588,6 +1663,7 @@ fn apply_settings_panel_draft_normalizes_lsp_server_configs() {
             args: Vec::new(),
             extensions: Vec::new(),
             root_markers: Vec::new(),
+            enabled: true,
         }],
         ..EditorSettings::default()
     };
@@ -1599,6 +1675,7 @@ fn apply_settings_panel_draft_normalizes_lsp_server_configs() {
                 args: vec![" --stdio ".to_owned()],
                 extensions: vec![" .ts ".to_owned(), ".tsx".to_owned()],
                 root_markers: vec![" package.json ".to_owned()],
+                enabled: true,
             },
             LspServerConfig {
                 language: " ".to_owned(),
@@ -1606,6 +1683,7 @@ fn apply_settings_panel_draft_normalizes_lsp_server_configs() {
                 args: Vec::new(),
                 extensions: Vec::new(),
                 root_markers: Vec::new(),
+                enabled: true,
             },
             LspServerConfig {
                 language: " Python ".to_owned(),
@@ -1617,6 +1695,7 @@ fn apply_settings_panel_draft_normalizes_lsp_server_configs() {
                     "pyproject.toml".to_owned(),
                     " .git ".to_owned(),
                 ],
+                enabled: true,
             },
             LspServerConfig {
                 language: "typescript".to_owned(),
@@ -1624,6 +1703,7 @@ fn apply_settings_panel_draft_normalizes_lsp_server_configs() {
                 args: vec![" --stdio ".to_owned(), "x\nbad".to_owned()],
                 extensions: vec![" .ts ".to_owned(), ".mts".to_owned()],
                 root_markers: vec![" .git ".to_owned()],
+                enabled: true,
             },
         ],
         ..EditorSettings::default()
@@ -1631,22 +1711,33 @@ fn apply_settings_panel_draft_normalizes_lsp_server_configs() {
 
     apply_settings_panel_draft(&mut settings, &draft, "", "");
 
-    assert_eq!(settings.lsp_servers.len(), 2);
+    // Distinct same-language entries are all retained; only the invalid
+    // entry (blank language) is dropped.
+    assert_eq!(settings.lsp_servers.len(), 3);
     let typescript = settings
         .lsp_servers
         .iter()
-        .find(|server| server.language == "typescript")
+        .find(|server| server.command == "typescript-language-server")
         .expect("typescript server should be retained");
+    let custom_typescript = settings
+        .lsp_servers
+        .iter()
+        .find(|server| server.command == "custom-ts-lsp")
+        .expect("second typescript server should be retained");
     let python = settings
         .lsp_servers
         .iter()
         .find(|server| server.language == "python")
         .expect("python server should be retained");
 
-    assert_eq!(typescript.command, "custom-ts-lsp");
-    assert_eq!(typescript.args, ["--stdio", "x bad"]);
-    assert_eq!(typescript.extensions, ["ts", "mts"]);
-    assert_eq!(typescript.root_markers, [".git"]);
+    assert_eq!(typescript.language, "typescript");
+    assert_eq!(typescript.args, ["--stdio"]);
+    assert_eq!(typescript.extensions, ["ts", "tsx"]);
+    assert_eq!(typescript.root_markers, ["package.json"]);
+    assert_eq!(custom_typescript.language, "typescript");
+    assert_eq!(custom_typescript.args, ["--stdio", "x bad"]);
+    assert_eq!(custom_typescript.extensions, ["ts", "mts"]);
+    assert_eq!(custom_typescript.root_markers, [".git"]);
     assert_eq!(python.command, "pyright-langserver");
     assert_eq!(python.args, ["--stdio"]);
     assert_eq!(python.extensions, ["py"]);
@@ -1819,7 +1910,6 @@ fn draft_apply_intentionally_normalized_fields() -> BTreeSet<&'static str> {
         "git_checkout_type",
         "git_commands_to_log",
         "git_path",
-        "git_scan_repositories",
         "git_worktree_include_files",
         "inline_suggest_experimental_suppress_inline_suggestions",
         "terminal_shell_args",

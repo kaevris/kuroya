@@ -40,6 +40,11 @@ impl LspClientCommandQueue {
             return command;
         }
 
+        // Dropping intermediate snapshots stays correct under every sync
+        // kind: full sync re-sends the whole (newest) document, and
+        // incremental sync diffs the newest snapshot against the last text
+        // actually synced to the server, so the dropped snapshots carry no
+        // information.
         for _ in 0..MAX_DID_CHANGE_COALESCE_DRAIN_PER_RECV {
             let Some(next) = self.try_recv_buffered_command(rx) else {
                 break;

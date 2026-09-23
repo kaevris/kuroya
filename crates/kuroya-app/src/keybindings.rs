@@ -5,7 +5,8 @@ use crate::{
     keybinding_chords::keybinding_requires_primary_modifier,
     keybinding_parse::{normalize_key_chord, parse_key_chord},
 };
-use kuroya_core::{Command, keymap::KeyBinding};
+use eframe::egui::Modifiers;
+use kuroya_core::{Command, keymap::KeyBinding, keymap::Keymap};
 
 #[cfg(test)]
 pub(crate) fn keybinding_matches_query(chord: &str, label: &str, query: &str) -> bool {
@@ -267,6 +268,70 @@ fn keybinding_chord_matches_prepared(
         || chord.eq_ignore_ascii_case(prepared)
 }
 
+/// How a candidate chord collides with an existing chord of another command
+/// through modifier subsetting instead of exact equality.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum KeybindingChordShadow {
+    /// The candidate chord can never dispatch: `existing_chord` matches the same
+    /// key with a subset of the candidate's modifiers and shadows it.
+    ShadowedBy { existing_chord: String },
+    /// The candidate chord shadows `existing_chord`, which can no longer dispatch.
+    Shadows { existing_chord: String },
+}
+
+/// True when `chord` shadows `other`: both parse to the same key while `chord`
+/// uses a strict subset of `other`'s modifiers, so `other` can never dispatch.
+pub(crate) fn keybinding_chord_shadows(chord: &str, other: &str) -> bool {
+    let (Some(chord), Some(other)) = (parse_key_chord(chord), parse_key_chord(other)) else {
+        return false;
+    };
+    chord != other
+        && chord.logical_key == other.logical_key
+        && keybinding_modifiers_subset_of(chord.modifiers, other.modifiers)
+}
+
+fn keybinding_modifiers_subset_of(subset: Modifiers, superset: Modifiers) -> bool {
+    (!subset.ctrl || superset.ctrl)
+        && (!subset.shift || superset.shift)
+        && (!subset.alt || superset.alt)
+        && (!subset.mac_cmd || superset.mac_cmd)
+        && (!subset.command || superset.command)
+}
+
+/// Finds a modifier-superset collision between `chord` and the bindings of
+/// other commands, in either shadowing direction.
+pub(crate) fn keybinding_chord_shadow_conflict(
+    bindings: &[KeyBinding],
+    command: &Command,
+    chord: &str,
+) -> Option<KeybindingChordShadow> {
+    bindings
+        .iter()
+        .filter(|binding| &binding.command != command)
+        .find_map(|binding| {
+            if keybinding_chord_shadows(&binding.chord, chord) {
+                Some(KeybindingChordShadow::ShadowedBy {
+                    existing_chord: binding.chord.clone(),
+                })
+            } else if keybinding_chord_shadows(chord, &binding.chord) {
+                Some(KeybindingChordShadow::Shadows {
+                    existing_chord: binding.chord.clone(),
+                })
+            } else {
+                None
+            }
+        })
+}
+
+/// Returns the factory default chord for `command` from a fresh `Keymap::default()`.
+pub(crate) fn keybinding_default_chord_for_command(command: &Command) -> Option<String> {
+    Keymap::default()
+        .bindings
+        .into_iter()
+        .find(|binding| &binding.command == command)
+        .map(|binding| binding.chord)
+}
+
 pub(crate) fn remove_keybinding_assignment(
     bindings: &mut Vec<KeyBinding>,
     command: &Command,
@@ -278,7 +343,11 @@ pub(crate) fn remove_keybinding_assignment(
 
 #[cfg(test)]
 mod tests {
-    use super::{keybinding_items, keybinding_matches_trimmed_query, keybinding_search_text};
+    use super::{
+        KeybindingChordShadow, keybinding_chord_shadow_conflict, keybinding_chord_shadows,
+        keybinding_default_chord_for_command, keybinding_items, keybinding_matches_trimmed_query,
+        keybinding_search_text,
+    };
     use kuroya_core::{Command, keymap::KeyBinding};
     use std::path::PathBuf;
 
@@ -402,5 +471,73 @@ mod tests {
             .filter(|(_, item_command, _)| item_command == command)
             .map(|(chord, _, _)| chord.as_str())
             .collect()
+    }
+
+    #[test]
+    fn keybinding_chord_shadows_detects_modifier_superset_collisions() {
+        assert!(keybinding_chord_shadows("Ctrl+S", "Ctrl+Shift+S"));
+        assert!(keybinding_chord_shadows(" ctrl + s ", "Ctrl+Shift+S"));
+        assert!(keybinding_chord_shadows(
+            "Ctrl+Shift+S",
+            " ctrl + shift + alt + s "
+        ));
+        assert!(!keybinding_chord_shadows("Ctrl+Shift+S", "Ctrl+S"));
+        assert!(!keybinding_chord_shadows("Ctrl+S", "Ctrl+S"));
+        assert!(!keybinding_chord_shadows("Ctrl+S", "Ctrl+P"));
+        assert!(!keybinding_chord_shadows("Ctrl+S", "not a chord"));
+        assert!(keybinding_chord_shadows("F3", "Shift+F3"));
+        assert!(!keybinding_chord_shadows("Shift+F3", "F3"));
+    }
+
+    #[test]
+    fn keybinding_chord_shadow_conflict_reports_shadowing_direction() {
+        let bindings = vec![
+            KeyBinding {
+                chord: "Ctrl+S".to_owned(),
+                command: Command::SaveActive,
+            },
+            KeyBinding {
+                chord: "Ctrl+Alt+S".to_owned(),
+                command: Command::SaveAll,
+            },
+        ];
+
+        assert_eq!(
+            keybinding_chord_shadow_conflict(&bindings, &Command::SaveAs, "Ctrl+Shift+S"),
+            Some(KeybindingChordShadow::ShadowedBy {
+                existing_chord: "Ctrl+S".to_owned()
+            })
+        );
+        assert_eq!(
+            keybinding_chord_shadow_conflict(&bindings, &Command::SaveActive, "Ctrl+S"),
+            Some(KeybindingChordShadow::Shadows {
+                existing_chord: "Ctrl+Alt+S".to_owned()
+            })
+        );
+        assert_eq!(
+            keybinding_chord_shadow_conflict(&bindings, &Command::Undo, "Ctrl+P"),
+            None
+        );
+        // Exact chord equality is a hard conflict, never a shadow.
+        let own_chord_only = vec![KeyBinding {
+            chord: "Ctrl+S".to_owned(),
+            command: Command::SaveActive,
+        }];
+        assert_eq!(
+            keybinding_chord_shadow_conflict(&own_chord_only, &Command::Undo, "Ctrl+S"),
+            None
+        );
+    }
+
+    #[test]
+    fn keybinding_default_chord_for_command_returns_factory_chord() {
+        assert_eq!(
+            keybinding_default_chord_for_command(&Command::Undo),
+            Some("Ctrl+Z".to_owned())
+        );
+        assert_eq!(
+            keybinding_default_chord_for_command(&Command::OpenFile(PathBuf::from("notes.md"))),
+            None
+        );
     }
 }

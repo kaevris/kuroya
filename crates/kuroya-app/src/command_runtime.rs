@@ -101,6 +101,7 @@ impl KuroyaApp {
             | Command::ToggleSymbolsPanel
             | Command::CycleSymbolsPanelPlacement
             | Command::ToggleWorkspaceSymbols
+            | Command::OpenLocalHistoryBrowser
             | Command::ToggleWorkspaceTasks
             | Command::ToggleProjectSearch
             | Command::CycleProjectSearchPlacement

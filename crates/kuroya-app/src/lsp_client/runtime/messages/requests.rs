@@ -1,7 +1,7 @@
 use super::LspServerMessageHandlerOutcome;
 use crate::{
-    lsp_client::wire::write_message, lsp_ui_events::LspUiEvent, ui_event_channel::Sender,
-    ui_events::UiEvent,
+    lsp_client::watched_files::LspWatchedFilesState, lsp_client::wire::write_message,
+    lsp_ui_events::LspUiEvent, ui_event_channel::Sender, ui_events::UiEvent,
 };
 use kuroya_core::{
     LspRequestId, LspWireMessage, parse_apply_workspace_edit_request, parse_lsp_request_id,
@@ -12,6 +12,10 @@ use tokio::process::ChildStdin;
 
 const JSON_RPC_METHOD_NOT_FOUND: i64 = -32601;
 
+const REGISTER_CAPABILITY_METHOD: &str = "client/registerCapability";
+const UNREGISTER_CAPABILITY_METHOD: &str = "client/unregisterCapability";
+const DID_CHANGE_WATCHED_FILES_METHOD: &str = "workspace/didChangeWatchedFiles";
+
 pub(super) async fn handle_server_request(
     value: &Value,
     language: &str,
@@ -19,22 +23,44 @@ pub(super) async fn handle_server_request(
     generation: u64,
     ui_tx: &Sender<UiEvent>,
     writer: &mut ChildStdin,
+    watched_files: &LspWatchedFilesState,
 ) -> LspServerMessageHandlerOutcome {
     let Some(method) = value.get("method").and_then(Value::as_str) else {
         return LspServerMessageHandlerOutcome::Unhandled;
     };
 
-    if method != "workspace/applyEdit" {
-        if let Some(request_id) = value.get("id").and_then(parse_lsp_request_id) {
-            return if write_unsupported_server_request_response(writer, request_id).await {
-                LspServerMessageHandlerOutcome::Handled
-            } else {
-                LspServerMessageHandlerOutcome::FatalWriteFailure
-            };
+    match method {
+        "workspace/applyEdit" => {
+            handle_apply_workspace_edit_request(value, language, root, generation, ui_tx, writer)
+                .await
         }
-        return LspServerMessageHandlerOutcome::Unhandled;
+        REGISTER_CAPABILITY_METHOD => {
+            handle_register_capability_request(value, writer, watched_files).await
+        }
+        UNREGISTER_CAPABILITY_METHOD => {
+            handle_unregister_capability_request(value, writer, watched_files).await
+        }
+        _ => {
+            if let Some(request_id) = value.get("id").and_then(parse_lsp_request_id) {
+                return if write_unsupported_server_request_response(writer, request_id).await {
+                    LspServerMessageHandlerOutcome::Handled
+                } else {
+                    LspServerMessageHandlerOutcome::FatalWriteFailure
+                };
+            }
+            LspServerMessageHandlerOutcome::Unhandled
+        }
     }
+}
 
+async fn handle_apply_workspace_edit_request(
+    value: &Value,
+    language: &str,
+    root: &Path,
+    generation: u64,
+    ui_tx: &Sender<UiEvent>,
+    writer: &mut ChildStdin,
+) -> LspServerMessageHandlerOutcome {
     let Some(request_id) = value.get("id").and_then(parse_lsp_request_id) else {
         return LspServerMessageHandlerOutcome::Handled;
     };
@@ -84,6 +110,116 @@ pub(super) async fn handle_server_request(
     }
 
     LspServerMessageHandlerOutcome::Handled
+}
+
+/// Answers `client/registerCapability` with a spec-valid success result.
+/// Registrations for `workspace/didChangeWatchedFiles` additionally feed the
+/// per-server watcher table so the frame loop knows which filesystem events
+/// to forward. Servers (notably vscode-languageserver-node based ones) treat
+/// a failure here as fatal, so every registration method gets a response.
+async fn handle_register_capability_request(
+    value: &Value,
+    writer: &mut ChildStdin,
+    watched_files: &LspWatchedFilesState,
+) -> LspServerMessageHandlerOutcome {
+    let Some(request_id) = value.get("id").and_then(parse_lsp_request_id) else {
+        return LspServerMessageHandlerOutcome::Handled;
+    };
+
+    if let Some(registrations) = value
+        .get("params")
+        .and_then(|params| params.get("registrations"))
+        .and_then(Value::as_array)
+    {
+        for registration in registrations {
+            if registration.get("method").and_then(Value::as_str)
+                != Some(DID_CHANGE_WATCHED_FILES_METHOD)
+            {
+                continue;
+            }
+            let Some(registration_id) = registration.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            watched_files.register(registration_id, watcher_glob_patterns(registration));
+        }
+    }
+
+    if write_message(
+        writer,
+        &LspWireMessage::register_capability_response(request_id).to_json(),
+    )
+    .await
+    .is_ok()
+    {
+        LspServerMessageHandlerOutcome::Handled
+    } else {
+        LspServerMessageHandlerOutcome::FatalWriteFailure
+    }
+}
+
+async fn handle_unregister_capability_request(
+    value: &Value,
+    writer: &mut ChildStdin,
+    watched_files: &LspWatchedFilesState,
+) -> LspServerMessageHandlerOutcome {
+    let Some(request_id) = value.get("id").and_then(parse_lsp_request_id) else {
+        return LspServerMessageHandlerOutcome::Handled;
+    };
+
+    if let Some(unregistrations) = value
+        .get("params")
+        .and_then(|params| params.get("unregistrations"))
+        .and_then(Value::as_array)
+    {
+        let ids: Vec<String> = unregistrations
+            .iter()
+            .filter(|unregistration| {
+                unregistration.get("method").and_then(Value::as_str)
+                    == Some(DID_CHANGE_WATCHED_FILES_METHOD)
+            })
+            .filter_map(|unregistration| {
+                unregistration
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect();
+        watched_files.unregister(&ids);
+    }
+
+    if write_message(
+        writer,
+        &LspWireMessage::unregister_capability_response(request_id).to_json(),
+    )
+    .await
+    .is_ok()
+    {
+        LspServerMessageHandlerOutcome::Handled
+    } else {
+        LspServerMessageHandlerOutcome::FatalWriteFailure
+    }
+}
+
+/// Collects the plain string `globPattern` entries of a didChangeWatchedFiles
+/// registration's watchers. Object-shaped patterns (`{ baseUri, pattern }`)
+/// are skipped.
+fn watcher_glob_patterns(registration: &Value) -> Vec<String> {
+    registration
+        .get("registerOptions")
+        .and_then(|options| options.get("watchers"))
+        .and_then(Value::as_array)
+        .map(|watchers| {
+            watchers
+                .iter()
+                .filter_map(|watcher| {
+                    watcher
+                        .get("globPattern")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 async fn write_unsupported_server_request_response(
@@ -167,7 +303,16 @@ mod tests {
         let (mut child, mut writer, mut stdout) = stdio_sink_child().await;
 
         assert_eq!(
-            handle_server_request(&value, "rust", &root, 3, &ui_tx, &mut writer).await,
+            handle_server_request(
+                &value,
+                "rust",
+                &root,
+                3,
+                &ui_tx,
+                &mut writer,
+                &watched_files()
+            )
+            .await,
             LspServerMessageHandlerOutcome::Handled
         );
 
@@ -229,7 +374,16 @@ mod tests {
         let (mut child, mut writer, mut stdout) = stdio_sink_child().await;
 
         assert_eq!(
-            handle_server_request(&value, "rust", &root, 3, &ui_tx, &mut writer).await,
+            handle_server_request(
+                &value,
+                "rust",
+                &root,
+                3,
+                &ui_tx,
+                &mut writer,
+                &watched_files()
+            )
+            .await,
             LspServerMessageHandlerOutcome::Handled
         );
 
@@ -296,7 +450,16 @@ mod tests {
         let (mut child, mut writer, mut stdout) = stdio_sink_child().await;
 
         assert_eq!(
-            handle_server_request(&value, "rust", &root, 3, &ui_tx, &mut writer).await,
+            handle_server_request(
+                &value,
+                "rust",
+                &root,
+                3,
+                &ui_tx,
+                &mut writer,
+                &watched_files()
+            )
+            .await,
             LspServerMessageHandlerOutcome::Handled
         );
 
@@ -362,7 +525,16 @@ mod tests {
         let (mut child, mut writer, mut stdout) = stdio_sink_child().await;
 
         assert_eq!(
-            handle_server_request(&value, "rust", &root, 3, &ui_tx, &mut writer).await,
+            handle_server_request(
+                &value,
+                "rust",
+                &root,
+                3,
+                &ui_tx,
+                &mut writer,
+                &watched_files()
+            )
+            .await,
             LspServerMessageHandlerOutcome::Unhandled
         );
         assert!(ui_rx.try_recv().is_err());
@@ -378,6 +550,134 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn register_capability_request_records_watchers_and_replies_success() -> Result<(), String>
+    {
+        let root = PathBuf::from("workspace");
+        let value = json!({
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "client/registerCapability",
+            "params": {
+                "registrations": [{
+                    "id": "watcher-rs",
+                    "method": "workspace/didChangeWatchedFiles",
+                    "registerOptions": {
+                        "watchers": [
+                            { "globPattern": "**/*.rs" },
+                            { "globPattern": { "baseUri": "file:///workspace", "pattern": "**/*.ignored" } }
+                        ]
+                    }
+                }]
+            }
+        });
+        let state = watched_files();
+        let (ui_tx, _ui_rx) = crate::ui_event_channel::ui_event_channel();
+        let (mut child, mut writer, mut stdout) = stdio_echo_child().await;
+
+        assert_eq!(
+            handle_server_request(&value, "rust", &root, 3, &ui_tx, &mut writer, &state).await,
+            LspServerMessageHandlerOutcome::Handled
+        );
+
+        drop(writer);
+        let mut output = String::new();
+        stdout
+            .read_to_string(&mut output)
+            .await
+            .map_err(|err| err.to_string())?;
+        let _ = child.kill().await;
+        let response = lsp_response_body(&output)?;
+        assert_eq!(response["id"], 23);
+        assert_eq!(response["result"]["capabilities"], json!({}));
+
+        // String glob patterns are tracked; object-shaped ones are ignored.
+        assert!(state.matches_any(&root.join("src/main.rs")));
+        assert!(!state.matches_any(&root.join("src/main.ts")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unregister_capability_request_stops_watcher_forwarding() -> Result<(), String> {
+        let root = PathBuf::from("workspace");
+        let state = watched_files();
+        state.register("watcher-rs", vec!["**/*.rs".to_owned()]);
+        let value = json!({
+            "jsonrpc": "2.0",
+            "id": "unregister-24",
+            "method": "client/unregisterCapability",
+            "params": {
+                "unregistrations": [{
+                    "id": "watcher-rs",
+                    "method": "workspace/didChangeWatchedFiles"
+                }]
+            }
+        });
+        let (ui_tx, _ui_rx) = crate::ui_event_channel::ui_event_channel();
+        let (mut child, mut writer, mut stdout) = stdio_echo_child().await;
+
+        assert_eq!(
+            handle_server_request(&value, "rust", &root, 3, &ui_tx, &mut writer, &state).await,
+            LspServerMessageHandlerOutcome::Handled
+        );
+
+        drop(writer);
+        let mut output = String::new();
+        stdout
+            .read_to_string(&mut output)
+            .await
+            .map_err(|err| err.to_string())?;
+        let _ = child.kill().await;
+        let response = lsp_response_body(&output)?;
+        assert_eq!(response["id"], "unregister-24");
+        assert_eq!(response["result"]["capabilities"], json!({}));
+        assert!(!state.matches_any(&root.join("src/main.rs")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn register_capability_request_for_other_methods_replies_success_without_watchers()
+    -> Result<(), String> {
+        let root = PathBuf::from("workspace");
+        let value = json!({
+            "jsonrpc": "2.0",
+            "id": 25,
+            "method": "client/registerCapability",
+            "params": {
+                "registrations": [{
+                    "id": "config-1",
+                    "method": "workspace/didChangeConfiguration",
+                    "registerOptions": {}
+                }]
+            }
+        });
+        let state = watched_files();
+        let (ui_tx, _ui_rx) = crate::ui_event_channel::ui_event_channel();
+        let (mut child, mut writer, mut stdout) = stdio_echo_child().await;
+
+        assert_eq!(
+            handle_server_request(&value, "rust", &root, 3, &ui_tx, &mut writer, &state).await,
+            LspServerMessageHandlerOutcome::Handled
+        );
+
+        drop(writer);
+        let mut output = String::new();
+        stdout
+            .read_to_string(&mut output)
+            .await
+            .map_err(|err| err.to_string())?;
+        let _ = child.kill().await;
+        let response = lsp_response_body(&output)?;
+        assert_eq!(response["id"], 25);
+        assert_eq!(response["result"]["capabilities"], json!({}));
+        assert!(state.is_empty());
+        Ok(())
+    }
+
+    fn watched_files() -> crate::lsp_client::watched_files::LspWatchedFilesState {
+        crate::lsp_client::watched_files::LspWatchedFilesState::default()
+    }
+
     async fn unsupported_request_response_for(id: Value) -> Result<Value, String> {
         let root = PathBuf::from("workspace");
         let value = json!({
@@ -390,7 +690,16 @@ mod tests {
         let (mut child, mut writer, mut stdout) = stdio_echo_child().await;
 
         assert_eq!(
-            handle_server_request(&value, "rust", &root, 3, &ui_tx, &mut writer).await,
+            handle_server_request(
+                &value,
+                "rust",
+                &root,
+                3,
+                &ui_tx,
+                &mut writer,
+                &watched_files()
+            )
+            .await,
             LspServerMessageHandlerOutcome::Handled
         );
         assert!(ui_rx.try_recv().is_err());

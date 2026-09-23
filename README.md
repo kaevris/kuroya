@@ -25,6 +25,9 @@ the current work is mostly around:
 
 extension marketplaces and vscode-style extension-host work are not planned.
 local plugins, themes, syntax support, and commands are the intended direction.
+plugins run sandboxed wasm commands with capability-gated host calls; the
+host api v2 adds buffer mutation (`buffer_get_text`/`buffer_set_text`
+gated by `workspace_write`), applied after the run with full undo support.
 
 ## what works
 
@@ -94,6 +97,12 @@ install Inno Setup 6, then run:
 
 the setup exe is written to `dist\Kuroya-Setup-<version>.exe`. if `ISCC.exe`
 is not on `PATH`, pass `-InnoCompilerPath` or set `INNO_SETUP_COMPILER`.
+the setup wizard also offers optional Windows Explorer integration for an
+`Open with Kuroya` file action and registering Kuroya as an editor for its
+built-in supported file types.
+
+validate the installer script without rebuilding the app or writing a setup
+artifact with `./installer/build-installer.ps1 -ValidateOnly`.
 
 tagged GitHub builds publish the same setup exe as a release asset, which is
 what the in-app update checker expects. release tags must match the app version,
@@ -191,6 +200,30 @@ on your machine, say which one and why.
   feedback
 - [ ] add more end-to-end smoke coverage and platform validation for windows,
   linux, and macos
+
+## discord rich presence
+
+optional, off by default. when enabled, kuroya shows what you are editing on
+your discord profile, like the vs code discord presence extension:
+
+1. create a free application at [discord.com/developers/applications](
+   https://discord.com/developers/applications) and copy its application id
+   (optionally upload a logo asset named `kuroya` there to get cover art)
+2. in `settings.toml`:
+
+   ```toml
+   [discord]
+   presence_enabled = true
+   client_id = "your-application-id"
+   show_details = true    # "Editing <file name>"
+   show_workspace = true  # "In <workspace folder>"
+   show_elapsed = true    # elapsed time anchor
+   ```
+
+or toggle everything in settings > discord inside the app. only file and
+workspace folder names are ever sent — never full paths — and hidden fields
+are omitted entirely. kuroya stays fully inert (no threads, no ipc) while the
+feature is disabled, and silently retries when discord is not running.
 
 ## license
 

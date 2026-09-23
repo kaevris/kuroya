@@ -11,7 +11,8 @@ use crate::{
         explorer_operation_error_detail, explorer_operation_path_label, retarget_revealed_path,
     },
     explorer_tree_panel::{
-        explorer_context_path_known_openable, explorer_file_compare_context_action_labels,
+        ExplorerDirectoryEntries, ExplorerDirectorySnapshot, explorer_context_path_known_openable,
+        explorer_file_compare_context_action_labels,
         explorer_file_source_control_context_action_labels, explorer_parent_entry_index,
         explorer_selected_entry_index,
     },
@@ -22,6 +23,94 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
 };
+
+fn explorer_app_for_test(root: PathBuf) -> crate::KuroyaApp {
+    let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+    let settings = kuroya_core::EditorSettings::default();
+    crate::KuroyaApp::from_startup_context(crate::app_startup_context::AppStartupContext {
+        runtime: tokio::runtime::Runtime::new().expect("test runtime"),
+        tx,
+        rx,
+        workspace: kuroya_core::Workspace::new(root.clone()),
+        settings: settings.clone(),
+        settings_panel_draft: settings,
+        settings_editor_font_path: String::new(),
+        settings_ui_font_path: String::new(),
+        theme_picker_selected: 0,
+        saved_session: None,
+        terminal: crate::terminal::TerminalPane::new(root.clone(), 100, 12.0, 1.2),
+        watcher: None,
+        recent_projects: Vec::new(),
+        trusted_workspaces: vec![root],
+        now: std::time::Instant::now(),
+        startup_timings: Vec::new(),
+    })
+}
+
+#[test]
+fn explorer_directory_loaded_from_stale_workspace_is_dropped() {
+    let root = PathBuf::from("workspace");
+    let mut app = explorer_app_for_test(root.clone());
+    let stale_generation = app.workspace_event_generation;
+    app.workspace_event_generation = stale_generation.wrapping_add(1);
+    let directory = root.join("src");
+    app.explorer_directory_cache.insert(
+        directory.clone(),
+        ExplorerDirectorySnapshot::Loading {
+            request_token: 7,
+            previous: None,
+        },
+    );
+
+    assert!(!app.apply_explorer_directory_loaded_event(
+        &root,
+        stale_generation,
+        7,
+        &directory,
+        ExplorerDirectoryEntries::default(),
+    ));
+    assert!(matches!(
+        app.explorer_directory_cache.get(&directory),
+        Some(ExplorerDirectorySnapshot::Loading {
+            request_token: 7,
+            ..
+        })
+    ));
+
+    let mut loaded = ExplorerDirectoryEntries::default();
+    loaded
+        .entries
+        .push(explorer_entry(&directory, "main.rs", false));
+    assert!(app.apply_explorer_directory_loaded_event(
+        &root,
+        app.workspace_event_generation,
+        7,
+        &directory,
+        loaded,
+    ));
+    match app.explorer_directory_cache.get(&directory) {
+        Some(ExplorerDirectorySnapshot::Ready(entries)) => {
+            assert_eq!(entries.entries.len(), 1);
+            assert_eq!(entries.error, None);
+        }
+        _ => panic!("loaded directory should be ready"),
+    }
+}
+
+#[test]
+fn workspace_reset_clears_explorer_directory_cache() {
+    let root = PathBuf::from("workspace");
+    let mut app = explorer_app_for_test(root.clone());
+    let directory = root.join("src");
+    app.explorer_directory_cache.insert(
+        directory.clone(),
+        ExplorerDirectorySnapshot::Ready(ExplorerDirectoryEntries::default()),
+    );
+
+    app.reset_open_workspace_state();
+
+    assert!(app.explorer_directory_cache.is_empty());
+}
 
 #[test]
 fn explorer_delete_confirmation_respects_setting_and_falls_back_safely() {
@@ -370,6 +459,7 @@ fn explorer_entry(root: &Path, relative: &str, is_dir: bool) -> ProjectEntry {
         depth: relative_path.components().count().saturating_sub(1),
         relative_path,
         is_dir,
+        ..Default::default()
     }
 }
 

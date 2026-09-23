@@ -559,6 +559,10 @@ impl Default for Keymap {
                     command: Command::SaveAll,
                 },
                 KeyBinding {
+                    chord: "Ctrl+N".to_owned(),
+                    command: Command::NewFile,
+                },
+                KeyBinding {
                     chord: "Ctrl+Alt+R".to_owned(),
                     command: Command::ReloadActiveFromDisk,
                 },
@@ -641,6 +645,10 @@ impl Default for Keymap {
                 KeyBinding {
                     chord: "Ctrl+`".to_owned(),
                     command: Command::ToggleTerminal,
+                },
+                KeyBinding {
+                    chord: "Alt+F".to_owned(),
+                    command: Command::ToggleTerminalSearch,
                 },
                 KeyBinding {
                     chord: "Ctrl+PageDown".to_owned(),
@@ -827,6 +835,32 @@ mod tests {
         assert!(keymap.bindings.iter().any(|binding| {
             binding.chord == "Ctrl+Shift+T" && binding.command == Command::ReopenClosedFile
         }));
+    }
+
+    #[test]
+    fn default_keymap_includes_new_file_shortcut() {
+        let keymap = Keymap::default();
+
+        let new_file_bindings: Vec<&KeyBinding> = keymap
+            .bindings
+            .iter()
+            .filter(|binding| binding.command == Command::NewFile)
+            .collect();
+        assert_eq!(new_file_bindings.len(), 1);
+        assert_eq!(new_file_bindings[0].chord, "Ctrl+N");
+        assert_eq!(
+            normalize_keymap_chord("Ctrl+N").as_deref(),
+            Some(new_file_bindings[0].chord.as_str())
+        );
+
+        assert_eq!(
+            keymap
+                .bindings
+                .iter()
+                .filter(|binding| binding.chord == "Ctrl+N")
+                .count(),
+            1
+        );
     }
 
     #[test]

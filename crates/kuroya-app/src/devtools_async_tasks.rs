@@ -208,6 +208,13 @@ pub(crate) fn async_task_event_label(event: &UiEvent) -> Option<AsyncTaskEventLa
         UiEvent::LocalHistoryFailed { path, .. } => {
             Some(failed("Local History", path_detail(path)))
         }
+        UiEvent::LocalHistoryBrowserLoaded { path, .. } => {
+            Some(finished("Local History Browser", path_detail(path)))
+        }
+        UiEvent::LocalHistoryBrowserSnapshotLoaded { path, result, .. } => match result {
+            Ok(_) => Some(finished("Local History", path_detail(path))),
+            Err(_) => Some(failed("Local History", path_detail(path))),
+        },
         UiEvent::SessionSaved { root } => Some(finished("Session Save", path_detail(root))),
         UiEvent::SessionSaveFailed { root, .. } => Some(failed("Session Save", path_detail(root))),
         UiEvent::OpenWorkspacePicked { .. }
@@ -216,6 +223,11 @@ pub(crate) fn async_task_event_label(event: &UiEvent) -> Option<AsyncTaskEventLa
         | UiEvent::SettingsFontPicked { .. }
         | UiEvent::SettingsFontPickerCanceled { .. }
         | UiEvent::SettingsFontPickerFailed { .. }
+        | UiEvent::SettingsBackgroundImagePicked { .. }
+        | UiEvent::SettingsBackgroundImagePickerCanceled { .. }
+        | UiEvent::SettingsBackgroundImagePickerFailed { .. }
+        | UiEvent::EditorBackgroundImageLoaded { .. }
+        | UiEvent::EditorBackgroundImageLoadFailed { .. }
         | UiEvent::ExplorerCreatePathPicked { .. }
         | UiEvent::ExplorerCreatePathPickerCanceled { .. }
         | UiEvent::ExplorerCreatePathPickerFailed { .. } => None,
@@ -433,6 +445,11 @@ pub(crate) fn async_task_event_label(event: &UiEvent) -> Option<AsyncTaskEventLa
         UiEvent::UpdateDownloadFailed { latest_version, .. } => {
             Some(failed("Update Download", async_task_detail(latest_version)))
         }
+        UiEvent::QuickOpenRanked { .. } => None,
+        UiEvent::PluginOpenFileRequested { .. } => None,
+        UiEvent::PluginBufferTextApply { .. } => None,
+        UiEvent::ExplorerDirectoryLoaded { .. } => None,
+        UiEvent::StartupSessionLoaded { .. } => None,
         UiEvent::Lsp(_) => None,
     }
 }
@@ -698,7 +715,7 @@ mod tests {
             VirtualRevisionOpenOutcome, VirtualRevisionOpenRequest, virtual_revision_task_detail,
         },
     };
-    use kuroya_core::{GitChangeStage, SearchResult, TextBuffer};
+    use kuroya_core::{GitChangeStage, SearchOptions, SearchResult, TextBuffer};
     use std::{
         borrow::Cow,
         collections::VecDeque,
@@ -1049,6 +1066,8 @@ mod tests {
             whole_word: false,
             include_globs: Vec::new(),
             exclude_globs: Vec::new(),
+            max_file_bytes: SearchOptions::default().max_file_bytes,
+            max_results: SearchOptions::default().max_results,
             result: SearchResult::default(),
         };
 
@@ -1138,6 +1157,8 @@ mod tests {
             whole_word: false,
             include_globs: Vec::new(),
             exclude_globs: Vec::new(),
+            max_file_bytes: SearchOptions::default().max_file_bytes,
+            max_results: SearchOptions::default().max_results,
             result: SearchResult::default(),
         };
 

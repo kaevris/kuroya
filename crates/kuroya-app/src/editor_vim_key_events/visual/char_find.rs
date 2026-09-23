@@ -5,8 +5,8 @@ use super::super::{
     EditorVimCharFind, EditorVimCharFindMotion, EditorVimPendingKey, VimKeyResult, vim_escape_key,
 };
 use super::{
-    vim_set_visual_character_selection, vim_visual_character_char_find_target,
-    vim_visual_character_clamped_cursor,
+    vim_exit_visual_selection, vim_set_visual_character_selection,
+    vim_visual_character_char_find_target, vim_visual_character_clamped_cursor,
 };
 
 pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_char_find_key_event(
@@ -25,7 +25,7 @@ pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_char_find_ke
     let cursor = vim_visual_character_clamped_cursor(buffer, cursor);
     if vim_escape_key(key, modifiers) {
         *pending = None;
-        buffer.set_single_cursor(cursor);
+        vim_exit_visual_selection(buffer, anchor, cursor);
         return VimKeyResult::handled(suppress_text);
     }
     if modifiers.command || modifiers.alt || modifiers.ctrl {

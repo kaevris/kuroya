@@ -1,10 +1,10 @@
 use super::pending::register_document_highlights_request;
+use crate::lsp_client::pending::PendingLspRequests;
 use crate::lsp_client::{
-    pending::{PendingLspRequest, lsp_request_target_is_valid},
-    request_dispatch::write_request_message,
+    pending::lsp_request_target_is_valid, request_dispatch::write_request_message,
 };
 use kuroya_core::BufferId;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 use tokio::process::ChildStdin;
 
 pub(super) async fn dispatch_document_highlights(
@@ -15,7 +15,7 @@ pub(super) async fn dispatch_document_highlights(
     character: usize,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     if !lsp_request_target_is_valid(id, &path) {
         return true;

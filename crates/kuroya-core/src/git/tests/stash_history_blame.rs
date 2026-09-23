@@ -363,6 +363,93 @@ fn unified_diff_for_commit_returns_patch_against_parent() {
 }
 
 #[test]
+fn unified_diff_for_commit_renders_detected_rename_as_rename_delta() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-commit-diff-rename-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    configure_identity(&repo);
+    let old_path = root.join("original.txt");
+    let new_path = root.join("renamed.txt");
+    let body = (0..40)
+        .map(|line| format!("line {line}\n"))
+        .collect::<String>();
+    fs::write(&old_path, &body).unwrap();
+    commit_all(&repo, "initial");
+    fs::rename(&old_path, &new_path).unwrap();
+    commit_all_with_head_parent(&repo, "rename file");
+    let commits = list_commit_history(&root, 1).unwrap();
+
+    let diff = unified_diff_for_commit(&root, &commits[0].oid).unwrap();
+
+    assert!(diff.contains("rename from original.txt"), "diff: {diff}");
+    assert!(diff.contains("rename to renamed.txt"), "diff: {diff}");
+    assert!(
+        !diff.contains("deleted file mode") && !diff.contains("new file mode"),
+        "rename rendered as delete plus add: {diff}"
+    );
+    assert!(!diff.contains("diff truncated"), "diff: {diff}");
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unified_diff_for_commit_truncates_oversized_patch_text() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-commit-diff-truncated-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    configure_identity(&repo);
+    let path = root.join("huge.txt");
+    let line = "0123456789abcdef0123456789abcdef01234567\n";
+    let mut body = String::with_capacity(line.len() * 90_000);
+    for _ in 0..90_000 {
+        body.push_str(line);
+    }
+    fs::write(&path, &body).unwrap();
+    commit_all(&repo, "add huge file");
+    let commits = list_commit_history(&root, 1).unwrap();
+
+    let diff = unified_diff_for_commit(&root, &commits[0].oid).unwrap();
+
+    assert!(diff.starts_with("diff --git a/huge.txt b/huge.txt"));
+    assert!(diff.ends_with("\n… (diff truncated: exceeds size limit)\n"));
+    assert!(
+        diff.len() <= MAX_GIT_COMMIT_DIFF_PATCH_BYTES + 64,
+        "patch text is {} bytes, expected at most {} plus the marker",
+        diff.len(),
+        MAX_GIT_COMMIT_DIFF_PATCH_BYTES
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn list_commit_history_returns_empty_for_unborn_head() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-commit-history-unborn-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    configure_identity(&repo);
+    assert!(repo.head().is_err());
+
+    let commits = list_commit_history(&root, 10).unwrap();
+
+    assert!(commits.is_empty());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn blame_file_returns_line_authors_and_summaries() {
     let root = std::env::temp_dir().join(format!(
         "kuroya-blame-file-{}-{}",

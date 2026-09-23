@@ -2,11 +2,11 @@ mod panels;
 
 use crate::{
     KuroyaApp, devtools_repaint_diagnostics::RepaintFrameActivity, fonts, persistence, theme,
-    ui_event_channel,
+    ui_event_channel, workspace_state::paths_match_lexically,
 };
 use eframe::egui::Context;
 use kuroya_core::window_zoom_factor;
-use std::{mem, time::Instant};
+use std::{mem, path::PathBuf, time::Instant};
 
 impl KuroyaApp {
     pub(crate) fn drain_terminal_output_for_frame(&mut self) -> (usize, bool) {
@@ -21,6 +21,10 @@ impl KuroyaApp {
 
 impl eframe::App for KuroyaApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Ingest status toasts before anything renders so the toast pipeline
+        // stays alive even while the status bar (the render-side ingest) is
+        // hidden.
+        self.ingest_status_toast();
         let frame_start = Instant::now();
         let profiling = self.profiling_enabled();
         let mut profile_mark = frame_start;
@@ -68,9 +72,12 @@ impl eframe::App for KuroyaApp {
         let update_checks = self.flush_due_update_checks(frame_start);
         self.record_profile_mark(profiling, &mut profile_mark, "frame", "runtime");
         let commands = self.drain_commands(ctx);
+        self.sync_background_image(false);
+        self.update_discord_presence();
         self.record_profile_mark(profiling, &mut profile_mark, "frame", "commands");
         let dropped_ui_events = ui_event_channel::take_dropped_ui_event_count();
 
+        self.render_background_image(ctx);
         self.render_main_panels(ctx);
         self.render_active_overlays(ctx);
         self.record_profile_mark(profiling, &mut profile_mark, "frame", "render");
@@ -79,8 +86,11 @@ impl eframe::App for KuroyaApp {
             self.record_profile_sample("frame", "total", update_duration);
         }
         let startup_warmup = self.startup_repaint_warmup_active();
+        // Frame timing stays unconditional: the GPU acceleration lag
+        // detector consumes `frame_timings` even when devtools are closed.
         self.record_frame_timing(update_duration);
         self.maybe_show_gpu_acceleration_prompt();
+        self.maybe_show_lsp_enable_prompt();
         let activity = RepaintFrameActivity {
             ui_events,
             dropped_ui_events,
@@ -108,7 +118,14 @@ impl eframe::App for KuroyaApp {
             terminal_output_pending,
             profiling,
         );
-        self.record_repaint_diagnostics(activity, update_duration, repaint_after);
+        // Repaint samples are devtools/profiling data; skip recording them
+        // on frames nobody observes, but keep the per-frame warmup counter
+        // advancing so startup warmup still ends after its frame budget.
+        if self.devtools_open || profiling {
+            self.record_repaint_diagnostics(activity, update_duration, repaint_after);
+        } else {
+            self.advance_startup_warmup_frame_counter();
+        }
         if repaint_after.is_zero() {
             ctx.request_repaint();
         } else {
@@ -127,6 +144,51 @@ impl KuroyaApp {
         std::process::exit(0);
     }
 
+    /// Applies the startup session loaded off-thread by
+    /// `spawn_startup_session_load`. This is the deferred counterpart of the
+    /// synchronous startup sequence that used to run in `KuroyaApp::new`:
+    /// restore the session (or surface the load warning), then handle the
+    /// startup target that was held back so it always runs on top of the
+    /// restored state (opening a folder re-saves the restored session for
+    /// the previous workspace, so it must observe the restored state), then
+    /// arm the workspace trust prompt in the same relative order.
+    pub(crate) fn apply_startup_session_loaded(
+        &mut self,
+        startup_root: PathBuf,
+        target: Option<crate::startup_arguments::StartupTarget>,
+        session: Option<Box<persistence::PersistedSession>>,
+        warning: Option<String>,
+    ) {
+        if self.workspace_placeholder || !paths_match_lexically(&self.workspace.root, &startup_root)
+        {
+            // The placeholder startup path never restores a session, and an
+            // event for a workspace the app already left (startup folder
+            // target) is stale.
+            return;
+        }
+        if let Some(session) = session {
+            self.restore_session(*session);
+            // The startup git scan may have completed before this event; the
+            // restored source-control loads gate on a scan, so redrive them
+            // here when the scan already landed (this is a no-op otherwise
+            // and the next scan drains them as before).
+            self.drain_pending_restored_source_control_loads();
+        } else if let Some(warning) = warning {
+            self.status = warning;
+        }
+        match target {
+            Some(crate::startup_arguments::StartupTarget::File(path)) => {
+                self.spawn_open_file(path);
+                self.arm_workspace_trust_prompt();
+            }
+            Some(crate::startup_arguments::StartupTarget::Folder(path)) => {
+                self.open_workspace_now(path);
+                self.arm_workspace_trust_prompt();
+            }
+            None => {}
+        }
+    }
+
     fn prepare_shutdown(&mut self) {
         if self.shutdown_prepared {
             return;
@@ -137,6 +199,9 @@ impl KuroyaApp {
             client.shutdown();
         }
         self.abort_session_save_in_flight_for_shutdown();
+        // Clear the Discord presence before the slower shutdown steps; the
+        // wait is bounded (~500ms) so exit never blocks on a hung pipe.
+        self.shutdown_discord_presence();
         let _ = self.save_app_state();
         let _ = self.terminal.drain_output_for_shutdown();
         if !self.workspace_placeholder {
@@ -188,7 +253,8 @@ mod tests {
     use super::*;
     use crate::{
         app_startup_context::AppStartupContext, persistence::PersistedSession,
-        terminal::TerminalPane,
+        startup_arguments::StartupTarget, terminal::TerminalPane,
+        ui_event_channel::send_critical_ui_event, ui_events::UiEvent,
     };
     use kuroya_core::{EditorSettings, Workspace};
     use std::{
@@ -326,6 +392,135 @@ mod tests {
         let session = PersistedSession::load(&root).unwrap().unwrap();
         assert_eq!(session.source_control_commit_message, "fresh current");
         assert!(app.session_save_in_flight_task.is_none());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_session_loaded_event_restores_deferred_session() {
+        let root = temp_root("deferred-restore");
+        fs::create_dir_all(&root).unwrap();
+        let restored = root.join("src/lib.rs");
+        fs::create_dir_all(restored.parent().unwrap()).unwrap();
+        fs::write(&restored, "pub fn lib() {}\n").unwrap();
+        let other_project = temp_root("deferred-restore-other");
+        fs::create_dir_all(&other_project).unwrap();
+        let mut app = app_for_test(root.clone());
+        let session = PersistedSession {
+            workspace_root: root.clone(),
+            open_files: vec![restored.clone()],
+            active_path: Some(restored.clone()),
+            recent_projects: vec![other_project.clone()],
+            ..PersistedSession::default()
+        };
+
+        assert!(send_critical_ui_event(
+            &app.tx,
+            UiEvent::StartupSessionLoaded {
+                root: root.clone(),
+                target: None,
+                session: Some(Box::new(session)),
+                warning: None,
+            },
+        ));
+        app.handle_events();
+
+        // The restored open file is queued for its (async) load, the session
+        // active path waits on that load, and the session's recent projects
+        // were merged with the current root.
+        assert!(app.pending_open_paths.contains(&restored));
+        assert_eq!(app.pending_active_path, Some(restored));
+        assert!(app.recent_projects.contains(&other_project));
+        assert!(app.recent_projects.contains(&root));
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(other_project).unwrap();
+    }
+
+    #[test]
+    fn startup_session_loaded_event_ignores_stale_workspace_root() {
+        let root = temp_root("deferred-restore-stale");
+        fs::create_dir_all(&root).unwrap();
+        let other_root = temp_root("deferred-restore-stale-other");
+        fs::create_dir_all(&other_root).unwrap();
+        let mut app = app_for_test(root.clone());
+
+        assert!(send_critical_ui_event(
+            &app.tx,
+            UiEvent::StartupSessionLoaded {
+                root: other_root.clone(),
+                target: None,
+                session: Some(Box::new(PersistedSession {
+                    workspace_root: other_root.clone(),
+                    recent_projects: vec![other_root.clone()],
+                    ..PersistedSession::default()
+                })),
+                warning: None,
+            },
+        ));
+        app.handle_events();
+
+        assert!(app.pending_open_paths.is_empty());
+        assert!(!app.recent_projects.contains(&other_root));
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(other_root).unwrap();
+    }
+
+    #[test]
+    fn startup_session_loaded_event_surfaces_warning_without_session() {
+        let root = temp_root("deferred-restore-warning");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+
+        assert!(send_critical_ui_event(
+            &app.tx,
+            UiEvent::StartupSessionLoaded {
+                root: root.clone(),
+                target: None,
+                session: None,
+                warning: Some("Could not load saved session: boom".to_owned()),
+            },
+        ));
+        app.handle_events();
+
+        assert_eq!(app.status, "Could not load saved session: boom");
+        assert!(app.pending_open_paths.is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn startup_session_loaded_event_opens_startup_target_after_restore() {
+        let root = temp_root("deferred-restore-target");
+        fs::create_dir_all(&root).unwrap();
+        let restored = root.join("restored.rs");
+        fs::write(&restored, "restored\n").unwrap();
+        let target = root.join("target.rs");
+        fs::write(&target, "target\n").unwrap();
+        let mut app = app_for_test(root.clone());
+        let session = PersistedSession {
+            workspace_root: root.clone(),
+            open_files: vec![restored.clone()],
+            active_path: Some(restored.clone()),
+            ..PersistedSession::default()
+        };
+
+        assert!(send_critical_ui_event(
+            &app.tx,
+            UiEvent::StartupSessionLoaded {
+                root: root.clone(),
+                target: Some(StartupTarget::File(target.clone())),
+                session: Some(Box::new(session)),
+                warning: None,
+            },
+        ));
+        app.handle_events();
+
+        // The session state was applied first, then the deferred startup
+        // target was queued on top of it — the synchronous startup order.
+        assert!(app.pending_open_paths.contains(&restored));
+        assert!(app.pending_open_paths.contains(&target));
 
         fs::remove_dir_all(root).unwrap();
     }

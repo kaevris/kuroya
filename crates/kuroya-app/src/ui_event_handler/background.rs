@@ -1,7 +1,13 @@
 use crate::{
     KuroyaApp,
     path_display::display_error_label_cow,
-    plugin_activation_runtime::activate_plugin_languages_for_buffers,
+    plugin_activation_runtime::{
+        activate_plugin_languages_for_buffers, plugin_language_reclassified_buffer_ids,
+    },
+    project_search::{
+        effective_project_search_exclude_globs, effective_project_search_max_file_bytes,
+        effective_project_search_max_results,
+    },
     project_search_state::{parse_project_globs, project_search_request_is_current},
     source_control_runtime::source_control_git_operation_root_for_snapshot,
     startup_tasks::GitScanRootCacheEntry,
@@ -37,6 +43,7 @@ pub(super) fn handle_cached_index_event(
     app.index = index;
     app.project_index_generation = app.project_index_generation.saturating_add(1);
     app.project_search_index_generation = app.project_search_index_generation.saturating_add(1);
+    app.project_search_metadata_cache.clear();
     app.status = workspace_cached_index_status(count, truncated);
     true
 }
@@ -60,23 +67,25 @@ pub(super) fn handle_indexed_event(
     app.index = index;
     app.project_index_generation = app.project_index_generation.saturating_add(1);
     app.project_search_index_generation = app.project_search_index_generation.saturating_add(1);
+    app.project_search_metadata_cache.clear();
     app.status = workspace_index_status(count, truncated);
     true
 }
 
 pub(crate) fn workspace_index_status(count: usize, truncated: bool) -> String {
     if truncated {
-        format!("{count} files indexed (workspace limit reached)")
+        format!("Indexed {count} files (limit reached)")
     } else {
-        format!("{count} files indexed")
+        format!("Indexed {count} files")
     }
 }
 
 pub(crate) fn workspace_cached_index_status(count: usize, truncated: bool) -> String {
+    let _ = count;
     if truncated {
-        format!("{count} cached files available; refreshing index (workspace limit reached)")
+        "Refreshing index (limit reached)".to_owned()
     } else {
-        format!("{count} cached files available; refreshing index")
+        "Refreshing index".to_owned()
     }
 }
 
@@ -90,6 +99,8 @@ pub(super) fn handle_search_finished_event(
     whole_word: bool,
     include_globs: Vec<String>,
     exclude_globs: Vec<String>,
+    max_file_bytes: u64,
+    max_results: usize,
     result: SearchResult,
 ) -> bool {
     if !search_event_is_current(
@@ -102,6 +113,8 @@ pub(super) fn handle_search_finished_event(
         whole_word,
         &include_globs,
         &exclude_globs,
+        max_file_bytes,
+        max_results,
     ) {
         return false;
     }
@@ -117,6 +130,8 @@ pub(super) fn handle_search_finished_event(
         whole_word,
         include_globs,
         exclude_globs,
+        max_file_bytes,
+        max_results,
     );
     app.project_search_selected = 0;
     if let Some(error) = error {
@@ -137,6 +152,8 @@ pub(super) fn handle_search_progress_event(
     whole_word: bool,
     include_globs: Vec<String>,
     exclude_globs: Vec<String>,
+    max_file_bytes: u64,
+    max_results: usize,
     progress: SearchProgress,
 ) -> bool {
     if !search_event_is_current(
@@ -149,6 +166,8 @@ pub(super) fn handle_search_progress_event(
         whole_word,
         &include_globs,
         &exclude_globs,
+        max_file_bytes,
+        max_results,
     ) {
         return false;
     }
@@ -161,6 +180,8 @@ pub(super) fn handle_search_progress_event(
         whole_word,
         &include_globs,
         &exclude_globs,
+        max_file_bytes,
+        max_results,
     ) {
         app.project_search_result = SearchResult::default();
         apply_project_search_result_metadata(
@@ -171,6 +192,8 @@ pub(super) fn handle_search_progress_event(
             whole_word,
             include_globs.clone(),
             exclude_globs.clone(),
+            max_file_bytes,
+            max_results,
         );
         app.project_search_selected = 0;
     }
@@ -195,7 +218,12 @@ fn search_event_is_current(
     whole_word: bool,
     include_globs: &[String],
     exclude_globs: &[String],
+    max_file_bytes: u64,
+    max_results: usize,
 ) -> bool {
+    let panel_exclude_globs = parse_project_globs(&app.project_search_exclude);
+    let current_exclude_globs =
+        effective_project_search_exclude_globs(&app.settings, &panel_exclude_globs);
     workspace_event_matches(&app.workspace.root, workspace_root)
         && project_search_request_is_current(
             request_id,
@@ -207,11 +235,15 @@ fn search_event_is_current(
             whole_word,
             include_globs,
             exclude_globs,
+            max_file_bytes,
+            max_results,
             app.project_search_query.trim(),
             app.project_search_case_sensitive,
             app.project_search_whole_word,
             &parse_project_globs(&app.project_search_include),
-            &parse_project_globs(&app.project_search_exclude),
+            &current_exclude_globs,
+            effective_project_search_max_file_bytes(&app.settings),
+            effective_project_search_max_results(&app.settings),
         )
 }
 
@@ -223,6 +255,8 @@ fn apply_project_search_result_metadata(
     whole_word: bool,
     include_globs: Vec<String>,
     exclude_globs: Vec<String>,
+    max_file_bytes: u64,
+    max_results: usize,
 ) {
     app.project_search_result_query = query;
     app.project_search_result_index_generation = index_generation;
@@ -230,6 +264,8 @@ fn apply_project_search_result_metadata(
     app.project_search_result_whole_word = whole_word;
     app.project_search_result_include_globs = include_globs;
     app.project_search_result_exclude_globs = exclude_globs;
+    app.project_search_result_max_file_bytes = max_file_bytes;
+    app.project_search_result_max_results = max_results;
 }
 
 fn project_search_result_metadata_matches(
@@ -240,6 +276,8 @@ fn project_search_result_metadata_matches(
     whole_word: bool,
     include_globs: &[String],
     exclude_globs: &[String],
+    max_file_bytes: u64,
+    max_results: usize,
 ) -> bool {
     app.project_search_result_index_generation == index_generation
         && app.project_search_result_query == query
@@ -247,6 +285,8 @@ fn project_search_result_metadata_matches(
         && app.project_search_result_whole_word == whole_word
         && app.project_search_result_include_globs == include_globs
         && app.project_search_result_exclude_globs == exclude_globs
+        && app.project_search_result_max_file_bytes == max_file_bytes
+        && app.project_search_result_max_results == max_results
 }
 
 pub(crate) fn project_search_status(count: usize, truncated: bool, stats: SearchStats) -> String {
@@ -392,7 +432,13 @@ pub(super) fn handle_git_scanned_event(
     if previous_operation_root != next_operation_root {
         app.invalidate_source_control_load_requests();
     }
+    // A cold scan builds a fresh snapshot that cannot know the revision it
+    // replaces; keep revisions monotonic so revision-keyed UI caches (the
+    // source control row cache) invalidate even when the scan restarts the
+    // counter at 1.
+    let previous_git_revision = app.git.revision();
     app.git = git;
+    app.git.advance_revision_past(previous_git_revision);
     app.drain_pending_restored_source_control_loads();
     if limit_warning {
         app.status = git_status_limit_warning(app.settings.git_status_limit, count);
@@ -441,6 +487,13 @@ pub(super) fn handle_workspace_plugins_loaded_event(
         &app.binary_preview_buffers,
     )
     .len();
+    let reclassified_buffer_ids = plugin_language_reclassified_buffer_ids(
+        &app.plugin_languages,
+        &plugin_languages,
+        &app.buffers,
+        &app.lossy_decoded_buffers,
+        &app.binary_preview_buffers,
+    );
     let status_counts = WorkspacePluginStatusCounts {
         plugins: plugins.len(),
         errors: errors.len(),
@@ -457,6 +510,10 @@ pub(super) fn handle_workspace_plugins_loaded_event(
     app.plugin_activations = plugin_activations;
     app.plugin_commands = plugin_commands;
     app.plugin_languages = plugin_languages;
+    for id in reclassified_buffer_ids {
+        app.syntax_tree_cache.clear_for_buffer(id);
+        app.schedule_language_sync(id);
+    }
     app.plugin_themes = plugin_themes;
     app.plugins = plugins;
     app.plugin_errors = errors;
@@ -650,7 +707,8 @@ mod tests {
         ui_event_channel::ui_event_channel,
     };
     use kuroya_core::{
-        EditorSettings, ProjectIndex, SearchMatch, SearchResult, SearchStats, TextBuffer, Workspace,
+        EditorSettings, ProjectIndex, SearchMatch, SearchOptions, SearchResult, SearchStats,
+        TextBuffer, Workspace, merged_exclude_globs,
     };
     use std::{
         fs,
@@ -661,18 +719,15 @@ mod tests {
 
     #[test]
     fn workspace_index_status_reports_truncated_index() {
-        assert_eq!(workspace_index_status(2, false), "2 files indexed");
+        assert_eq!(workspace_index_status(2, false), "Indexed 2 files");
         assert_eq!(
             workspace_index_status(40_000, true),
-            "40000 files indexed (workspace limit reached)"
+            "Indexed 40000 files (limit reached)"
         );
-        assert_eq!(
-            workspace_cached_index_status(2, false),
-            "2 cached files available; refreshing index"
-        );
+        assert_eq!(workspace_cached_index_status(2, false), "Refreshing index");
         assert_eq!(
             workspace_cached_index_status(40_000, true),
-            "40000 cached files available; refreshing index (workspace limit reached)"
+            "Refreshing index (limit reached)"
         );
     }
 
@@ -727,6 +782,8 @@ mod tests {
             false,
             Vec::new(),
             Vec::new(),
+            default_search_max_file_bytes(),
+            default_search_max_results(),
             search_result_with_one_match(root.join("src/main.rs")),
         ));
         assert!(app.project_search_result.matches.is_empty());
@@ -790,7 +847,9 @@ mod tests {
             false,
             false,
             Vec::new(),
-            Vec::new(),
+            default_search_exclude_globs(),
+            default_search_max_file_bytes(),
+            default_search_max_results(),
             search_result_with_one_match(root.join("src/main.rs")),
         ));
         assert!(app.project_search_result.matches.is_empty());
@@ -804,7 +863,9 @@ mod tests {
             false,
             false,
             Vec::new(),
-            Vec::new(),
+            default_search_exclude_globs(),
+            default_search_max_file_bytes(),
+            default_search_max_results(),
             search_result_with_one_match(root.join("src/main.rs")),
         ));
         assert_eq!(app.project_search_result.matches.len(), 1);
@@ -834,6 +895,8 @@ mod tests {
             false,
             Vec::new(),
             Vec::new(),
+            default_search_max_file_bytes(),
+            default_search_max_results(),
             search_result_with_one_match(root.join("src/main.rs")),
         ));
         assert!(app.project_search_result.matches.is_empty());
@@ -865,7 +928,9 @@ mod tests {
             false,
             false,
             Vec::new(),
-            Vec::new(),
+            default_search_exclude_globs(),
+            default_search_max_file_bytes(),
+            default_search_max_results(),
             result,
         ));
 
@@ -1118,9 +1183,22 @@ mod tests {
         }
     }
 
+    fn default_search_max_file_bytes() -> u64 {
+        SearchOptions::default().max_file_bytes
+    }
+
+    fn default_search_exclude_globs() -> Vec<String> {
+        merged_exclude_globs(&[])
+    }
+
+    fn default_search_max_results() -> usize {
+        SearchOptions::default().max_results
+    }
+
     fn app_for_test(root: PathBuf) -> KuroyaApp {
         let (tx, rx) = ui_event_channel();
-        let settings = EditorSettings::default();
+        let mut settings = EditorSettings::default();
+        settings.project_search_exclude_globs.clear();
         KuroyaApp::from_startup_context(AppStartupContext {
             runtime: Runtime::new().expect("test runtime"),
             tx,

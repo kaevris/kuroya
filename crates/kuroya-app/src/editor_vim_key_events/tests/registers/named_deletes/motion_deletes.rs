@@ -28,15 +28,15 @@ fn normal_mode_named_register_delete_motion_and_put_before() {
         assert!(result.handled);
     }
 
-    assert_eq!(buffer.text(), " beta gamma");
+    assert_eq!(buffer.text(), "beta gamma");
     assert_eq!(
         unnamed_register
             .as_ref()
             .map(|register| (register.text.as_str(), register.kind)),
-        Some(("alpha", EditorVimRegisterKind::Characterwise))
+        Some(("alpha ", EditorVimRegisterKind::Characterwise))
     );
 
-    buffer.set_single_cursor(1);
+    buffer.set_single_cursor(0);
     for key in [Key::Y, Key::W] {
         let result = handle_vim_editor_key_event_with_state(
             &mut buffer,
@@ -53,7 +53,7 @@ fn normal_mode_named_register_delete_motion_and_put_before() {
         unnamed_register
             .as_ref()
             .map(|register| (register.text.as_str(), register.kind)),
-        Some(("beta", EditorVimRegisterKind::Characterwise))
+        Some(("beta ", EditorVimRegisterKind::Characterwise))
     );
 
     buffer.set_single_cursor(0);

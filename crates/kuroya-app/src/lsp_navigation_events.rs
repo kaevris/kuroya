@@ -137,6 +137,19 @@ impl KuroyaApp {
                     id, path, version, line, column, references, error,
                 );
             }
+            LspUiEvent::PrepareRenameResult {
+                id,
+                path,
+                version,
+                line,
+                column,
+                range,
+                error,
+            } => {
+                self.handle_lsp_prepare_rename_result(
+                    id, path, version, line, column, range, error,
+                );
+            }
             LspUiEvent::RenameResult {
                 id,
                 origin_path,

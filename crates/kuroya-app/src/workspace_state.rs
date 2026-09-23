@@ -14,9 +14,11 @@ pub(crate) use crate::workspace_event_guards::{
 };
 #[cfg(test)]
 pub(crate) use crate::workspace_state::watched_paths::WatchedPathChanges;
+#[cfg(test)]
+pub(crate) use crate::workspace_state::watched_paths::classify_watched_paths;
 pub(crate) use crate::workspace_state::watched_paths::{
-    classify_watched_paths, dirty_open_buffers_for_changes, reloadable_open_buffers_for_changes,
-    settings_path,
+    app_owned_state_dirs_in_workspace, classify_watched_paths_with_filter,
+    dirty_open_buffers_for_changes, reloadable_open_buffers_for_changes, settings_path,
 };
 
 mod watched_paths;

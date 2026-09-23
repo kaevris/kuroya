@@ -1,5 +1,8 @@
 use regex::{Captures, Regex, RegexBuilder};
-use std::ops::Range;
+use std::{
+    ops::Range,
+    sync::{LazyLock, Mutex, MutexGuard},
+};
 
 use super::edits::edit_range_is_valid;
 use super::text::{
@@ -562,17 +565,72 @@ impl TextBuffer {
     }
 }
 
+const FIND_REGEX_MEMO_CAPACITY: usize = 32;
+
+type FindRegexMemo = Vec<((String, bool), Regex)>;
+
+static FIND_REGEX_MEMO: LazyLock<Mutex<FindRegexMemo>> = LazyLock::new(|| Mutex::new(Vec::new()));
+
+fn find_regex_memo() -> MutexGuard<'static, FindRegexMemo> {
+    FIND_REGEX_MEMO
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn find_regex_memo_entry_index(
+    memo: &FindRegexMemo,
+    query: &str,
+    case_sensitive: bool,
+) -> Option<usize> {
+    memo.iter().position(|((stored_query, stored_case), _)| {
+        *stored_case == case_sensitive && stored_query.as_str() == query
+    })
+}
+
+fn find_regex_memo_lookup(query: &str, case_sensitive: bool) -> Option<Regex> {
+    let mut memo = find_regex_memo();
+    let index = find_regex_memo_entry_index(&memo, query, case_sensitive)?;
+    let entry = memo.remove(index);
+    memo.push(entry);
+    memo.last().map(|(_, regex)| regex.clone())
+}
+
+fn find_regex_memo_store(query: &str, case_sensitive: bool, regex: Regex) {
+    let mut memo = find_regex_memo();
+    if let Some(index) = find_regex_memo_entry_index(&memo, query, case_sensitive) {
+        memo.remove(index);
+    }
+    if memo.len() >= FIND_REGEX_MEMO_CAPACITY {
+        memo.remove(0);
+    }
+    memo.push(((query.to_owned(), case_sensitive), regex));
+}
+
+/// Compiles `query` once per (`query`, `case_sensitive`) pair and reuses the
+/// compiled `Regex` for later lookups, so find-as-you-type does not recompile
+/// the same pattern every time a cache entry misses.
 pub(super) fn find_regex(query: &str, case_sensitive: bool) -> Result<Regex, regex::Error> {
-    RegexBuilder::new(query)
+    if let Some(regex) = find_regex_memo_lookup(query, case_sensitive) {
+        return Ok(regex);
+    }
+
+    let regex = RegexBuilder::new(query)
         .case_insensitive(!case_sensitive)
-        .build()
+        .build()?;
+    find_regex_memo_store(query, case_sensitive, regex.clone());
+    Ok(regex)
+}
+
+#[cfg(test)]
+pub(crate) fn find_regex_memo_contains(query: &str, case_sensitive: bool) -> bool {
+    find_regex_memo_entry_index(&find_regex_memo(), query, case_sensitive).is_some()
 }
 
 pub fn validate_find_regex(query: &str, case_sensitive: bool) -> Result<(), regex::Error> {
     find_regex(query, case_sensitive).map(|_| ())
 }
 
-pub(super) fn regex_query_is_line_local(query: &str) -> bool {
+pub(crate) fn regex_query_is_line_local(query: &str) -> bool {
     if query.contains(['\n', '\r']) {
         return false;
     }

@@ -42,11 +42,22 @@ pub(crate) enum EditorVimPendingKey {
         binding_index: usize,
         matched: usize,
     },
-    // Kept in pending state so this one-file visual slice does not add an
-    // EditorVimMode variant that external UI matches would need to handle.
+
     VisualCharacter {
         anchor: usize,
         cursor: usize,
+    },
+
+    VisualLine {
+        anchor: usize,
+        cursor: usize,
+        count: Option<usize>,
+    },
+
+    VisualLineGo {
+        anchor: usize,
+        cursor: usize,
+        count: Option<usize>,
     },
     VisualCharacterCount {
         anchor: usize,
@@ -59,6 +70,11 @@ pub(crate) enum EditorVimPendingKey {
         count: Option<usize>,
     },
     VisualCharacterReplace {
+        anchor: usize,
+        cursor: usize,
+    },
+
+    VisualLineReplace {
         anchor: usize,
         cursor: usize,
     },

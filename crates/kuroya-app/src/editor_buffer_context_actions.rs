@@ -35,6 +35,14 @@ impl KuroyaApp {
             EditorContextAction::ExpandSelection => {
                 self.expand_selection_for_buffer(buffer_id);
             }
+            EditorContextAction::Undo => {
+                self.set_active_buffer(buffer_id);
+                self.command_bus.push(Command::Undo);
+            }
+            EditorContextAction::Redo => {
+                self.set_active_buffer(buffer_id);
+                self.command_bus.push(Command::Redo);
+            }
             EditorContextAction::DuplicateLines => {
                 let changed = self
                     .buffer_mut(buffer_id)

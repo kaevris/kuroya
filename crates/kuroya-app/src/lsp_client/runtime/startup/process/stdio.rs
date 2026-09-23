@@ -1,9 +1,10 @@
 use super::lsp_unavailable_status_message;
+use super::send_lsp_server_unavailable;
 use crate::ui_event_channel::Sender;
 use crate::{lsp_ui_events::LspUiEvent, ui_events::UiEvent};
 use kuroya_core::LspServerConfig;
 use std::path::Path;
-use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 
 pub(super) fn take_lsp_stdio(
     child: &mut Child,
@@ -11,7 +12,7 @@ pub(super) fn take_lsp_stdio(
     root: &Path,
     generation: u64,
     ui_tx: &Sender<UiEvent>,
-) -> Option<(ChildStdin, ChildStdout)> {
+) -> Option<(ChildStdin, ChildStdout, Option<ChildStderr>)> {
     let Some(writer) = child.stdin.take() else {
         send_lsp_stdio_unavailable_status(config, root, generation, "missing stdin", ui_tx);
         return None;
@@ -20,8 +21,10 @@ pub(super) fn take_lsp_stdio(
         send_lsp_stdio_unavailable_status(config, root, generation, "missing stdout", ui_tx);
         return None;
     };
+    // stderr is optional for capture; servers without one simply log nothing.
+    let stderr = child.stderr.take();
 
-    Some((writer, stdout))
+    Some((writer, stdout, stderr))
 }
 
 fn send_lsp_stdio_unavailable_status(
@@ -40,6 +43,7 @@ fn send_lsp_stdio_unavailable_status(
             message: lsp_unavailable_status_message(&config.language, &config.command, detail),
         }),
     );
+    send_lsp_server_unavailable(config, root, generation, ui_tx);
 }
 
 #[cfg(test)]
@@ -64,6 +68,7 @@ mod tests {
             args: Vec::new(),
             extensions: Vec::new(),
             root_markers: Vec::new(),
+            enabled: true,
         };
 
         send_lsp_stdio_unavailable_status(
@@ -107,6 +112,7 @@ mod tests {
             args: Vec::new(),
             extensions: Vec::new(),
             root_markers: Vec::new(),
+            enabled: true,
         };
         let status_tx = tx.clone();
 

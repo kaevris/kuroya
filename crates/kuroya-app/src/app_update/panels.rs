@@ -2,10 +2,9 @@ use crate::{
     KuroyaApp,
     layout::{
         DIAGNOSTICS_PANEL_MAX_WIDTH, DIAGNOSTICS_PANEL_MIN_WIDTH, EXPLORER_MAX_WIDTH,
-        EXPLORER_MIN_WIDTH, PROJECT_SEARCH_MAX_WIDTH, PROJECT_SEARCH_MIN_WIDTH,
-        SOURCE_CONTROL_MAX_WIDTH, SOURCE_CONTROL_MIN_WIDTH, SYMBOLS_PANEL_MAX_WIDTH,
-        SYMBOLS_PANEL_MIN_WIDTH, TERMINAL_MIN_HEIGHT, clamp_diagnostics_panel_width,
-        clamp_explorer_width, clamp_project_search_width, clamp_source_control_width,
+        EXPLORER_MIN_WIDTH, SOURCE_CONTROL_MAX_WIDTH, SOURCE_CONTROL_MIN_WIDTH,
+        SYMBOLS_PANEL_MAX_WIDTH, SYMBOLS_PANEL_MIN_WIDTH, TERMINAL_MIN_HEIGHT,
+        clamp_diagnostics_panel_width, clamp_explorer_width, clamp_source_control_width,
         clamp_symbols_panel_width, clamp_terminal_height_for_available_height,
         responsive_side_panel_max_width, responsive_terminal_max_height, terminal_open_height,
     },
@@ -16,9 +15,11 @@ use std::ops::RangeInclusive;
 
 impl KuroyaApp {
     pub(super) fn render_main_panels(&mut self, ctx: &Context) {
+        let full_app_background = self.full_app_background_image_is_ready();
         if main_tabs_visible(self.terminal.visible, self.terminal.is_fullscreen()) {
             TopBottomPanel::top("tabs")
                 .exact_height(40.0)
+                .frame(side_top_panel_frame(ctx, full_app_background))
                 .show(ctx, |ui| {
                     self.render_tabs(ui);
                 });
@@ -35,6 +36,7 @@ impl KuroyaApp {
         let explorer_response = egui::SidePanel::left("explorer")
             .resizable(true)
             .default_width(self.explorer_width)
+            .frame(side_top_panel_frame(ctx, full_app_background))
             .width_range(docked_widths.responsive_width_range(
                 content_width,
                 DockedSidePanel::Explorer,
@@ -45,7 +47,6 @@ impl KuroyaApp {
         self.explorer_width = clamp_explorer_width(explorer_response.response.rect.width());
         docked_widths.set_width(DockedSidePanel::Explorer, self.explorer_width);
 
-        self.render_project_search_container(ctx, content_width, &mut docked_widths);
         self.render_source_control_container(ctx, content_width, &mut docked_widths);
         self.render_symbols_container(ctx, content_width, &mut docked_widths);
         self.render_diagnostics_container(ctx, content_width, &mut docked_widths);
@@ -53,6 +54,7 @@ impl KuroyaApp {
         if self.settings.status_bar_visible {
             TopBottomPanel::bottom("status")
                 .exact_height(30.0)
+                .frame(side_top_panel_frame(ctx, full_app_background))
                 .show(ctx, |ui| self.render_status_bar(ui));
         }
 
@@ -71,7 +73,8 @@ impl KuroyaApp {
             let terminal_max_height = responsive_terminal_max_height(available_height);
             let terminal_panel = TopBottomPanel::bottom("terminal")
                 .resizable(true)
-                .default_height(self.terminal_height);
+                .default_height(self.terminal_height)
+                .frame(side_top_panel_frame(ctx, full_app_background));
             let terminal_panel = if force_open_height {
                 terminal_panel.exact_height(self.terminal_height)
             } else {
@@ -86,60 +89,17 @@ impl KuroyaApp {
         }
 
         let editor_fill = ctx.style().visuals.code_bg_color;
+        let editor_frame = if self.background_image_is_ready() {
+            Frame::NONE
+        } else {
+            Frame::NONE.fill(editor_fill)
+        };
         egui::CentralPanel::default()
-            .frame(Frame::NONE.fill(editor_fill))
+            .frame(editor_frame)
             .show(ctx, |ui| {
+                self.render_editor_background_image(ui);
                 self.render_editor(ui);
             });
-    }
-
-    fn render_project_search_container(
-        &mut self,
-        ctx: &Context,
-        content_width: f32,
-        docked_widths: &mut DockedSidePanelWidths,
-    ) {
-        if !self.project_search {
-            return;
-        }
-
-        let placement = self.project_search_placement;
-        if placement.is_floating() {
-            let mut open = true;
-            let response = egui::Window::new("Project Search")
-                .id(Id::new("project_search_floating"))
-                .resizable(true)
-                .default_width(self.project_search_width)
-                .open(&mut open)
-                .show(ctx, |ui| self.render_project_search(ui));
-            self.project_search = open;
-            if let Some(response) = response {
-                self.project_search_width =
-                    clamp_project_search_width(response.response.rect.width());
-            }
-            return;
-        }
-
-        let width_range = docked_widths.responsive_width_range(
-            content_width,
-            DockedSidePanel::ProjectSearch,
-            PROJECT_SEARCH_MIN_WIDTH,
-            PROJECT_SEARCH_MAX_WIDTH,
-        );
-        let response = match panel_dock_side(placement) {
-            PanelDockSide::Left => egui::SidePanel::left("search")
-                .resizable(true)
-                .default_width(self.project_search_width)
-                .width_range(width_range)
-                .show(ctx, |ui| self.render_project_search(ui)),
-            PanelDockSide::Right => egui::SidePanel::right("search")
-                .resizable(true)
-                .default_width(self.project_search_width)
-                .width_range(width_range)
-                .show(ctx, |ui| self.render_project_search(ui)),
-        };
-        self.project_search_width = clamp_project_search_width(response.response.rect.width());
-        docked_widths.set_width(DockedSidePanel::ProjectSearch, self.project_search_width);
     }
 
     fn render_source_control_container(
@@ -156,6 +116,7 @@ impl KuroyaApp {
         if placement.is_floating() {
             let mut open = true;
             let response = egui::Window::new("Source Control")
+                .max_size(crate::layout::popup_window_max_size(ctx))
                 .id(Id::new("source_control_floating"))
                 .resizable(true)
                 .default_width(self.source_control_width)
@@ -175,15 +136,18 @@ impl KuroyaApp {
             SOURCE_CONTROL_MIN_WIDTH,
             SOURCE_CONTROL_MAX_WIDTH,
         );
+        let panel_frame = side_top_panel_frame(ctx, self.full_app_background_image_is_ready());
         let response = match panel_dock_side(placement) {
             PanelDockSide::Left => egui::SidePanel::left("source_control")
                 .resizable(true)
                 .default_width(self.source_control_width)
+                .frame(panel_frame)
                 .width_range(width_range)
                 .show(ctx, |ui| self.render_source_control_panel(ui)),
             PanelDockSide::Right => egui::SidePanel::right("source_control")
                 .resizable(true)
                 .default_width(self.source_control_width)
+                .frame(panel_frame)
                 .width_range(width_range)
                 .show(ctx, |ui| self.render_source_control_panel(ui)),
         };
@@ -205,6 +169,7 @@ impl KuroyaApp {
         if placement.is_floating() {
             let mut open = true;
             let response = egui::Window::new("File Symbols")
+                .max_size(crate::layout::popup_window_max_size(ctx))
                 .id(Id::new("symbols_floating"))
                 .resizable(true)
                 .default_width(self.symbols_panel_width)
@@ -224,15 +189,18 @@ impl KuroyaApp {
             SYMBOLS_PANEL_MIN_WIDTH,
             SYMBOLS_PANEL_MAX_WIDTH,
         );
+        let panel_frame = side_top_panel_frame(ctx, self.full_app_background_image_is_ready());
         let response = match panel_dock_side(placement) {
             PanelDockSide::Left => egui::SidePanel::left("symbols")
                 .resizable(true)
                 .default_width(self.symbols_panel_width)
+                .frame(panel_frame)
                 .width_range(width_range)
                 .show(ctx, |ui| self.render_symbols_panel(ui)),
             PanelDockSide::Right => egui::SidePanel::right("symbols")
                 .resizable(true)
                 .default_width(self.symbols_panel_width)
+                .frame(panel_frame)
                 .width_range(width_range)
                 .show(ctx, |ui| self.render_symbols_panel(ui)),
         };
@@ -254,6 +222,7 @@ impl KuroyaApp {
         if placement.is_floating() {
             let mut open = true;
             let response = egui::Window::new("Diagnostics")
+                .max_size(crate::layout::popup_window_max_size(ctx))
                 .id(Id::new("diagnostics_floating"))
                 .resizable(true)
                 .default_width(self.diagnostics_panel_width)
@@ -273,15 +242,18 @@ impl KuroyaApp {
             DIAGNOSTICS_PANEL_MIN_WIDTH,
             DIAGNOSTICS_PANEL_MAX_WIDTH,
         );
+        let panel_frame = side_top_panel_frame(ctx, self.full_app_background_image_is_ready());
         let response = match panel_dock_side(placement) {
             PanelDockSide::Left => egui::SidePanel::left("diagnostics")
                 .resizable(true)
                 .default_width(self.diagnostics_panel_width)
+                .frame(panel_frame)
                 .width_range(width_range)
                 .show(ctx, |ui| self.render_diagnostics_panel(ui)),
             PanelDockSide::Right => egui::SidePanel::right("diagnostics")
                 .resizable(true)
                 .default_width(self.diagnostics_panel_width)
+                .frame(panel_frame)
                 .width_range(width_range)
                 .show(ctx, |ui| self.render_diagnostics_panel(ui)),
         };
@@ -295,9 +267,19 @@ fn main_tabs_visible(terminal_visible: bool, terminal_fullscreen: bool) -> bool 
     !(terminal_visible && terminal_fullscreen)
 }
 
+fn side_top_panel_frame(ctx: &Context, full_app_background: bool) -> Frame {
+    let frame = Frame::side_top_panel(ctx.style().as_ref());
+    if full_app_background {
+        frame.fill(egui::Color32::TRANSPARENT)
+    } else {
+        frame
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::main_tabs_visible;
+    use super::{main_tabs_visible, side_top_panel_frame};
+    use eframe::egui::{Color32, Context};
 
     #[test]
     fn main_tabs_hide_while_terminal_is_fullscreen() {
@@ -306,12 +288,18 @@ mod tests {
         assert!(main_tabs_visible(false, true));
         assert!(!main_tabs_visible(true, true));
     }
+
+    #[test]
+    fn full_app_background_makes_main_panel_frames_transparent() {
+        let ctx = Context::default();
+        assert_ne!(side_top_panel_frame(&ctx, false).fill, Color32::TRANSPARENT);
+        assert_eq!(side_top_panel_frame(&ctx, true).fill, Color32::TRANSPARENT);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DockedSidePanel {
     Explorer,
-    ProjectSearch,
     SourceControl,
     Symbols,
     Diagnostics,
@@ -320,7 +308,6 @@ enum DockedSidePanel {
 #[derive(Debug, Clone, Copy)]
 struct DockedSidePanelWidths {
     explorer: f32,
-    project_search: f32,
     source_control: f32,
     symbols: f32,
     diagnostics: f32,
@@ -330,12 +317,6 @@ struct DockedSidePanelWidths {
 impl DockedSidePanelWidths {
     fn from_app(app: &KuroyaApp) -> Self {
         let explorer = clamp_explorer_width(app.explorer_width);
-        let project_search = docked_panel_width(
-            app.project_search,
-            app.project_search_placement,
-            app.project_search_width,
-            clamp_project_search_width,
-        );
         let source_control = docked_panel_width(
             app.source_control,
             app.source_control_placement,
@@ -354,11 +335,10 @@ impl DockedSidePanelWidths {
             app.diagnostics_panel_width,
             clamp_diagnostics_panel_width,
         );
-        let total = explorer + project_search + source_control + symbols + diagnostics;
+        let total = explorer + source_control + symbols + diagnostics;
 
         Self {
             explorer,
-            project_search,
             source_control,
             symbols,
             diagnostics,
@@ -387,7 +367,6 @@ impl DockedSidePanelWidths {
         let previous = self.width(panel);
         let width = match panel {
             DockedSidePanel::Explorer => clamp_explorer_width(width),
-            DockedSidePanel::ProjectSearch => clamp_project_search_width(width),
             DockedSidePanel::SourceControl => clamp_source_control_width(width),
             DockedSidePanel::Symbols => clamp_symbols_panel_width(width),
             DockedSidePanel::Diagnostics => clamp_diagnostics_panel_width(width),
@@ -395,7 +374,6 @@ impl DockedSidePanelWidths {
 
         match panel {
             DockedSidePanel::Explorer => self.explorer = width,
-            DockedSidePanel::ProjectSearch => self.project_search = width,
             DockedSidePanel::SourceControl => self.source_control = width,
             DockedSidePanel::Symbols => self.symbols = width,
             DockedSidePanel::Diagnostics => self.diagnostics = width,
@@ -410,7 +388,6 @@ impl DockedSidePanelWidths {
     fn width(&self, panel: DockedSidePanel) -> f32 {
         match panel {
             DockedSidePanel::Explorer => self.explorer,
-            DockedSidePanel::ProjectSearch => self.project_search,
             DockedSidePanel::SourceControl => self.source_control,
             DockedSidePanel::Symbols => self.symbols,
             DockedSidePanel::Diagnostics => self.diagnostics,

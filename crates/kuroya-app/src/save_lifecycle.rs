@@ -2,6 +2,7 @@ use kuroya_core::BufferId;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::{LazyLock, Mutex},
 };
 
 use crate::{path_display::display_path_label_cow, ui_text::truncate_middle};
@@ -25,6 +26,14 @@ pub(crate) use crate::save_lifecycle::lsp_sync::{apply_save_completion, plan_lsp
 mod lsp_sync;
 
 const SAVE_COMPLETION_STATUS_MAX_CHARS: usize = 180;
+const SESSION_SAVE_MAX_RETRIES: u8 = 3;
+
+static SESSION_SAVE_ROTATION_ORDER: LazyLock<Mutex<Vec<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+static PENDING_SESSION_SAVE_FINGERPRINTS: LazyLock<Mutex<HashMap<PathBuf, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static SESSION_SAVE_FAILURE_COUNTS: LazyLock<Mutex<HashMap<PathBuf, u8>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SaveRequest {
@@ -106,6 +115,7 @@ pub(crate) fn reserve_session_save<T>(
     session: T,
     in_flight: &mut Option<PathBuf>,
     queued: &mut HashMap<PathBuf, T>,
+    order: &mut Vec<PathBuf>,
 ) -> SessionSaveRequest {
     if in_flight.is_some() {
         if let Some(queued_session) = queued.get_mut(root) {
@@ -113,9 +123,11 @@ pub(crate) fn reserve_session_save<T>(
         } else {
             queued.insert(root.to_path_buf(), session);
         }
+        enqueue_session_save_order(order, root);
         SessionSaveRequest::Queued
     } else {
         queued.remove(root);
+        order.retain(|entry| entry.as_path() != root);
         *in_flight = Some(root.to_path_buf());
         SessionSaveRequest::Spawn
     }
@@ -125,16 +137,116 @@ pub(crate) fn finish_session_save<T>(
     root: &Path,
     in_flight: &mut Option<PathBuf>,
     queued: &mut HashMap<PathBuf, T>,
+    order: &mut Vec<PathBuf>,
 ) -> Option<(PathBuf, T)> {
     if in_flight.as_deref() != Some(root) {
         return None;
     }
 
     *in_flight = None;
-    let next_root = queued.keys().min().cloned()?;
+    let next_root = next_session_save_dispatch_root(root, order, queued)?;
     let next_session = queued.remove(&next_root)?;
     *in_flight = Some(next_root.clone());
     Some((next_root, next_session))
+}
+
+pub(crate) fn should_skip_session_persistence(
+    current_fingerprint: Option<u64>,
+    attempted_fingerprint: Option<u64>,
+    saved_fingerprint: Option<u64>,
+    save_in_flight: bool,
+    saves_queued: bool,
+) -> bool {
+    let (Some(current), Some(attempted), Some(saved)) = (
+        current_fingerprint,
+        attempted_fingerprint,
+        saved_fingerprint,
+    ) else {
+        return false;
+    };
+    !save_in_flight && !saves_queued && current == attempted && attempted == saved
+}
+
+pub(crate) fn enqueue_session_save_order(order: &mut Vec<PathBuf>, root: &Path) {
+    if !order.iter().any(|entry| entry.as_path() == root) {
+        order.push(root.to_path_buf());
+    }
+}
+
+fn next_session_save_dispatch_root<T>(
+    finished_root: &Path,
+    order: &mut Vec<PathBuf>,
+    queued: &HashMap<PathBuf, T>,
+) -> Option<PathBuf> {
+    order.retain(|entry| queued.contains_key(entry.as_path()));
+    let next_root = order
+        .iter()
+        .find(|entry| entry.as_path() != finished_root)
+        .cloned()
+        .or_else(|| {
+            order
+                .iter()
+                .find(|entry| entry.as_path() == finished_root)
+                .cloned()
+                .or_else(|| {
+                    queued
+                        .contains_key(finished_root)
+                        .then(|| finished_root.to_path_buf())
+                })
+        })?;
+    order.retain(|entry| entry.as_path() != next_root.as_path());
+    Some(next_root)
+}
+
+pub(crate) fn with_session_save_rotation_order<R>(
+    dispatch: impl FnOnce(&mut Vec<PathBuf>) -> R,
+) -> R {
+    let mut order = SESSION_SAVE_ROTATION_ORDER
+        .lock()
+        .expect("session save rotation order");
+    dispatch(&mut order)
+}
+
+pub(crate) fn stage_session_save_fingerprint(root: &Path, fingerprint: u64) {
+    PENDING_SESSION_SAVE_FINGERPRINTS
+        .lock()
+        .expect("pending session save fingerprints")
+        .insert(root.to_path_buf(), fingerprint);
+}
+
+pub(crate) fn note_session_save_succeeded(root: &Path) -> Option<u64> {
+    SESSION_SAVE_FAILURE_COUNTS
+        .lock()
+        .expect("session save failure counts")
+        .remove(root);
+    PENDING_SESSION_SAVE_FINGERPRINTS
+        .lock()
+        .expect("pending session save fingerprints")
+        .remove(root)
+}
+
+pub(crate) fn note_session_save_failed(root: &Path) -> bool {
+    register_session_save_failure(
+        &mut SESSION_SAVE_FAILURE_COUNTS
+            .lock()
+            .expect("session save failure counts"),
+        root,
+        SESSION_SAVE_MAX_RETRIES,
+    )
+}
+
+fn register_session_save_failure(
+    failures: &mut HashMap<PathBuf, u8>,
+    root: &Path,
+    max_retries: u8,
+) -> bool {
+    let attempts = failures.get(root).copied().unwrap_or_default();
+    if attempts >= max_retries {
+        failures.remove(root);
+        return false;
+    }
+    failures.insert(root.to_path_buf(), attempts + 1);
+    true
 }
 
 pub(crate) fn save_completion_status(path: &Path, still_dirty: bool) -> String {
@@ -152,7 +264,8 @@ mod tests {
     use super::{
         FinishedSaveRequest, SAVE_COMPLETION_STATUS_MAX_CHARS, SaveRequest, SessionSaveRequest,
         finish_current_save_request, finish_session_save, has_active_save_work,
-        reserve_save_request, reserve_session_save, save_completion_status,
+        register_session_save_failure, reserve_save_request, reserve_session_save,
+        save_completion_status,
     };
     use std::{
         collections::{HashMap, HashSet},
@@ -179,10 +292,11 @@ mod tests {
     fn reserve_session_save_drops_orphaned_session_for_spawned_root() {
         let root = PathBuf::from("workspace");
         let mut in_flight = None;
+        let mut order = Vec::new();
         let mut queued = HashMap::from([(root.clone(), "stale")]);
 
         assert_eq!(
-            reserve_session_save(&root, "fresh", &mut in_flight, &mut queued),
+            reserve_session_save(&root, "fresh", &mut in_flight, &mut queued, &mut order),
             SessionSaveRequest::Spawn
         );
 
@@ -234,15 +348,30 @@ mod tests {
         let stale_root = PathBuf::from("workspace-stale");
         let queued_root = PathBuf::from("workspace-b");
         let mut in_flight = Some(in_flight_root.clone());
+        let mut order = vec![queued_root.clone()];
         let mut queued = HashMap::from([(queued_root.clone(), "queued")]);
 
         assert_eq!(
-            finish_session_save(&stale_root, &mut in_flight, &mut queued),
+            finish_session_save(&stale_root, &mut in_flight, &mut queued, &mut order),
             None
         );
 
         assert_eq!(in_flight, Some(in_flight_root));
         assert_eq!(queued.get(&queued_root), Some(&"queued"));
+    }
+
+    #[test]
+    fn session_save_failures_retry_until_cap_then_stop_until_success_resets() {
+        let root = PathBuf::from("workspace");
+        let mut failures = HashMap::new();
+
+        assert!(register_session_save_failure(&mut failures, &root, 3));
+        assert!(register_session_save_failure(&mut failures, &root, 3));
+        assert!(register_session_save_failure(&mut failures, &root, 3));
+        assert!(!register_session_save_failure(&mut failures, &root, 3));
+
+        assert!(failures.is_empty());
+        assert!(register_session_save_failure(&mut failures, &root, 3));
     }
 
     #[test]

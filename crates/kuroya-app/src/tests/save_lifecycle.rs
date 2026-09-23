@@ -3,11 +3,12 @@ mod dirty_guards;
 mod lsp_sync;
 mod queues;
 mod save_plans;
+mod session_scheduling;
 
 use crate::{
     layout::{
-        DIAGNOSTICS_PANEL_DEFAULT_WIDTH, EXPLORER_DEFAULT_WIDTH, PROJECT_SEARCH_DEFAULT_WIDTH,
-        SOURCE_CONTROL_DEFAULT_WIDTH, SYMBOLS_PANEL_DEFAULT_WIDTH, TERMINAL_DEFAULT_HEIGHT,
+        DIAGNOSTICS_PANEL_DEFAULT_WIDTH, EXPLORER_DEFAULT_WIDTH, SOURCE_CONTROL_DEFAULT_WIDTH,
+        SYMBOLS_PANEL_DEFAULT_WIDTH, TERMINAL_DEFAULT_HEIGHT,
     },
     panel_layout::PanelPlacement,
     persistence::{
@@ -35,11 +36,10 @@ fn session_for_test(root: &Path, marker: &str) -> PersistedSession {
         explorer_expanded: Vec::new(),
         explorer_revealed_path: None,
         project_search_open: false,
-        project_search_placement: PanelPlacement::DockedRight,
-        project_search_width: PROJECT_SEARCH_DEFAULT_WIDTH,
         project_search_query: String::new(),
         project_search_case_sensitive: false,
         project_search_whole_word: false,
+        project_search_regex: false,
         project_search_include: String::new(),
         project_search_exclude: String::new(),
         project_search_recent: Vec::new(),
@@ -70,6 +70,7 @@ fn session_for_test(root: &Path, marker: &str) -> PersistedSession {
         source_control_commit_message: String::new(),
         source_control_commit_history: Vec::new(),
         source_control_stash_message: String::new(),
+        source_control_stash_query: String::new(),
         source_control_stashes_open: false,
         source_control_history_open: false,
         source_control_history_query: String::new(),

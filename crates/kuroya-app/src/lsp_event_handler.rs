@@ -2,6 +2,7 @@ use crate::{
     KuroyaApp,
     lsp_runtime::{
         LSP_MAX_RESTART_ATTEMPTS, LspRestartDecision, lsp_buffer_synced_status,
+        lsp_client_display_label, lsp_client_key_language, lsp_diagnostics_source_key,
         lsp_restart_buffer_ids, lsp_restart_decision, lsp_server_config_for_language,
         lsp_server_configs_for_settings, lsp_server_ready_status, lsp_status_display_message,
         lsp_stopped_disabled_status, lsp_stopped_no_buffers_status,
@@ -88,6 +89,7 @@ impl KuroyaApp {
             | LspUiEvent::TypeHierarchySupertypesResult { .. }
             | LspUiEvent::TypeHierarchySubtypesResult { .. }
             | LspUiEvent::ReferencesResult { .. }
+            | LspUiEvent::PrepareRenameResult { .. }
             | LspUiEvent::RenameResult { .. }) => {
                 self.handle_lsp_navigation_event(event);
                 None
@@ -135,9 +137,12 @@ impl KuroyaApp {
                 if !self.lsp_lifecycle_event_matches(&language, &root, generation) {
                     return None;
                 }
-                self.lsp_restart_attempts.remove(&language);
-                self.pending_lsp_restarts.remove(&language);
-                self.status = lsp_server_ready_status(&language);
+                let lsp_configs = lsp_server_configs_for_settings(&self.settings);
+                let (client_key, _) = self.lsp_client_entry_for_event(&language, generation)?;
+                self.lsp_restart_attempts.remove(&client_key);
+                self.pending_lsp_restarts.remove(&client_key);
+                let label = lsp_client_display_label(&client_key, &lsp_configs);
+                self.status = lsp_server_ready_status(&label);
                 None
             }
             LspUiEvent::ServerStopped {
@@ -148,16 +153,19 @@ impl KuroyaApp {
                 if !self.lsp_lifecycle_event_matches(&language, &root, generation) {
                     return None;
                 }
+                let (client_key, _) = self.lsp_client_entry_for_event(&language, generation)?;
+                let lsp_configs = lsp_server_configs_for_settings(&self.settings);
+                let label = lsp_client_display_label(&client_key, &lsp_configs);
                 self.clear_lsp_progress_for_server(&language, &root, generation);
-                self.lsp_clients.remove(&language);
-                if self.lsp_unavailable.contains(&language) {
+                self.purge_lsp_diagnostics_for_server(&language, generation);
+                self.lsp_clients.remove(&client_key);
+                if self.lsp_unavailable.contains(&client_key) {
                     self.continue_pending_format_on_save_for_lsp(&language);
                     return None;
                 }
 
-                let lsp_configs = lsp_server_configs_for_settings(&self.settings);
                 let restart_targets = lsp_restart_buffer_ids(
-                    &language,
+                    &client_key,
                     &self.buffers,
                     &lsp_configs,
                     &self.plugin_languages,
@@ -166,30 +174,44 @@ impl KuroyaApp {
                     &self.binary_preview_buffers,
                 );
                 match lsp_restart_decision(
-                    self.lsp_restart_attempts.get(&language).copied(),
+                    self.lsp_restart_attempts.get(&client_key).copied(),
                     restart_targets.len(),
                     LSP_MAX_RESTART_ATTEMPTS,
                 ) {
                     LspRestartDecision::NoEligibleBuffers => {
-                        self.lsp_restart_attempts.remove(&language);
-                        self.status = lsp_stopped_no_buffers_status(&language);
+                        self.lsp_restart_attempts.remove(&client_key);
+                        self.status = lsp_stopped_no_buffers_status(&label);
                     }
                     LspRestartDecision::Disable => {
-                        self.lsp_unavailable.insert(language.clone());
-                        self.status = lsp_stopped_disabled_status(&language);
+                        self.lsp_unavailable.insert(client_key.clone());
+                        self.status = lsp_stopped_disabled_status(&label);
                     }
                     LspRestartDecision::Restart { attempt } => {
-                        self.lsp_restart_attempts.insert(language.clone(), attempt);
+                        self.lsp_restart_attempts
+                            .insert(client_key.clone(), attempt);
                         let reopened = restart_targets.len();
                         self.pending_lsp_restarts.insert(
-                            language.clone(),
+                            client_key.clone(),
                             schedule_lsp_restart_at(Instant::now(), attempt),
                         );
-                        self.status = lsp_stopped_restart_scheduled_status(&language, reopened);
+                        self.status = lsp_stopped_restart_scheduled_status(&label, reopened);
                     }
                 }
                 self.fallback_pending_workspace_symbols_for_stopped_lsp(&language);
                 self.continue_pending_format_on_save_for_lsp(&language);
+                None
+            }
+            LspUiEvent::ServerUnavailable {
+                language,
+                root,
+                generation,
+            } => {
+                if !self.lsp_lifecycle_event_matches(&language, &root, generation) {
+                    return None;
+                }
+                let (client_key, _) = self.lsp_client_entry_for_event(&language, generation)?;
+                self.purge_lsp_diagnostics_for_server(&language, generation);
+                self.mark_lsp_server_unavailable(&client_key);
                 None
             }
             LspUiEvent::Status {
@@ -201,21 +223,33 @@ impl KuroyaApp {
                 if !self.lsp_lifecycle_event_matches(&language, &root, generation) {
                     return None;
                 }
-                let unavailable =
-                    unavailable_lsp_status_language(&message) == Some(language.as_str());
-                if unavailable {
-                    self.lsp_clients.remove(&language);
-                    self.lsp_restart_attempts.remove(&language);
-                    self.pending_lsp_restarts.remove(&language);
-                    self.lsp_unavailable.insert(language.clone());
-                }
                 self.status = lsp_status_display_message(&message);
-                if unavailable {
-                    self.continue_pending_format_on_save_for_lsp(&language);
-                }
                 None
             }
         }
+    }
+
+    /// Drops every stored diagnostic published by one server instance
+    /// (language + client generation) for all paths. The bucket key is scoped
+    /// to the exact client generation, so co-attached servers for the same
+    /// language and later restart generations keep their own diagnostics;
+    /// without this purge the crashed server's errors would linger on
+    /// untouched files forever. Pending (not yet flushed) payloads from the
+    /// stopped generation are dropped by the flush-time lifecycle check.
+    pub(crate) fn purge_lsp_diagnostics_for_server(&mut self, language: &str, generation: u64) {
+        let source_key = lsp_diagnostics_source_key(language, generation);
+        self.diagnostics.purge_lsp_source(&source_key);
+    }
+
+    /// Marks one server (by client key) as unavailable after a spawn/handshake
+    /// failure and unwinds everything that was waiting for it. Sibling servers
+    /// for the same language keep their own clients and restart ladders.
+    pub(crate) fn mark_lsp_server_unavailable(&mut self, client_key: &str) {
+        self.lsp_clients.remove(client_key);
+        self.lsp_restart_attempts.remove(client_key);
+        self.pending_lsp_restarts.remove(client_key);
+        self.lsp_unavailable.insert(client_key.to_owned());
+        self.continue_pending_format_on_save_for_lsp(lsp_client_key_language(client_key));
     }
 
     pub(crate) fn lsp_lifecycle_event_matches(
@@ -226,9 +260,8 @@ impl KuroyaApp {
     ) -> bool {
         workspace_event_matches(&self.workspace.root, root)
             && self
-                .lsp_clients
-                .get(language)
-                .is_some_and(|handle| handle.generation() == generation)
+                .lsp_client_entry_for_event(language, generation)
+                .is_some()
     }
 
     fn fallback_pending_workspace_symbols_for_stopped_lsp(&mut self, language: &str) {
@@ -294,12 +327,6 @@ impl KuroyaApp {
 #[cfg(test)]
 pub(crate) fn lsp_status_event_matches(current_root: &Path, event_root: &Path) -> bool {
     workspace_event_matches(current_root, event_root)
-}
-
-pub(crate) fn unavailable_lsp_status_language(message: &str) -> Option<&str> {
-    let mut parts = message.split_whitespace();
-    let language = parts.next()?;
-    (parts.next() == Some("LSP") && parts.next() == Some("unavailable:")).then_some(language)
 }
 
 #[cfg(test)]

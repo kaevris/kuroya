@@ -1,25 +1,26 @@
 use super::{
     SOURCE_CONTROL_REF_LABEL_MAX_CHARS, SourceControlFilterScope, SourceControlFilterTerm,
     SourceControlRenderRow, SourceControlRowActionKind, SourceControlRowActionTarget,
-    SourceControlRowOpenability, SourceControlStageSection, SourceControlStageSectionKind,
-    SourceControlViewMode, SourceControlVisibleRow, handle_source_control_keyboard,
-    render_source_control_row, source_control_branch_display_label,
-    source_control_branch_display_label_cow, source_control_cached_row_openability,
-    source_control_change_list_keyboard_active, source_control_display_path_label,
-    source_control_entries_for_untracked_changes_from_slice, source_control_filter_terms,
-    source_control_filter_visible_entries, source_control_filtered_entries,
+    SourceControlRowOpenability, SourceControlRowsCacheInputs, SourceControlSortMode,
+    SourceControlStageSection, SourceControlStageSectionKind, SourceControlViewMode,
+    SourceControlVisibleRow, handle_source_control_keyboard, render_source_control_row,
+    source_control_branch_display_label, source_control_branch_display_label_cow,
+    source_control_cached_row_openability, source_control_change_list_keyboard_active,
+    source_control_display_path_label, source_control_entries_for_untracked_changes_from_slice,
+    source_control_filter_terms, source_control_filter_visible_entries,
+    source_control_filtered_entries, source_control_git_error_label,
     source_control_git_root_matches_workspace, source_control_hunks_available,
     source_control_path_exists_cached, source_control_prepare_render_rows,
     source_control_ref_display_label, source_control_ref_display_label_cow,
     source_control_render_row_index_for_selection, source_control_repository_label,
     source_control_row_action_count, source_control_row_action_labels,
     source_control_row_click_command, source_control_row_display, source_control_row_openability,
-    source_control_sanitized_path_label, source_control_sanitized_path_label_cow,
-    source_control_sanitized_path_label_owned, source_control_stage_header_action_enabled,
-    source_control_status_path_label, source_control_tree_path_label,
-    source_control_validated_row_action_command, source_control_verbose_commit_preview,
-    source_control_visible_entry_count, source_control_visible_entry_index_for_selection,
-    source_control_visible_rows,
+    source_control_rows_cache_entry, source_control_sanitized_path_label,
+    source_control_sanitized_path_label_cow, source_control_sanitized_path_label_owned,
+    source_control_stage_header_action_enabled, source_control_status_path_label,
+    source_control_tree_path_label, source_control_validated_row_action_command,
+    source_control_verbose_commit_preview, source_control_visible_entry_count,
+    source_control_visible_entry_index_for_selection, source_control_visible_rows,
 };
 use crate::path_display::DISPLAY_PATH_LABEL_MAX_CHARS;
 use eframe::egui::{self, Event, Key, Modifiers, RawInput};
@@ -1389,4 +1390,183 @@ fn run_source_control_keyboard_frame_with_probe(
         command: command_bus.pop(),
         status,
     }
+}
+
+#[test]
+fn source_control_git_error_label_prefixes_error_text() {
+    assert_eq!(
+        source_control_git_error_label("repository is bare"),
+        "Git error: repository is bare"
+    );
+    // Whitespace-only errors collapse to the bare label.
+    assert_eq!(source_control_git_error_label("   "), "Git error");
+}
+
+#[test]
+fn source_control_git_error_label_sanitizes_control_characters() {
+    let label = source_control_git_error_label("bad\u{7}input");
+    assert!(label.starts_with("Git error: "), "{label}");
+    assert!(!label.contains('\u{7}'), "{label}");
+}
+
+fn cache_test_entries(root: &Path) -> Vec<GitStatusEntry> {
+    vec![
+        GitStatusEntry {
+            path: root.join("src/main.rs"),
+            status: GitFileStatus::Modified,
+            stage: GitChangeStage::Unstaged,
+        },
+        GitStatusEntry {
+            path: root.join("src/lib.rs"),
+            status: GitFileStatus::Added,
+            stage: GitChangeStage::Staged,
+        },
+    ]
+}
+
+fn cache_test_inputs<'a>(
+    root: &'a Path,
+    query: &'a str,
+    git_revision: u64,
+) -> SourceControlRowsCacheInputs<'a> {
+    SourceControlRowsCacheInputs {
+        git_revision,
+        root,
+        query,
+        sort: SourceControlSortMode::Path,
+        untracked_changes: GitUntrackedChanges::Mixed,
+        always_show_staged: false,
+        unstaged_collapsed: false,
+        untracked_collapsed: false,
+        staged_collapsed: false,
+    }
+}
+
+#[test]
+fn source_control_rows_cache_reuses_rows_when_inputs_are_unchanged() {
+    let root = PathBuf::from("workspace");
+    let entries = cache_test_entries(&root);
+    let mut cache = None;
+    let inputs = cache_test_inputs(&root, "", 1);
+
+    let first = source_control_rows_cache_entry(inputs, Cow::Borrowed(&entries), &mut cache);
+    assert_eq!(first.entries, entries);
+    assert!(!first.rows.is_empty());
+
+    // Mutate the cached rows to prove the next call reuses them instead of
+    // rebuilding from `entries`.
+    cache
+        .as_mut()
+        .expect("rows cache populated")
+        .entries
+        .push(GitStatusEntry {
+            path: root.join("mutated.rs"),
+            status: GitFileStatus::Added,
+            stage: GitChangeStage::Unstaged,
+        });
+
+    let second = source_control_rows_cache_entry(inputs, Cow::Borrowed(&entries), &mut cache);
+
+    assert_eq!(second.entries.len(), entries.len() + 1);
+    assert!(
+        second
+            .entries
+            .iter()
+            .any(|entry| entry.path == root.join("mutated.rs"))
+    );
+}
+
+#[test]
+fn source_control_rows_cache_invalidates_on_git_revision_change() {
+    let root = PathBuf::from("workspace");
+    let entries = cache_test_entries(&root);
+    let mut cache = None;
+
+    let _ = source_control_rows_cache_entry(
+        cache_test_inputs(&root, "", 1),
+        Cow::Borrowed(&entries),
+        &mut cache,
+    );
+    cache
+        .as_mut()
+        .expect("rows cache populated")
+        .entries
+        .clear();
+
+    let rebuilt = source_control_rows_cache_entry(
+        cache_test_inputs(&root, "", 2),
+        Cow::Borrowed(&entries),
+        &mut cache,
+    );
+
+    assert_eq!(rebuilt.entries, entries);
+}
+
+#[test]
+fn source_control_rows_cache_invalidates_on_query_change() {
+    let root = PathBuf::from("workspace");
+    let entries = cache_test_entries(&root);
+    let main = GitStatusEntry {
+        path: root.join("src/main.rs"),
+        status: GitFileStatus::Modified,
+        stage: GitChangeStage::Unstaged,
+    };
+    let mut cache = None;
+
+    let _ = source_control_rows_cache_entry(
+        cache_test_inputs(&root, "", 1),
+        Cow::Borrowed(&entries),
+        &mut cache,
+    );
+    cache
+        .as_mut()
+        .expect("rows cache populated")
+        .entries
+        .clear();
+
+    let rebuilt = source_control_rows_cache_entry(
+        cache_test_inputs(&root, "main", 1),
+        Cow::Borrowed(&entries),
+        &mut cache,
+    );
+
+    assert_eq!(rebuilt.entries, vec![main]);
+}
+
+#[test]
+fn source_control_rows_cache_invalidates_on_sort_mode_and_collapse_inputs() {
+    let root = PathBuf::from("workspace");
+    let entries = cache_test_entries(&root);
+    let mut cache = None;
+
+    let _ = source_control_rows_cache_entry(
+        cache_test_inputs(&root, "", 1),
+        Cow::Borrowed(&entries),
+        &mut cache,
+    );
+    cache
+        .as_mut()
+        .expect("rows cache populated")
+        .entries
+        .clear();
+
+    let mut sort_inputs = cache_test_inputs(&root, "", 1);
+    sort_inputs.sort = SourceControlSortMode::Status;
+    let resorted =
+        source_control_rows_cache_entry(sort_inputs, Cow::Borrowed(&entries), &mut cache);
+    assert_eq!(resorted.entries, entries);
+
+    cache
+        .as_mut()
+        .expect("rows cache populated")
+        .entries
+        .clear();
+
+    let mut collapsed_inputs = cache_test_inputs(&root, "", 1);
+    collapsed_inputs.unstaged_collapsed = true;
+    let collapsed =
+        source_control_rows_cache_entry(collapsed_inputs, Cow::Borrowed(&entries), &mut cache);
+    assert_eq!(collapsed.entries, entries);
+    // Only the staged entry survives collapsing the unstaged section.
+    assert_eq!(source_control_visible_entry_count(&collapsed.rows), 1);
 }

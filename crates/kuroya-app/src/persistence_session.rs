@@ -13,9 +13,8 @@ use crate::{
         normalize_navigation_history,
     },
     layout::{
-        clamp_diagnostics_panel_width, clamp_explorer_width, clamp_project_search_width,
-        clamp_source_control_width, clamp_symbols_panel_width, clamp_terminal_height,
-        normalize_weights,
+        clamp_diagnostics_panel_width, clamp_explorer_width, clamp_source_control_width,
+        clamp_symbols_panel_width, clamp_terminal_height, normalize_weights,
     },
     lsp_workspace_symbol_ranking::MAX_WORKSPACE_SYMBOL_QUERY_MEMORY,
     persistence::{PersistedSession, SkippedRecoveredBuffer, normalize_recent_projects},
@@ -173,7 +172,7 @@ fn load_latest_session_snapshot_in_dir(
     workspace_root: &Path,
     dir: &Path,
 ) -> anyhow::Result<Option<PersistedSession>> {
-    for path in session_snapshot_files(&dir)?.into_iter().rev() {
+    for path in session_snapshot_files(dir)?.into_iter().rev() {
         match read_file_bytes_with_limit(&path, PERSISTED_SESSION_MAX_BYTES) {
             Ok(bytes) => match serde_json::from_slice::<PersistedSession>(&bytes) {
                 Ok(mut session)
@@ -281,7 +280,7 @@ pub(crate) fn session_bytes_for_write(session: &PersistedSession) -> anyhow::Res
         }
     }
 
-    while !session_bytes_fit(&bytes) && skip_last_recovery_entry(&mut candidate) {
+    while !session_bytes_fit(&bytes) && skip_largest_recovery_entry(&mut candidate) {
         bytes = serde_json::to_vec_pretty(&candidate)?;
     }
     if session_bytes_fit(&bytes) {
@@ -503,7 +502,6 @@ fn sanitize_session_for_write(session: &mut PersistedSession) {
 
 fn normalize_restored_session_scalars(session: &mut PersistedSession) {
     session.explorer_width = clamp_explorer_width(session.explorer_width);
-    session.project_search_width = clamp_project_search_width(session.project_search_width);
     session.symbols_panel_width = clamp_symbols_panel_width(session.symbols_panel_width);
     session.diagnostics_panel_width =
         clamp_diagnostics_panel_width(session.diagnostics_panel_width);
@@ -867,17 +865,26 @@ fn clear_terminal_scrollback(session: &mut PersistedSession) -> bool {
     changed
 }
 
-fn skip_last_recovery_entry(session: &mut PersistedSession) -> bool {
-    let Some(recovered) = session.recovery.pop() else {
+/// Evicts the largest recovery buffer first when a session exceeds the byte
+/// budget. Recovery buffers are stored in buffer-open order, so dropping
+/// the LAST entry would always discard the most recently opened/edited
+/// work; size-first eviction instead sacrifices the entries that free the
+/// most bytes per removal, so small entries carrying real user text
+/// survive. `last_edited` timestamps are not part of the persisted
+/// recovery schema, so buffer size is used as the eviction signal.
+fn skip_largest_recovery_entry(session: &mut PersistedSession) -> bool {
+    let Some((index, recovered)) = session
+        .recovery
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, recovered)| recovered.text.len())
+        .map(|(index, recovered)| (index, recovered.clone()))
+    else {
         return false;
     };
-    let remaining_recovery = session.recovery.len();
-    session
-        .recovery_view_states
-        .retain(|state| state.recovery_index < remaining_recovery);
-    session
-        .recovery_history_states
-        .retain(|state| state.recovery_index < remaining_recovery);
+    session.recovery.remove(index);
+    retain_remapped_recovery_view_states(&mut session.recovery_view_states, index);
+    retain_remapped_recovery_history_states(&mut session.recovery_history_states, index);
     let bytes = recovered.text.len();
     push_recovery_skipped_entry(
         session,
@@ -891,6 +898,38 @@ fn skip_last_recovery_entry(session: &mut PersistedSession) -> bool {
         },
     );
     true
+}
+
+/// Drops the view state of the removed recovery entry and shifts the indices
+/// of later entries so they keep pointing at their buffers.
+fn retain_remapped_recovery_view_states(
+    states: &mut Vec<crate::persistence::RecoveredBufferViewState>,
+    removed_index: usize,
+) {
+    states.retain_mut(|state| match state.recovery_index.cmp(&removed_index) {
+        std::cmp::Ordering::Equal => false,
+        std::cmp::Ordering::Greater => {
+            state.recovery_index -= 1;
+            true
+        }
+        std::cmp::Ordering::Less => true,
+    });
+}
+
+/// Drops the history state of the removed recovery entry and shifts the
+/// indices of later entries so they keep pointing at their buffers.
+fn retain_remapped_recovery_history_states(
+    states: &mut Vec<crate::persistence::RecoveredBufferHistoryState>,
+    removed_index: usize,
+) {
+    states.retain_mut(|state| match state.recovery_index.cmp(&removed_index) {
+        std::cmp::Ordering::Equal => false,
+        std::cmp::Ordering::Greater => {
+            state.recovery_index -= 1;
+            true
+        }
+        std::cmp::Ordering::Less => true,
+    });
 }
 
 fn push_recovery_skipped_entry(session: &mut PersistedSession, skipped: SkippedRecoveredBuffer) {
@@ -1503,7 +1542,8 @@ fn session_snapshot_unique_id() -> u128 {
 }
 
 fn prune_session_snapshots(dir: &Path) -> anyhow::Result<()> {
-    let snapshots = session_snapshot_files(dir)?;
+    let mut snapshots = session_snapshot_files(dir)?;
+    sort_session_snapshots_oldest_modified_first(&mut snapshots);
     let overflow = snapshots.len().saturating_sub(MAX_SESSION_SNAPSHOTS);
     for path in snapshots.into_iter().take(overflow) {
         fs::remove_file(path)?;
@@ -1512,12 +1552,31 @@ fn prune_session_snapshots(dir: &Path) -> anyhow::Result<()> {
 }
 
 async fn prune_session_snapshots_async(dir: &Path) -> anyhow::Result<()> {
-    let snapshots = session_snapshot_files_async(dir).await?;
+    let mut snapshots = session_snapshot_files_async(dir).await?;
+    sort_session_snapshots_oldest_modified_first(&mut snapshots);
     let overflow = snapshots.len().saturating_sub(MAX_SESSION_SNAPSHOTS);
     for path in snapshots.into_iter().take(overflow) {
         tokio::fs::remove_file(path).await?;
     }
     Ok(())
+}
+
+/// Orders snapshots oldest-modified first so pruning from the front evicts
+/// the oldest writes and keeps the newest. Snapshot names embed wall-clock
+/// nanos, so after a system-clock rollback freshly written snapshots sort
+/// OLDEST by name and name-order pruning would freeze the safety net
+/// exactly when it is needed; the on-disk modified time tracks real write
+/// order instead. Entries whose modified time cannot be read are treated
+/// as oldest (pruned first, keeping their relative name order); entries
+/// with readable times keep name order on ties (the stable-sort fallback).
+fn sort_session_snapshots_oldest_modified_first(snapshots: &mut [PathBuf]) {
+    snapshots.sort_by_key(|path| snapshot_modified_time(path).unwrap_or(UNIX_EPOCH));
+}
+
+fn snapshot_modified_time(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
 }
 
 fn session_snapshot_files(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {

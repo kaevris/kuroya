@@ -160,6 +160,7 @@ pub(super) fn paint_sticky_scroll_row(
     highlighter: &mut SyntaxHighlighter,
     bracket_overlay_cache: &mut EditorBracketOverlayCache,
     data: &EditorPaneData,
+    background_image_active: bool,
     active_find_match: usize,
     line_idx: usize,
     sticky_row_index: usize,
@@ -184,8 +185,14 @@ pub(super) fn paint_sticky_scroll_row(
     );
     let row_rect = Rect::from_min_size(pos2(row_left, row_top), vec2(row_width, data.row_height));
     let visuals = ui.visuals();
-    ui.painter()
-        .rect_filled(background_rect, 0.0, visuals.faint_bg_color);
+    ui.painter().rect_filled(
+        background_rect,
+        0.0,
+        crate::editor_row_paint::editor_sticky_scroll_fill(
+            visuals.faint_bg_color,
+            background_image_active,
+        ),
+    );
     ui.painter().line_segment(
         [
             pos2(background_rect.left(), background_rect.bottom() - 1.0),
@@ -228,7 +235,11 @@ pub(super) fn paint_sticky_scroll_row(
         font_size: data.font_size,
         text_color: visuals.text_color(),
         weak_text_color: visuals.weak_text_color(),
-        selection_bg_fill: data.selection_bg_fill,
+        background_image_active,
+        selection_bg_fill: crate::editor_row_paint::editor_selection_fill(
+            data.selection_bg_fill,
+            background_image_active,
+        ),
         warn_fg_color: visuals.warn_fg_color,
         line_numbers: data.line_numbers,
         select_on_line_numbers: data.select_on_line_numbers,
@@ -349,6 +360,7 @@ pub(super) fn paint_sticky_scroll_row(
         row_rect,
         line_idx,
         highlighted_jobs.get_mut(0).map(std::mem::take),
+        None,
         &bracket_colors,
         &row_context,
         false,

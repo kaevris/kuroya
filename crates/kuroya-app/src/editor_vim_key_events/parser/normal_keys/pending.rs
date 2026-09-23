@@ -41,6 +41,13 @@ pub(in crate::editor_vim_key_events) fn vim_normal_key_next_pending(
     if key == Key::Quote && modifiers.shift {
         return Some(EditorVimPendingKey::RegisterPrefix(1));
     }
+    if key == Key::V && modifiers.shift {
+        return Some(EditorVimPendingKey::VisualLine {
+            anchor: 0,
+            cursor: 0,
+            count: None,
+        });
+    }
     if modifiers.shift {
         return None;
     }
@@ -97,6 +104,13 @@ pub(in crate::editor_vim_key_events) fn vim_normal_key_next_pending_after_count(
     }
     if key == Key::Quote && modifiers.shift {
         return Some(EditorVimPendingKey::RegisterPrefix(count));
+    }
+    if key == Key::V && modifiers.shift {
+        return Some(EditorVimPendingKey::VisualLine {
+            anchor: 0,
+            cursor: 0,
+            count: None,
+        });
     }
     if modifiers.shift {
         return None;

@@ -3,6 +3,7 @@ use crate::preference_panels::sections::{
     bounded_settings_multiline_join, bounded_settings_singleline_input,
     bounded_settings_text_edit_width,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::{
     EditorSettings, GitAddAiCoAuthor, GitAutoFetch, GitAutoRepositoryDetection,
@@ -123,7 +124,15 @@ pub(super) fn render_git_checkout_type(ui: &mut egui::Ui, draft: &mut EditorSett
             (GitCheckoutType::Tags, "Tags"),
         ] {
             let mut enabled = draft.git_checkout_type.contains(&kind);
-            if ui.checkbox(&mut enabled, label).changed() {
+            if ui
+                .horizontal(|ui| {
+                    let r = ui_switch(ui, &mut enabled);
+                    ui.label(egui::RichText::new(label).small().weak());
+                    r
+                })
+                .inner
+                .changed()
+            {
                 if enabled {
                     draft.git_checkout_type.push(kind);
                 } else {
@@ -575,7 +584,15 @@ pub(super) fn render_git_input_validation_subject_length(
     ui.horizontal(|ui| {
         let mut inherit =
             draft.git_input_validation_subject_length == GitInputValidationSubjectLength::Inherit;
-        if ui.checkbox(&mut inherit, "Inherit").changed() {
+        if ui
+            .horizontal(|ui| {
+                let r = ui_switch(ui, &mut inherit);
+                ui.label(egui::RichText::new("Inherit").small().weak());
+                r
+            })
+            .inner
+            .changed()
+        {
             draft.git_input_validation_subject_length = if inherit {
                 GitInputValidationSubjectLength::Inherit
             } else {

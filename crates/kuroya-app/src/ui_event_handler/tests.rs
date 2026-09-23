@@ -83,6 +83,8 @@ fn seed_queued_blame_final_request(app: &mut KuroyaApp, path: &Path) {
         .insert(path.to_path_buf(), vec![git_blame_line_for_test(1, "old")]);
 }
 
+mod plugin_buffer_text;
+mod plugin_open_file;
 mod source_control_blame;
 mod source_control_history;
 mod source_control_hunks;

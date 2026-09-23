@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::history::NavigationLocation;
-use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
+use fuzzy_matcher::skim::SkimMatcherV2;
 
 use super::{
     MAX_QUICK_OPEN_QUERY_MEMORY, QuickOpenFileNameKey, QuickOpenPathKey, QuickOpenQueryMemoryEntry,
@@ -1032,11 +1032,13 @@ pub(crate) fn quick_open_match_score(
         return quick_open_tokenized_match_score(matcher, rel, query);
     }
 
-    let fuzzy_score = matcher.fuzzy_match(rel, &query.raw)?;
+    let fuzzy_score = crate::fuzzy::fuzzy_match_with_case_fallback(matcher, rel, &query.raw)?;
     let mut rank_score = fuzzy_score;
     if !query.raw.is_empty() {
         let file_name = quick_open_file_name(rel);
-        if let Some(file_name_score) = matcher.fuzzy_match(file_name, &query.raw) {
+        if let Some(file_name_score) =
+            crate::fuzzy::fuzzy_match_with_case_fallback(matcher, file_name, &query.raw)
+        {
             rank_score = rank_score.max(file_name_score + QUICK_OPEN_FILE_NAME_BONUS);
             let file_name_match =
                 quick_open_lowercase_match_kind(file_name, query.lowercase.as_str());
@@ -1067,9 +1069,11 @@ fn quick_open_tokenized_match_score(
     let mut rank_score = 0;
 
     for (token, token_lowercase) in query.tokens.iter().zip(query.token_lowercases.iter()) {
-        let token_fuzzy_score = matcher.fuzzy_match(rel, token)?;
+        let token_fuzzy_score = crate::fuzzy::fuzzy_match_with_case_fallback(matcher, rel, token)?;
         let mut token_rank_score = token_fuzzy_score;
-        if let Some(file_name_score) = matcher.fuzzy_match(file_name, token) {
+        if let Some(file_name_score) =
+            crate::fuzzy::fuzzy_match_with_case_fallback(matcher, file_name, token)
+        {
             token_rank_score = token_rank_score.max(file_name_score + QUICK_OPEN_FILE_NAME_BONUS);
             let file_name_match =
                 quick_open_lowercase_match_kind(file_name, token_lowercase.as_str());
@@ -1147,7 +1151,7 @@ fn quick_open_ascii_lowercase_match_kind(
     }
 }
 
-pub(super) fn quick_open_lowercase_word_start_match(
+pub(crate) fn quick_open_lowercase_word_start_match(
     candidate: &str,
     query_lowercase: &str,
 ) -> bool {

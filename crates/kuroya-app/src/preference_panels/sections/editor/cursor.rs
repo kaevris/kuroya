@@ -2,6 +2,7 @@ use crate::preference_panels::sections::{
     SETTINGS_TARGET_EDITOR_CURSOR, SettingsHighlightState, guarded_f32_drag_value,
     settings_target_heading,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::{
     DEFAULT_EDITOR_CURSOR_WIDTH, EditorCursorSmoothCaretAnimation, EditorCursorStyle,
@@ -51,10 +52,8 @@ pub(super) fn render_cursor_settings_with_highlight(
             ui.end_row();
 
             ui.label("Overtype paste");
-            ui.checkbox(
-                &mut draft.overtype_on_paste,
-                "Paste overwrites in overtype mode",
-            );
+            ui_switch(ui, &mut draft.overtype_on_paste)
+                .on_hover_text("Paste overwrites in overtype mode");
             ui.end_row();
 
             ui.label("Cursor width");
@@ -77,7 +76,7 @@ pub(super) fn render_cursor_settings_with_highlight(
             ui.end_row();
 
             ui.label("Cursor blinking");
-            ui.checkbox(&mut draft.cursor_blinking, "Blink cursor");
+            ui_switch(ui, &mut draft.cursor_blinking);
             ui.end_row();
 
             ui.label("Surrounding lines");
@@ -106,10 +105,8 @@ pub(super) fn render_cursor_settings_with_highlight(
             ui.end_row();
 
             ui.label("Highlight on focus");
-            ui.checkbox(
-                &mut draft.render_line_highlight_only_when_focus,
-                "Only highlight cursor line in the focused pane",
-            );
+            ui_switch(ui, &mut draft.render_line_highlight_only_when_focus)
+                .on_hover_text("Only highlight cursor line in the focused pane");
             ui.end_row();
         });
 }

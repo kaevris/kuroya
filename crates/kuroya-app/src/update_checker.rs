@@ -4,9 +4,10 @@ use crate::{
     transient_state::PendingExit,
     ui_event_channel::send_ui_event,
     ui_events::UiEvent,
+    ui_icons::{IconKind, draw_icon, icon_button},
 };
 use anyhow::Context;
-use eframe::egui::{self, Align, Context as EguiContext, Key, RichText};
+use eframe::egui::{self, Align, Color32, Context as EguiContext, Key, RichText, Stroke, Ui, vec2};
 use kuroya_core::EditorSettings;
 use serde::Deserialize;
 use std::{
@@ -15,7 +16,7 @@ use std::{
 };
 
 const GITHUB_API_BASE: &str = "https://api.github.com/repos";
-const DEFAULT_UPDATE_GITHUB_REPOSITORY: &str = "redmarklabscom/kuroya";
+pub(crate) const DEFAULT_UPDATE_GITHUB_REPOSITORY: &str = "kaevris/kuroya";
 const UPDATE_USER_AGENT: &str = concat!("Kuroya/", env!("CARGO_PKG_VERSION"));
 const UPDATE_DOWNLOAD_DIR: &str = "kuroya-updates";
 pub(crate) const AUTOMATIC_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -334,42 +335,47 @@ impl KuroyaApp {
         let mut action = UpdatePromptAction::None;
         let mut window_open = true;
         egui::Window::new("Update Available")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(ctx, 24.0))
             .open(&mut window_open)
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .fixed_size([460.0, 172.0])
+            .fixed_size([520.0, 292.0])
+            .frame(update_prompt_frame(ctx))
             .show(ctx, |ui| {
-                ui.label(
-                    RichText::new(format!("Kuroya {} is available", update.latest_version))
-                        .strong(),
+                render_update_dialog_header(
+                    ui,
+                    IconKind::Refresh,
+                    "Update Available",
+                    &format!("Kuroya {} is ready to download", update.latest_version),
+                    &mut action,
                 );
-                ui.label(format!(
-                    "You are running Kuroya {}. Install the latest release now?",
-                    update.current_version
-                ));
-                ui.label(RichText::new(&update.asset.name).small());
+                ui.add_space(14.0);
+                ui.label("Install the latest Windows release now. Kuroya will download the installer first.");
+                ui.add_space(14.0);
+                render_update_version_rows(
+                    ui,
+                    "update_available_versions",
+                    &[
+                        ("Current", update.current_version.as_str()),
+                        ("Available", update.latest_version.as_str()),
+                    ],
+                );
+                ui.add_space(12.0);
+                render_update_installer_row(ui, &update.asset.name);
 
                 if ui.input(|input| input.key_pressed(Key::Escape)) {
                     action = UpdatePromptAction::Later;
                 }
 
-                ui.add_space(8.0);
-                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    if popup_button_enabled(
-                        ui,
-                        !self.update_download_in_flight,
-                        "Install",
-                        PopupButtonKind::Primary,
-                    )
-                    .clicked()
-                    {
-                        action = UpdatePromptAction::Install;
-                    }
-                    if popup_button(ui, "Later", PopupButtonKind::Secondary).clicked() {
-                        action = UpdatePromptAction::Later;
-                    }
-                });
+                render_update_dialog_footer(
+                    ui,
+                    "Install",
+                    !self.update_download_in_flight,
+                    UpdatePromptAction::Install,
+                    &mut action,
+                );
             });
 
         if !window_open && matches!(action, UpdatePromptAction::None) {
@@ -395,35 +401,46 @@ impl KuroyaApp {
         let mut action = UpdatePromptAction::None;
         let mut window_open = true;
         egui::Window::new("Update Ready")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 24.0,
+            ))
             .open(&mut window_open)
+            .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .fixed_size([460.0, 156.0])
+            .fixed_size([520.0, 270.0])
+            .frame(update_prompt_frame(ctx))
             .show(ctx, |ui| {
-                ui.label(
-                    RichText::new(format!(
-                        "Kuroya {} is ready to install",
-                        update.latest_version
-                    ))
-                    .strong(),
+                render_update_dialog_header(
+                    ui,
+                    IconKind::Refresh,
+                    "Update Ready",
+                    &format!("Kuroya {} has been downloaded", update.latest_version),
+                    &mut action,
                 );
+                ui.add_space(14.0);
                 ui.label("Restart Kuroya to replace the current installation.");
-                ui.label(RichText::new(installer_path_label(&update.installer_path)).small());
+                ui.add_space(14.0);
+                render_update_version_rows(
+                    ui,
+                    "update_ready_version",
+                    &[("Version", update.latest_version.as_str())],
+                );
+                ui.add_space(12.0);
+                render_update_installer_row(ui, &installer_path_label(&update.installer_path));
 
                 if ui.input(|input| input.key_pressed(Key::Escape)) {
                     action = UpdatePromptAction::Later;
                 }
 
-                ui.add_space(8.0);
-                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    if popup_button(ui, "Restart", PopupButtonKind::Primary).clicked() {
-                        action = UpdatePromptAction::Restart;
-                    }
-                    if popup_button(ui, "Later", PopupButtonKind::Secondary).clicked() {
-                        action = UpdatePromptAction::Later;
-                    }
-                });
+                render_update_dialog_footer(
+                    ui,
+                    "Restart",
+                    true,
+                    UpdatePromptAction::Restart,
+                    &mut action,
+                );
             });
 
         if !window_open && matches!(action, UpdatePromptAction::None) {
@@ -451,6 +468,125 @@ enum UpdatePromptAction {
     Install,
     Restart,
     Later,
+}
+
+fn update_prompt_frame(ctx: &EguiContext) -> egui::Frame {
+    egui::Frame::window(&ctx.style())
+        .inner_margin(egui::Margin::symmetric(18, 16))
+        .corner_radius(egui::CornerRadius::same(6))
+}
+
+fn render_update_dialog_header(
+    ui: &mut Ui,
+    icon: IconKind,
+    title: &str,
+    subtitle: &str,
+    action: &mut UpdatePromptAction,
+) {
+    ui.horizontal(|ui| {
+        render_update_icon_badge(ui, icon);
+        ui.add_space(10.0);
+        ui.vertical(|ui| {
+            ui.add_space(1.0);
+            ui.label(RichText::new(title).size(18.0).strong());
+            ui.label(
+                RichText::new(subtitle)
+                    .small()
+                    .color(ui.visuals().weak_text_color()),
+            );
+        });
+        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+            if icon_button(ui, IconKind::Close, "Dismiss update prompt").clicked() {
+                *action = UpdatePromptAction::Later;
+            }
+        });
+    });
+    ui.add_space(12.0);
+    ui.separator();
+}
+
+fn render_update_icon_badge(ui: &mut Ui, icon: IconKind) {
+    let accent = ui.visuals().selection.stroke.color;
+    let fill = translucent_color(accent, 32);
+    let stroke = Stroke::new(1.0, translucent_color(accent, 108));
+    let (rect, response) = ui.allocate_exact_size(vec2(42.0, 42.0), egui::Sense::hover());
+
+    ui.painter().rect_filled(rect, 6.0, fill);
+    ui.painter()
+        .rect_stroke(rect, 6.0, stroke, egui::StrokeKind::Inside);
+    let icon_rect = egui::Rect::from_center_size(rect.center(), vec2(24.0, 24.0));
+    draw_icon(ui, icon_rect, icon, accent);
+    response.on_hover_text("Kuroya update");
+}
+
+fn render_update_version_rows(ui: &mut Ui, id: &'static str, rows: &[(&str, &str)]) {
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing(vec2(18.0, 7.0))
+        .show(ui, |ui| {
+            for (label, value) in rows {
+                ui.label(
+                    RichText::new(*label)
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                );
+                ui.label(RichText::new(*value).monospace().strong());
+                ui.end_row();
+            }
+        });
+}
+
+fn render_update_installer_row(ui: &mut Ui, installer: &str) {
+    ui.label(
+        RichText::new("Installer")
+            .small()
+            .color(ui.visuals().weak_text_color()),
+    );
+    egui::Frame::new()
+        .fill(ui.visuals().code_bg_color)
+        .stroke(Stroke::new(
+            1.0,
+            ui.visuals().widgets.inactive.bg_stroke.color,
+        ))
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                crate::ui_icons::icon_label(
+                    ui,
+                    IconKind::File,
+                    ui.visuals().weak_text_color(),
+                    "Installer file",
+                );
+                ui.add(egui::Label::new(RichText::new(installer).monospace().small()).wrap());
+            });
+        });
+}
+
+fn render_update_dialog_footer(
+    ui: &mut Ui,
+    primary_label: &str,
+    primary_enabled: bool,
+    primary_action: UpdatePromptAction,
+    action: &mut UpdatePromptAction,
+) {
+    ui.add_space(14.0);
+    ui.separator();
+    ui.add_space(8.0);
+    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+        if popup_button_enabled(ui, primary_enabled, primary_label, PopupButtonKind::Primary)
+            .clicked()
+        {
+            *action = primary_action;
+        }
+        if popup_button(ui, "Later", PopupButtonKind::Secondary).clicked() {
+            *action = UpdatePromptAction::Later;
+        }
+    });
+}
+
+fn translucent_color(color: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
 struct UpdateDownloadError {

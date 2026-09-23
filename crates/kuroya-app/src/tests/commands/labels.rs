@@ -44,6 +44,10 @@ fn command_label_covers_settings_commands() {
         "Open Latest Local History Snapshot"
     );
     assert_eq!(
+        command_label(&Command::OpenLocalHistoryBrowser),
+        "Browse Local History"
+    );
+    assert_eq!(
         command_label(&Command::SaveWorkspaceSnapshot),
         "Save Workspace Snapshot"
     );

@@ -9,6 +9,68 @@ const DEFAULT_FONT_SIZE: f32 = 13.0;
 const MAX_FONT_SIZE: f32 = 128.0;
 const DEFAULT_TAB_WIDTH: usize = 4;
 const MAX_TAB_WIDTH: usize = 32;
+// Below this WCAG contrast ratio a syntect token foreground is unreadable
+// against the active theme and falls back to the theme text color.
+const MIN_TOKEN_CONTRAST_RATIO: f32 = 3.0;
+// The editor background is not threaded into the highlighter, so it is
+// estimated from the theme family picked by the text color polarity (the app
+// guarantees its text color is readable against its background). The values
+// mirror the app's default dark and light theme backgrounds.
+const ESTIMATED_DARK_BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
+const ESTIMATED_LIGHT_BACKGROUND: Color32 = Color32::from_rgb(244, 246, 248);
+
+/// Render-relevant identity of the active app theme for syntect token colors.
+///
+/// The bundled syntect theme is fixed, so token colors are contrast-checked
+/// against the active app theme at paint time: pale token colors designed for
+/// dark backgrounds fall back to the theme text color instead of washing out on
+/// light themes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SyntaxThemeColors {
+    background: Color32,
+    text: Color32,
+}
+
+impl SyntaxThemeColors {
+    pub(crate) fn from_text_color(text: Color32) -> Self {
+        let background = if relative_luminance(text) >= 0.5 {
+            ESTIMATED_DARK_BACKGROUND
+        } else {
+            ESTIMATED_LIGHT_BACKGROUND
+        };
+        Self { background, text }
+    }
+
+    pub(crate) fn readable_token_color(self, token: Color32) -> Color32 {
+        if contrast_ratio(token, self.background) >= MIN_TOKEN_CONTRAST_RATIO {
+            token
+        } else {
+            self.text
+        }
+    }
+}
+
+fn contrast_ratio(first: Color32, second: Color32) -> f32 {
+    let bright = relative_luminance(first).max(relative_luminance(second));
+    let dark = relative_luminance(first).min(relative_luminance(second));
+    (bright + 0.05) / (dark + 0.05)
+}
+
+fn relative_luminance(color: Color32) -> f32 {
+    let red = srgb_channel_to_linear(color.r());
+    let green = srgb_channel_to_linear(color.g());
+    let blue = srgb_channel_to_linear(color.b());
+    (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+}
+
+fn srgb_channel_to_linear(value: u8) -> f32 {
+    let channel = value as f32 / 255.0;
+    if channel <= 0.04045 {
+        channel / 12.92
+    } else {
+        ((channel + 0.055) / 1.055).powf(2.4)
+    }
+}
 
 pub(crate) fn normalize_layout_inputs(font_size: f32, tab_width: usize) -> (f32, usize) {
     let font_size = if font_size.is_finite() && font_size > 0.0 {
@@ -31,6 +93,7 @@ pub(crate) fn highlighted_job(
     highlighter: &Highlighter<'_>,
     font_size: f32,
     tab_width: usize,
+    theme: SyntaxThemeColors,
 ) -> LayoutJob {
     let (font_size, tab_width) = normalize_layout_inputs(font_size, tab_width);
     let mut job = layout_job_with_text_capacity(expanded_text_capacity(text, tab_width));
@@ -39,7 +102,7 @@ pub(crate) fn highlighted_job(
         append_text_with_expanded_tabs(
             &mut job,
             slice,
-            format_from_style(style, font_size),
+            format_from_style(style, font_size, theme),
             &mut visual_column,
             tab_width,
         );
@@ -56,10 +119,14 @@ pub(crate) fn advance_highlight_state(
     for _ in HighlightIterator::new(highlight_state, ops, text, highlighter) {}
 }
 
-fn format_from_style(style: Style, font_size: f32) -> TextFormat {
+fn format_from_style(style: Style, font_size: f32, theme: SyntaxThemeColors) -> TextFormat {
     TextFormat {
         font_id: FontId::new(font_size, FontFamily::Monospace),
-        color: Color32::from_rgb(style.foreground.r, style.foreground.g, style.foreground.b),
+        color: theme.readable_token_color(Color32::from_rgb(
+            style.foreground.r,
+            style.foreground.g,
+            style.foreground.b,
+        )),
         ..Default::default()
     }
 }
@@ -193,17 +260,31 @@ fn append_spaces(job: &mut LayoutJob, spaces: usize, format: TextFormat) {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_TAB_WIDTH, advance_highlight_state, append_spaces, expanded_text_capacity,
+        ESTIMATED_DARK_BACKGROUND, ESTIMATED_LIGHT_BACKGROUND, MAX_TAB_WIDTH, SyntaxThemeColors,
+        advance_highlight_state, append_spaces, expanded_text_capacity, format_from_style,
         highlighted_job, plain_job as build_plain_job, text_columns_without_tabs,
     };
     use egui::{TextFormat, text::LayoutJob};
     use syntect::{
-        highlighting::{HighlightState, Highlighter, ThemeSet},
+        highlighting::{Color, FontStyle, HighlightState, Highlighter, Style, ThemeSet},
         parsing::{ParseState, ScopeStack, SyntaxSet},
     };
 
     fn plain_job(text: &str, font_size: f32, tab_width: usize) -> LayoutJob {
         build_plain_job(text, font_size, tab_width, egui::Color32::WHITE)
+    }
+
+    fn style_with_foreground(foreground: Color) -> Style {
+        Style {
+            foreground,
+            background: Color {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            font_style: FontStyle::default(),
+        }
     }
 
     #[test]
@@ -292,6 +373,7 @@ mod tests {
 
         let mut job_parse_state = ParseState::new(syntax);
         let mut job_highlight_state = HighlightState::new(&highlighter, ScopeStack::new());
+        let theme = SyntaxThemeColors::from_text_color(egui::Color32::WHITE);
         let first_ops = job_parse_state.parse_line(first_line, &syntaxes).unwrap();
         let _ = highlighted_job(
             first_line,
@@ -300,6 +382,7 @@ mod tests {
             &highlighter,
             13.0,
             4,
+            theme,
         );
         let next_ops = job_parse_state.parse_line(next_line, &syntaxes).unwrap();
         let after_job_replay = highlighted_job(
@@ -309,6 +392,7 @@ mod tests {
             &highlighter,
             13.0,
             4,
+            theme,
         );
 
         let mut advance_parse_state = ParseState::new(syntax);
@@ -333,6 +417,7 @@ mod tests {
             &highlighter,
             13.0,
             4,
+            theme,
         );
 
         let job_replay_sections = after_job_replay
@@ -348,5 +433,63 @@ mod tests {
 
         assert_eq!(after_job_replay.text, after_state_advance.text);
         assert_eq!(job_replay_sections, state_advance_sections);
+    }
+
+    #[test]
+    fn syntax_theme_colors_estimate_background_from_text_polarity() {
+        let dark_theme = SyntaxThemeColors::from_text_color(egui::Color32::WHITE);
+        let light_theme = SyntaxThemeColors::from_text_color(egui::Color32::from_rgb(36, 41, 49));
+
+        assert_eq!(dark_theme.background, ESTIMATED_DARK_BACKGROUND);
+        assert_eq!(light_theme.background, ESTIMATED_LIGHT_BACKGROUND);
+        assert_eq!(dark_theme.text, egui::Color32::WHITE);
+        assert_eq!(light_theme.text, egui::Color32::from_rgb(36, 41, 49));
+    }
+
+    #[test]
+    fn format_from_style_falls_back_to_theme_text_for_pale_tokens_on_light_themes() {
+        // The base16-ocean.dark default foreground: far too pale for light apps.
+        let pale_token = style_with_foreground(Color {
+            r: 192,
+            g: 197,
+            b: 206,
+            a: 255,
+        });
+        // The ocean comment color is dark enough to survive on a light theme.
+        let readable_token = style_with_foreground(Color {
+            r: 101,
+            g: 115,
+            b: 126,
+            a: 255,
+        });
+        let light_theme_text = egui::Color32::from_rgb(36, 41, 49);
+        let light_theme = SyntaxThemeColors::from_text_color(light_theme_text);
+        let dark_theme = SyntaxThemeColors::from_text_color(egui::Color32::WHITE);
+
+        let pale_on_light = format_from_style(pale_token, 13.0, light_theme);
+        let readable_on_light = format_from_style(readable_token, 13.0, light_theme);
+        let pale_on_dark = format_from_style(pale_token, 13.0, dark_theme);
+
+        assert_eq!(pale_on_light.color, light_theme_text);
+        assert_eq!(
+            readable_on_light.color,
+            egui::Color32::from_rgb(101, 115, 126)
+        );
+        // Dark themes keep the original syntect token color.
+        assert_eq!(pale_on_dark.color, egui::Color32::from_rgb(192, 197, 206));
+    }
+
+    #[test]
+    fn readable_token_color_is_idempotent_for_highlighted_output() {
+        let light_theme = SyntaxThemeColors::from_text_color(egui::Color32::from_rgb(36, 41, 49));
+
+        for token in [
+            egui::Color32::from_rgb(192, 197, 206),
+            egui::Color32::from_rgb(101, 115, 126),
+            egui::Color32::from_rgb(36, 41, 49),
+        ] {
+            let readable = light_theme.readable_token_color(token);
+            assert_eq!(light_theme.readable_token_color(readable), readable);
+        }
     }
 }

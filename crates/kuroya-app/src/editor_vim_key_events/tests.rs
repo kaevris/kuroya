@@ -5,7 +5,7 @@ use super::{
     handle_vim_editor_key_event_with_repeat_state,
     handle_vim_editor_key_event_with_settings_and_indent, handle_vim_editor_key_event_with_state,
     handle_vim_editor_key_event_with_state_and_indent, sanitize_vim_settings_for_runtime,
-    vim_apply_char_find, vim_clear_named_registers, vim_effective_cursor_style,
+    vim_apply_char_find, vim_clear_marks, vim_clear_named_registers, vim_effective_cursor_style,
     vim_events_include_mutation, vim_events_include_mutation_with_settings,
     vim_key_sequence_is_normal_mode_supported, vim_mode_status_label, vim_named_register,
     vim_open_line_above_text, vim_open_line_below_text, vim_pending_command_status_label,
@@ -21,10 +21,20 @@ use std::collections::VecDeque;
 mod case;
 mod char_find;
 mod edits;
+mod ex_commands;
 mod insert;
+mod motion_audit;
 mod motions;
 mod operators;
 mod overrides;
+mod qa_ex;
+mod qa_insert;
+mod qa_marks;
+mod qa_operators;
+mod qa_registers;
+mod qa_text_objects;
+mod qa_undo_repeat;
+mod qa_visual;
 mod registers;
 mod scroll;
 mod search;

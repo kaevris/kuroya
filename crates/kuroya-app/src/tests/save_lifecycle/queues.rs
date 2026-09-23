@@ -19,51 +19,96 @@ fn session_save_requests_spawn_one_and_queue_latest_per_root() {
     let other = session_for_test(&root_b, "other.rs");
     let mut in_flight = None;
     let mut queued = HashMap::new();
+    let mut order = Vec::new();
 
     assert_eq!(
-        reserve_session_save(&root_a, first, &mut in_flight, &mut queued),
+        reserve_session_save(&root_a, first, &mut in_flight, &mut queued, &mut order),
         SessionSaveRequest::Spawn
     );
     assert_eq!(in_flight, Some(root_a.clone()));
     assert!(queued.is_empty());
 
     assert_eq!(
-        reserve_session_save(&root_a, second, &mut in_flight, &mut queued),
+        reserve_session_save(&root_a, second, &mut in_flight, &mut queued, &mut order),
         SessionSaveRequest::Queued
     );
     assert_eq!(
-        reserve_session_save(&root_a, third.clone(), &mut in_flight, &mut queued),
+        reserve_session_save(
+            &root_a,
+            third.clone(),
+            &mut in_flight,
+            &mut queued,
+            &mut order
+        ),
         SessionSaveRequest::Queued
     );
     assert_eq!(
-        reserve_session_save(&root_b, other.clone(), &mut in_flight, &mut queued),
+        reserve_session_save(
+            &root_b,
+            other.clone(),
+            &mut in_flight,
+            &mut queued,
+            &mut order
+        ),
         SessionSaveRequest::Queued
     );
     assert_eq!(queued.get(&root_a), Some(&third));
     assert_eq!(queued.get(&root_b), Some(&other));
+    assert_eq!(order, vec![root_a, root_b]);
 }
 
 #[test]
-fn session_save_completion_starts_next_queued_snapshot() {
+fn session_save_completion_rotates_to_longest_waiting_queued_root() {
     let root_a = PathBuf::from("workspace-a");
     let root_b = PathBuf::from("workspace-b");
-    let queued_a = session_for_test(&root_a, "queued-a.rs");
-    let queued_b = session_for_test(&root_b, "queued-b.rs");
     let mut in_flight = Some(root_a.clone());
-    let mut queued = HashMap::from([(root_a.clone(), queued_a.clone()), (root_b, queued_b)]);
+    let mut queued = HashMap::new();
+    queued.insert(root_a.clone(), session_for_test(&root_a, "queued-a.rs"));
+    queued.insert(root_b.clone(), session_for_test(&root_b, "queued-b.rs"));
+    let mut order = vec![root_a.clone(), root_b.clone()];
 
     assert_eq!(
-        finish_session_save(Path::new("stale-workspace"), &mut in_flight, &mut queued),
+        finish_session_save(
+            Path::new("stale-workspace"),
+            &mut in_flight,
+            &mut queued,
+            &mut order
+        ),
         None
     );
     assert_eq!(in_flight, Some(root_a.clone()));
 
-    assert_eq!(
-        finish_session_save(&root_a, &mut in_flight, &mut queued),
-        Some((root_a.clone(), queued_a))
-    );
+    let (first_dispatched, first_session) =
+        finish_session_save(&root_a, &mut in_flight, &mut queued, &mut order)
+            .expect("first dispatch");
+    assert_eq!(first_dispatched, root_b);
+    assert_eq!(first_session.workspace_root, root_b);
+    assert_eq!(in_flight, Some(root_b.clone()));
+    assert!(!queued.contains_key(&root_b));
+
+    let (second_dispatched, second_session) =
+        finish_session_save(&root_b, &mut in_flight, &mut queued, &mut order)
+            .expect("second dispatch");
+    assert_eq!(second_dispatched, root_a);
+    assert_eq!(second_session.workspace_root, root_a);
     assert_eq!(in_flight, Some(root_a.clone()));
-    assert!(!queued.contains_key(&root_a));
+    assert!(queued.is_empty());
+}
+
+#[test]
+fn session_save_completion_resumes_finished_roots_own_snapshot_when_queue_is_empty() {
+    let root_a = PathBuf::from("workspace-a");
+    let mut in_flight = Some(root_a.clone());
+    let mut queued = HashMap::from([(root_a.clone(), session_for_test(&root_a, "own.rs"))]);
+    let mut order = vec![root_a.clone()];
+
+    let (dispatched, resumed) =
+        finish_session_save(&root_a, &mut in_flight, &mut queued, &mut order)
+            .expect("own snapshot dispatch");
+
+    assert_eq!(dispatched, root_a);
+    assert_eq!(resumed.workspace_root, root_a);
+    assert_eq!(in_flight, Some(root_a));
 }
 
 #[test]

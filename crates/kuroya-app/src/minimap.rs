@@ -10,18 +10,24 @@ use kuroya_core::{
     MAX_EDITOR_MINIMAP_MAX_COLUMN, TextBuffer, minimap_section_header_lines,
 };
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 mod geometry;
 
 #[cfg(test)]
 pub(crate) use geometry::minimap_line_from_y;
-pub(crate) use geometry::{minimap_sample_line, minimap_target_line_from_y, minimap_viewport_rect};
+pub(crate) use geometry::{
+    minimap_content_fits_viewport, minimap_sample_line, minimap_target_line_from_y,
+    minimap_viewport_rect,
+};
 
 const MAX_MINIMAP_LINE_LENGTH_CACHES: usize = 8;
 const MAX_MINIMAP_SAMPLE_LINE_CACHES: usize = 8;
 const MAX_MINIMAP_SECTION_HEADER_CACHES: usize = 8;
 const MAX_MINIMAP_LINE_SAMPLES: usize = 4096;
 const MAX_MINIMAP_SECTION_HEADER_LABEL_CHARS: usize = 120;
+const MINIMAP_SECTION_HEADER_RESCAN_DEBOUNCE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Default)]
 pub(crate) struct MinimapLineLengthCache {
@@ -443,17 +449,30 @@ impl MinimapLineLengthCacheKey {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct MinimapSectionHeaderCache {
     entries: VecDeque<MinimapSectionHeaderCacheEntry>,
+    rescan_debounce: Duration,
     #[cfg(test)]
     hits: usize,
+}
+
+impl Default for MinimapSectionHeaderCache {
+    fn default() -> Self {
+        Self {
+            entries: VecDeque::new(),
+            rescan_debounce: MINIMAP_SECTION_HEADER_RESCAN_DEBOUNCE,
+            #[cfg(test)]
+            hits: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 struct MinimapSectionHeaderCacheEntry {
     key: MinimapSectionHeaderCacheKey,
-    headers: BTreeMap<usize, String>,
+    headers: Arc<BTreeMap<usize, String>>,
+    last_rescan: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -472,18 +491,18 @@ impl MinimapSectionHeaderCache {
         show_region_headers: bool,
         show_mark_headers: bool,
         mark_section_header_regex: &str,
-    ) -> BTreeMap<usize, String> {
+    ) -> Arc<BTreeMap<usize, String>> {
         let buffer_id = buffer.id();
         let buffer_version = buffer.version();
 
         if !show_region_headers && !show_mark_headers {
             self.clear_for_buffer(buffer_id);
-            return BTreeMap::new();
+            return minimap_empty_section_headers();
         }
 
         if !minimap_section_header_scan_allowed(buffer.len_lines(), buffer.len_bytes()) {
             self.clear_for_buffer(buffer_id);
-            return BTreeMap::new();
+            return minimap_empty_section_headers();
         }
 
         let mark_section_header_regex = if show_mark_headers {
@@ -508,23 +527,40 @@ impl MinimapSectionHeaderCache {
                     .entries
                     .get(index)
                     .map(|entry| entry.headers.clone())
-                    .unwrap_or_default();
+                    .unwrap_or_else(minimap_empty_section_headers);
             }
             let Some(entry) = self.entries.remove(index) else {
-                return BTreeMap::new();
+                return minimap_empty_section_headers();
             };
-            let headers = entry.headers.clone();
             self.entries.push_back(entry);
-            return headers;
+            return self
+                .entries
+                .back()
+                .map(|entry| entry.headers.clone())
+                .unwrap_or_else(minimap_empty_section_headers);
+        }
+
+        // The buffer changed since the last scan. Debounce the full-buffer
+        // rescan so typing does not rescan every keystroke: reuse the previous
+        // headers until the debounce window elapses since the last rescan.
+        let now = Instant::now();
+        if self.rescan_debounce > Duration::ZERO
+            && let Some(entry) = self
+                .entries
+                .iter_mut()
+                .find(|entry| entry.key.buffer_id == buffer_id)
+            && now.duration_since(entry.last_rescan) < self.rescan_debounce
+        {
+            return entry.headers.clone();
         }
 
         self.retain_current_buffer_version(buffer_id, buffer_version);
-        let headers = minimap_section_header_lines(
+        let headers = Arc::new(minimap_section_header_lines(
             buffer,
             show_region_headers,
             show_mark_headers,
             mark_section_header_regex,
-        );
+        ));
         let key = MinimapSectionHeaderCacheKey {
             buffer_id,
             buffer_version,
@@ -535,6 +571,7 @@ impl MinimapSectionHeaderCache {
         self.entries.push_back(MinimapSectionHeaderCacheEntry {
             key,
             headers: headers.clone(),
+            last_rescan: now,
         });
         while self.entries.len() > MAX_MINIMAP_SECTION_HEADER_CACHES {
             self.entries.pop_front();
@@ -581,6 +618,11 @@ impl MinimapSectionHeaderCache {
 
 fn minimap_section_header_scan_allowed(line_count: usize, byte_count: usize) -> bool {
     line_count <= LARGE_FILE_MODE_MAX_LINES && byte_count <= LARGE_FILE_MODE_MAX_BYTES
+}
+
+fn minimap_empty_section_headers() -> Arc<BTreeMap<usize, String>> {
+    static EMPTY: OnceLock<Arc<BTreeMap<usize, String>>> = OnceLock::new();
+    EMPTY.get_or_init(|| Arc::new(BTreeMap::new())).clone()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -638,6 +680,7 @@ pub(crate) fn render_minimap(
     show_slider: EditorMinimapShowSlider,
     scale: usize,
     render_characters: bool,
+    background_image_active: bool,
     section_headers: &BTreeMap<usize, String>,
     section_header_font_size: f32,
     section_header_letter_spacing: f32,
@@ -646,16 +689,26 @@ pub(crate) fn render_minimap(
     diagnostics_by_line: &HashMap<usize, DiagnosticSeverity>,
     find_match_lines: &HashSet<usize>,
     cursor_lines: &HashSet<usize>,
+    visible_line_indices: &[usize],
+    visible_row_count: usize,
 ) -> Option<usize> {
     let size = minimap_render_size(ui.available_width(), ui.available_height())?;
     let line_count = buffer.len_lines().max(1);
-    let visible_lines = minimap_visible_line_count(viewport_height, row_height, line_count);
-    let first_visible_line = minimap_first_visible_line(scroll_offset_y, row_height, line_count);
+    // The editor scrolls in fold-filtered row space, so the thumb and click
+    // mapping must use the same row count the ScrollArea renders, not the raw
+    // buffer line count.
+    let row_count = minimap_row_count(visible_line_indices, visible_row_count, line_count);
+    let visible_lines = minimap_visible_line_count(viewport_height, row_height, row_count);
+    let first_visible_row = minimap_first_visible_line(scroll_offset_y, row_height, row_count);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     let visuals = ui.visuals();
 
-    painter.rect_filled(rect, 0.0, minimap_background_color(visuals));
+    painter.rect_filled(
+        rect,
+        0.0,
+        minimap_background_color(visuals, background_image_active),
+    );
     let line_span = minimap_content_line_span(rect);
     let max_column = minimap_line_length_max_column(max_column, render_characters);
     let stroke_width = minimap_stroke_width(scale);
@@ -736,12 +789,14 @@ pub(crate) fn render_minimap(
         }
     }
 
-    let viewport_rect = minimap_viewport_rect(rect, first_visible_line, visible_lines, line_count);
-    if minimap_slider_visible(
-        show_slider,
-        response.hovered(),
-        response.dragged() || response.is_pointer_button_down_on(),
-    ) {
+    let viewport_rect = minimap_viewport_rect(rect, first_visible_row, visible_lines, row_count);
+    if !minimap_content_fits_viewport(visible_lines, row_count)
+        && minimap_slider_visible(
+            show_slider,
+            response.hovered(),
+            response.dragged() || response.is_pointer_button_down_on(),
+        )
+    {
         let slider_color = minimap_slider_color(
             visuals,
             response.hovered(),
@@ -753,19 +808,61 @@ pub(crate) fn render_minimap(
     if (response.clicked() || response.dragged())
         && let Some(pos) = response.interact_pointer_pos()
     {
-        return Some(minimap_target_line_from_y(
+        return Some(minimap_jump_line_from_y(
             pos.y,
             rect,
             line_count,
+            row_count,
             visible_lines,
+            visible_line_indices,
         ));
     }
 
     None
 }
 
-fn minimap_background_color(visuals: &egui::Visuals) -> Color32 {
-    visuals.code_bg_color
+fn minimap_row_count(
+    visible_line_indices: &[usize],
+    visible_row_count: usize,
+    line_count: usize,
+) -> usize {
+    let row_count = if visible_line_indices.is_empty() {
+        visible_row_count
+    } else {
+        visible_line_indices.len()
+    };
+    row_count.max(1).min(line_count.max(1))
+}
+
+fn minimap_jump_line_from_y(
+    y: f32,
+    rect: Rect,
+    line_count: usize,
+    row_count: usize,
+    visible_lines: usize,
+    visible_line_indices: &[usize],
+) -> usize {
+    let target_row = minimap_target_line_from_y(y, rect, row_count, visible_lines);
+    let line_idx = match visible_line_indices.get(target_row) {
+        Some(&line_idx) => line_idx,
+        None => visible_line_indices.last().copied().unwrap_or(target_row),
+    };
+    line_idx.min(line_count.saturating_sub(1))
+}
+
+fn minimap_background_color(visuals: &egui::Visuals, background_image_active: bool) -> Color32 {
+    minimap_background_fill(visuals.code_bg_color, background_image_active)
+}
+
+// The minimap base slab is opaque chrome over the editor background, so while
+// a background image is active it must go away entirely and let the image show
+// through, exactly like the editor rows and their overlays do.
+fn minimap_background_fill(bg_color: Color32, background_image_active: bool) -> Color32 {
+    if background_image_active {
+        Color32::TRANSPARENT
+    } else {
+        bg_color
+    }
 }
 
 fn minimap_cursor_line_color(visuals: &egui::Visuals) -> Color32 {

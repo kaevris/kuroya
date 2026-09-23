@@ -1,6 +1,6 @@
 use crate::path_display::sanitized_display_label_cow;
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, collections::VecDeque};
+use std::{borrow::Cow, collections::VecDeque, path::PathBuf};
 
 pub(crate) const MAX_PROJECT_SEARCH_RECENT_QUERIES: usize = 24;
 pub(crate) const MAX_PROJECT_SEARCH_QUERY_CHARS: usize = 1024;
@@ -24,9 +24,24 @@ pub struct ProjectSearchQuery {
     #[serde(default)]
     pub whole_word: bool,
     #[serde(default)]
+    pub regex: bool,
+    #[serde(default)]
     pub include: String,
     #[serde(default)]
     pub exclude: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectSearchKey {
+    pub(crate) root: PathBuf,
+    pub(crate) query: String,
+    pub(crate) case_sensitive: bool,
+    pub(crate) whole_word: bool,
+    pub(crate) regex: bool,
+    pub(crate) include_globs: Vec<String>,
+    pub(crate) exclude_globs: Vec<String>,
+    pub(crate) max_file_bytes: u64,
+    pub(crate) max_results: usize,
 }
 
 #[cfg(test)]
@@ -42,6 +57,7 @@ pub(crate) fn project_search_query_record(
         query,
         case_sensitive,
         whole_word,
+        regex: false,
         include: normalize_project_search_glob_draft(include),
         exclude: normalize_project_search_glob_draft(exclude),
     })
@@ -52,6 +68,7 @@ pub(crate) fn record_recent_project_search_from_parsed_globs(
     query: &str,
     case_sensitive: bool,
     whole_word: bool,
+    regex: bool,
     include_globs: &[String],
     exclude_globs: &[String],
     max_entries: usize,
@@ -68,6 +85,7 @@ pub(crate) fn record_recent_project_search_from_parsed_globs(
         query,
         case_sensitive,
         whole_word,
+        regex,
         include: project_search_glob_draft_from_parts(include_globs),
         exclude: project_search_glob_draft_from_parts(exclude_globs),
     };
@@ -139,6 +157,7 @@ pub(crate) fn project_search_recent_label(entry: &ProjectSearchQuery) -> String 
     let query_label = compact_recent_project_search_query_label_cow(&entry.query);
     if !entry.case_sensitive
         && !entry.whole_word
+        && !entry.regex
         && entry.include.is_empty()
         && entry.exclude.is_empty()
     {
@@ -154,6 +173,9 @@ pub(crate) fn project_search_recent_label(entry: &ProjectSearchQuery) -> String 
     }
     if entry.whole_word {
         push_project_search_recent_suffix(&mut label, &mut needs_separator, "word");
+    }
+    if entry.regex {
+        push_project_search_recent_suffix(&mut label, &mut needs_separator, "regex");
     }
     if !entry.include.is_empty() {
         push_project_search_recent_suffix(&mut label, &mut needs_separator, "include");
@@ -209,6 +231,7 @@ fn normalized_project_search_query(entry: ProjectSearchQuery) -> Option<ProjectS
         query,
         case_sensitive: entry.case_sensitive,
         whole_word: entry.whole_word,
+        regex: entry.regex,
         include: normalize_project_search_glob_draft(&entry.include),
         exclude: normalize_project_search_glob_draft(&entry.exclude),
     })
@@ -282,18 +305,45 @@ pub(crate) fn project_search_result_is_current(
     result_whole_word: bool,
     result_include_globs: &[String],
     result_exclude_globs: &[String],
+    result_max_file_bytes: u64,
+    result_max_results: usize,
     current_query: &str,
     current_case_sensitive: bool,
     current_whole_word: bool,
     current_include_globs: &[String],
     current_exclude_globs: &[String],
+    current_max_file_bytes: u64,
+    current_max_results: usize,
 ) -> bool {
-    result_index_generation == current_index_generation
-        && project_search_query_matches_current(result_query, current_query)
-        && result_case_sensitive == current_case_sensitive
-        && result_whole_word == current_whole_word
-        && result_include_globs == current_include_globs
-        && result_exclude_globs == current_exclude_globs
+    if result_index_generation != current_index_generation {
+        return false;
+    }
+    let Some(current_query) = normalize_project_search_request_query_cow(current_query) else {
+        return false;
+    };
+    // Search UI events do not carry the regex flag, so this comparison stays
+    // regex-neutral; regex toggles invalidate results through request ids.
+    ProjectSearchKey {
+        root: PathBuf::new(),
+        query: result_query.to_owned(),
+        case_sensitive: result_case_sensitive,
+        whole_word: result_whole_word,
+        regex: false,
+        include_globs: result_include_globs.to_vec(),
+        exclude_globs: result_exclude_globs.to_vec(),
+        max_file_bytes: result_max_file_bytes,
+        max_results: result_max_results,
+    } == ProjectSearchKey {
+        root: PathBuf::new(),
+        query: current_query.into_owned(),
+        case_sensitive: current_case_sensitive,
+        whole_word: current_whole_word,
+        regex: false,
+        include_globs: current_include_globs.to_vec(),
+        exclude_globs: current_exclude_globs.to_vec(),
+        max_file_bytes: current_max_file_bytes,
+        max_results: current_max_results,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -307,11 +357,15 @@ pub(crate) fn project_search_request_is_current(
     result_whole_word: bool,
     result_include_globs: &[String],
     result_exclude_globs: &[String],
+    result_max_file_bytes: u64,
+    result_max_results: usize,
     current_query: &str,
     current_case_sensitive: bool,
     current_whole_word: bool,
     current_include_globs: &[String],
     current_exclude_globs: &[String],
+    current_max_file_bytes: u64,
+    current_max_results: usize,
 ) -> bool {
     request_id != 0
         && request_id == active_request_id
@@ -323,11 +377,15 @@ pub(crate) fn project_search_request_is_current(
             result_whole_word,
             result_include_globs,
             result_exclude_globs,
+            result_max_file_bytes,
+            result_max_results,
             current_query,
             current_case_sensitive,
             current_whole_word,
             current_include_globs,
             current_exclude_globs,
+            current_max_file_bytes,
+            current_max_results,
         )
 }
 
@@ -339,6 +397,7 @@ pub(crate) fn normalize_project_search_request_query(query: &str) -> Option<Stri
     normalize_project_search_request_query_cow(query).map(Cow::into_owned)
 }
 
+#[cfg(test)]
 pub(crate) fn project_search_query_matches_current(
     result_query: &str,
     current_query: &str,
@@ -356,6 +415,7 @@ pub(crate) fn parse_project_globs(input: &str) -> Vec<String> {
     globs
 }
 
+#[cfg(test)]
 pub(crate) fn project_search_globs_match_current(expected: &[String], input: &str) -> bool {
     let mut expected_index = 0usize;
     let mut matches_expected = true;
@@ -731,6 +791,7 @@ mod tests {
             ),
             case_sensitive: true,
             whole_word: true,
+            regex: true,
             include: "src/**\n\u{202e}".to_owned(),
             exclude: "target/**\u{202e}".to_owned(),
         });
@@ -738,6 +799,7 @@ mod tests {
         assert!(!label.contains('\n'));
         assert!(!label.contains('\u{202e}'));
         assert!(label.contains("..."));
+        assert!(label.contains("regex"));
         assert!(label.chars().count() <= MAX_PROJECT_SEARCH_RECENT_LABEL_CHARS);
     }
 
@@ -747,6 +809,7 @@ mod tests {
             query: "needle \u{03bb}".to_owned(),
             case_sensitive: false,
             whole_word: false,
+            regex: false,
             include: String::new(),
             exclude: String::new(),
         });
@@ -755,11 +818,26 @@ mod tests {
     }
 
     #[test]
+    fn project_search_recent_label_marks_regex_only_entries() {
+        let label = project_search_recent_label(&ProjectSearchQuery {
+            query: "needle".to_owned(),
+            case_sensitive: false,
+            whole_word: false,
+            regex: true,
+            include: String::new(),
+            exclude: String::new(),
+        });
+
+        assert_eq!(label, "needle (regex)");
+    }
+
+    #[test]
     fn project_search_recent_label_bounds_raw_history_query_before_display() {
         let label = project_search_recent_label(&ProjectSearchQuery {
             query: "needle".repeat(20_000),
             case_sensitive: true,
             whole_word: true,
+            regex: false,
             include: "src/**".to_owned(),
             exclude: "target/**".to_owned(),
         });
@@ -811,11 +889,15 @@ mod tests {
             false,
             &[],
             &[],
+            1024,
+            100,
             "needle",
             false,
             false,
             &[],
             &[],
+            1024,
+            100,
         ));
     }
 
@@ -908,6 +990,7 @@ mod tests {
             "needle",
             false,
             false,
+            false,
             &include,
             &exclude,
             MAX_PROJECT_SEARCH_RECENT_QUERIES,
@@ -933,6 +1016,7 @@ mod tests {
             )),
             case_sensitive: false,
             whole_word: false,
+            regex: false,
             include: String::new(),
             exclude: String::new(),
         };
@@ -944,6 +1028,7 @@ mod tests {
             query: "needle".to_owned(),
             case_sensitive: false,
             whole_word: false,
+            regex: false,
             include: String::new(),
             exclude: String::new(),
         });

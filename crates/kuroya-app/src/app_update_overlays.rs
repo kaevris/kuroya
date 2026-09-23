@@ -1,8 +1,51 @@
 use crate::KuroyaApp;
-use eframe::egui::Context;
+use eframe::egui::{Context, PointerButton, Pos2, Rect};
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PopupDismissalGuard {
+    child_popup_was_open: bool,
+}
+
+impl PopupDismissalGuard {
+    pub(crate) fn capture(ctx: &Context) -> Self {
+        Self {
+            child_popup_was_open: eframe::egui::Popup::is_any_open(ctx),
+        }
+    }
+
+    pub(crate) fn clicked_outside(self, ctx: &Context, window_rect: Rect) -> bool {
+        let (primary_clicked, pointer_position) = ctx.input(|input| {
+            (
+                input.pointer.button_clicked(PointerButton::Primary),
+                input.pointer.interact_pos(),
+            )
+        });
+        primary_click_is_outside_window(
+            self.child_popup_was_open,
+            primary_clicked,
+            pointer_position,
+            window_rect,
+        )
+    }
+}
+
+fn primary_click_is_outside_window(
+    child_popup_was_open: bool,
+    primary_clicked: bool,
+    pointer_position: Option<Pos2>,
+    window_rect: Rect,
+) -> bool {
+    !child_popup_was_open
+        && primary_clicked
+        && pointer_position.is_some_and(|position| !window_rect.contains(position))
+}
 
 impl KuroyaApp {
     pub(crate) fn render_active_overlays(&mut self, ctx: &Context) {
+        self.render_status_toasts(ctx);
+        if self.project_search {
+            self.render_project_search_overlay(ctx);
+        }
         if self.quick_open {
             self.render_quick_open(ctx);
         }
@@ -14,6 +57,9 @@ impl KuroyaApp {
         }
         if self.workspace_symbols_open {
             self.render_workspace_symbols(ctx);
+        }
+        if self.local_history_browser_open {
+            self.render_local_history_browser(ctx);
         }
         if self.workspace_tasks_open {
             self.render_workspace_tasks_panel(ctx);
@@ -77,6 +123,7 @@ impl KuroyaApp {
         }
         if self.gpu_acceleration_prompt.is_some() {
             self.render_gpu_acceleration_prompt(ctx);
+            self.render_lsp_enable_prompt(ctx);
         }
         if self.available_update.is_some() {
             self.render_update_prompt(ctx);
@@ -95,6 +142,9 @@ impl KuroyaApp {
         }
         if self.pending_workspace_switch.is_some() {
             self.render_workspace_switch_guard(ctx);
+        }
+        if self.pending_workspace_trust_prompt.is_some() {
+            self.render_workspace_trust_prompt_guard(ctx);
         }
         if self.pending_exit.is_some() {
             self.render_exit_guard(ctx);
@@ -129,5 +179,36 @@ impl KuroyaApp {
         if self.pending_source_control_stash_save.is_some() {
             self.render_source_control_stash_save_prompt(ctx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::primary_click_is_outside_window;
+    use eframe::egui::{Rect, pos2};
+
+    #[test]
+    fn popup_dismissal_requires_primary_click_outside_without_child_popup() {
+        let window = Rect::from_min_max(pos2(10.0, 10.0), pos2(30.0, 30.0));
+
+        assert!(primary_click_is_outside_window(
+            false,
+            true,
+            Some(pos2(40.0, 20.0)),
+            window
+        ));
+        assert!(!primary_click_is_outside_window(
+            false,
+            true,
+            Some(pos2(20.0, 20.0)),
+            window
+        ));
+        assert!(!primary_click_is_outside_window(
+            true,
+            true,
+            Some(pos2(40.0, 20.0)),
+            window
+        ));
+        assert!(!primary_click_is_outside_window(false, false, None, window));
     }
 }

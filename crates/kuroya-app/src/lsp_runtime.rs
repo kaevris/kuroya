@@ -1,7 +1,7 @@
 use crate::{
     KuroyaApp,
     lsp_client::{LspClientHandle, can_use_server_for_path},
-    lsp_lifecycle::{background_language_block_reason, lsp_server_config_for_buffer},
+    lsp_lifecycle::{background_language_block_reason, lsp_server_configs_for_buffer},
     lsp_text_positions::buffer_position_to_lsp_utf16_column,
     path_display::{display_error_label_cow, display_path_label_cow, sanitized_display_label_cow},
 };
@@ -11,16 +11,18 @@ use kuroya_core::{
 };
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 mod document_sync;
+mod watched_files;
 
 pub(crate) const LSP_MAX_RESTART_ATTEMPTS: u8 = 3;
 pub(crate) const LSP_RESTART_BASE_DELAY: Duration = Duration::from_millis(250);
 pub(crate) const LSP_SYMBOL_REFRESH_DEBOUNCE: Duration = Duration::from_millis(240);
+pub(crate) const PENDING_LSP_RESYNC_LIMIT: usize = 256;
 pub(crate) const LSP_LANGUAGE_LABEL_MAX_CHARS: usize = 64;
 pub(crate) const LSP_STATUS_MESSAGE_MAX_CHARS: usize = 160;
 const LSP_METHOD_LABEL_MAX_CHARS: usize = 96;
@@ -30,6 +32,25 @@ pub(crate) fn lsp_command_queue_failed_status(method: &str) -> String {
         "Could not queue LSP request: {}",
         lsp_method_display_label_cow(method)
     )
+}
+
+/// Records a resync request in insertion order. Re-queueing an existing path
+/// moves it to the back (it is the newest request); once the limit is
+/// reached the OLDEST entry (front) is evicted.
+pub(crate) fn record_pending_lsp_resync_path(
+    pending: &mut VecDeque<PathBuf>,
+    path: PathBuf,
+) -> bool {
+    if let Some(existing) = pending.iter().position(|existing| *existing == path) {
+        pending.remove(existing);
+        pending.push_back(path);
+        return false;
+    }
+    while pending.len() >= PENDING_LSP_RESYNC_LIMIT {
+        pending.pop_front();
+    }
+    pending.push_back(path);
+    true
 }
 
 pub(crate) fn lsp_buffer_synced_status(path: &Path, version: u64) -> String {
@@ -69,6 +90,27 @@ pub(crate) fn lsp_stopped_status_message(language: &str) -> String {
     let language = lsp_language_display_label_cow(language);
     let message = format!("{language} LSP stopped");
     lsp_status_display_message_cow(&message).into_owned()
+}
+
+/// Stopped status carrying an optional machine-derived detail (exit code,
+/// captured stderr tail). The detail is sanitized and bounded like every
+/// other status fragment so hostile servers cannot inject control or bidi
+/// formatting characters.
+pub(crate) fn lsp_stopped_status_message_with_detail(
+    language: &str,
+    detail: Option<&str>,
+) -> String {
+    match detail.map(str::trim).filter(|detail| !detail.is_empty()) {
+        Some(detail) => {
+            let detail = display_error_label_cow(detail);
+            let message = format!(
+                "{} LSP stopped ({detail})",
+                lsp_language_display_label_cow(language)
+            );
+            lsp_status_display_message_cow(&message).into_owned()
+        }
+        None => lsp_stopped_status_message(language),
+    }
 }
 
 pub(crate) fn lsp_server_ready_status(language: &str) -> String {
@@ -139,15 +181,116 @@ pub(crate) fn lsp_server_config_for_language(
     core_server_config_for_language(configs, language)
 }
 
+/// Stable registry key for a resolved server config. When a language has
+/// exactly one configured server the key is the language id itself (all
+/// restart/unavailable state keeps today's shape); when several servers
+/// serve one language the command and args are appended (NUL-separated) so
+/// every config gets its own client, restart ladder, and unavailable flag.
+pub(crate) fn lsp_client_key(config: &LspServerConfig, configs: &[LspServerConfig]) -> String {
+    let shared_language = configs
+        .iter()
+        .filter(|existing| existing.language == config.language)
+        .count()
+        > 1;
+    if shared_language {
+        format!(
+            "{}\u{0}{}\u{0}{:?}",
+            config.language, config.command, config.args
+        )
+    } else {
+        config.language.clone()
+    }
+}
+
+/// The language id portion of a client key (plain language keys pass through).
+pub(crate) fn lsp_client_key_language(client_key: &str) -> &str {
+    client_key.split('\u{0}').next().unwrap_or(client_key)
+}
+
+/// Stable bucket key for the diagnostics published by one server instance.
+/// The client generation is globally unique per spawned client, so it alone
+/// pins the instance (the language keeps the key readable); stored
+/// diagnostics can therefore be replaced or purged per server without
+/// touching co-attached servers or later restart generations.
+pub(crate) fn lsp_diagnostics_source_key(language: &str, generation: u64) -> String {
+    format!("{language}\u{0}{generation}")
+}
+
+/// The command portion of a client key; empty for plain language keys.
+pub(crate) fn lsp_client_key_command(client_key: &str) -> &str {
+    client_key.split('\u{0}').nth(1).unwrap_or_default()
+}
+
+/// Finds the configured server a client key was derived from. Keys without a
+/// command segment (plain language keys, e.g. from long-lived restart state)
+/// fall back to the first config for that language.
+pub(crate) fn lsp_config_for_client_key<'a>(
+    client_key: &str,
+    configs: &'a [LspServerConfig],
+) -> Option<&'a LspServerConfig> {
+    if let Some(config) = configs
+        .iter()
+        .find(|config| lsp_client_key(config, configs) == client_key)
+    {
+        return Some(config);
+    }
+    if lsp_client_key_command(client_key).is_empty() {
+        return configs
+            .iter()
+            .find(|config| config.language == lsp_client_key_language(client_key));
+    }
+    None
+}
+
+/// Display label for status messages naming a client. When multiple servers
+/// are configured for the language, the command is appended so the two
+/// ladders can be told apart ("rust (rust-analyzer) LSP stopped"); otherwise
+/// the label is exactly today's language label.
+pub(crate) fn lsp_client_display_label(client_key: &str, configs: &[LspServerConfig]) -> String {
+    let language = lsp_client_key_language(client_key);
+    let command = lsp_client_key_command(client_key);
+    let shared_language = configs
+        .iter()
+        .filter(|config| config.language == language)
+        .count()
+        > 1;
+    let label = if shared_language && !command.is_empty() {
+        format!("{language} ({command})")
+    } else {
+        language.to_owned()
+    };
+    lsp_language_display_label_cow(&label).into_owned()
+}
+
 impl KuroyaApp {
+    /// Resolves the PRIMARY LSP client for a buffer: the first live (or
+    /// spawnable) client among the servers matching the buffer, in settings
+    /// order. Every interactive request (hover, completion, definition,
+    /// formatting, ...) intentionally uses only this primary client so UI
+    /// features never merge results across servers; document-sync
+    /// notifications fan out to every client instead (see
+    /// [`KuroyaApp::ensure_lsp_clients_for_buffer`]).
     pub(crate) fn ensure_lsp_for_buffer(&mut self, id: BufferId) -> Option<LspClientHandle> {
+        self.ensure_lsp_clients_for_buffer(id).into_iter().next()
+    }
+
+    /// Ensures every configured server matching this buffer has a client and
+    /// returns the handles in settings order (primary first). Each config gets
+    /// its own client keyed by [`lsp_client_key`]; configs whose client is
+    /// unavailable, dead, or not eligible for the buffer path are skipped so
+    /// one broken server never blocks the others.
+    ///
+    /// Spawning a client while its restart ladder is pending supersedes that
+    /// ladder: the spawn clears the pending restart and replays the ladder's
+    /// didOpen pass for every open buffer the client serves, so the fresh
+    /// server process learns about all of them (see the spawn site below).
+    pub(crate) fn ensure_lsp_clients_for_buffer(&mut self, id: BufferId) -> Vec<LspClientHandle> {
         if !self.workspace_trusted {
-            return None;
+            return Vec::new();
         }
 
         let lsp_configs = lsp_server_configs_for_settings(&self.settings);
-        let config = {
-            let buffer = self.buffer(id)?;
+        let Some((path, matched_configs)) = self.buffer(id).and_then(|buffer| {
             if background_language_block_reason(
                 id,
                 buffer,
@@ -158,30 +301,84 @@ impl KuroyaApp {
             {
                 return None;
             }
-            let (config, _) =
-                lsp_server_config_for_buffer(&lsp_configs, &self.plugin_languages, buffer)?;
-            if self.lsp_unavailable.contains(config.language.as_str()) {
-                return None;
-            }
-            if let Some(client) = self.lsp_clients.get(config.language.as_str()) {
-                return Some(client.clone());
-            }
-            if !can_use_server_for_path(config, &self.workspace.root, buffer.path()?) {
-                return None;
-            }
-            config.clone()
+            let path = buffer.path()?.clone();
+            let matched_configs =
+                lsp_server_configs_for_buffer(&lsp_configs, &self.plugin_languages, buffer)
+                    .into_iter()
+                    .map(|(config, _)| config.clone())
+                    .collect::<Vec<_>>();
+            Some((path, matched_configs))
+        }) else {
+            return Vec::new();
         };
 
-        let key = config.language.clone();
-        let handle = LspClientHandle::spawn_on(
-            &self.runtime,
-            config,
-            self.workspace.root.clone(),
-            self.tx.clone(),
-        );
-        clear_pending_lsp_restart_for_started_client(&mut self.pending_lsp_restarts, &key);
-        self.lsp_clients.insert(key, handle.clone());
-        Some(handle)
+        let mut handles = Vec::with_capacity(matched_configs.len());
+        for config in matched_configs {
+            let key = lsp_client_key(&config, &lsp_configs);
+            if self.lsp_unavailable.contains(&key) {
+                continue;
+            }
+            if let Some(client) = self.lsp_clients.get(&key) {
+                handles.push(client.clone());
+                continue;
+            }
+            if !can_use_server_for_path(&config, &self.workspace.root, &path) {
+                continue;
+            }
+            let handle = LspClientHandle::spawn_on(
+                &self.runtime,
+                config,
+                self.workspace.root.clone(),
+                self.tx.clone(),
+            );
+            let superseded_restart =
+                clear_pending_lsp_restart_for_started_client(&mut self.pending_lsp_restarts, &key);
+            self.lsp_clients.insert(key.clone(), handle.clone());
+            if superseded_restart {
+                // This client replaces one that died under a scheduled
+                // restart, so the restart ladder's reopen pass runs here
+                // instead: a fresh server process starts with no document
+                // state and needs didOpen for every open buffer it serves,
+                // not just the buffer that triggered the spawn. Without the
+                // replay, the keystroke that spawned the client sends only
+                // didChange, which servers ignore until didOpen re-opens
+                // the document (every buffer of the language stays
+                // feature-dead until closed and reopened).
+                self.reopen_lsp_buffers_for_client_keys(
+                    std::iter::once(key.as_str()),
+                    &lsp_configs,
+                );
+            }
+            handles.push(handle);
+        }
+        handles
+    }
+
+    /// The live clients previously spawned for a language (any client key
+    /// sharing that language), used to fan out document notifications.
+    pub(crate) fn live_lsp_clients_for_language(&self, language: &str) -> Vec<LspClientHandle> {
+        self.lsp_clients
+            .iter()
+            .filter(|(client_key, _)| lsp_client_key_language(client_key) == language)
+            .map(|(_, handle)| handle.clone())
+            .collect()
+    }
+
+    /// Locates the live client (and its registry key) a lifecycle event
+    /// belongs to. Events carry the client generation, which uniquely
+    /// identifies it; the client key is recovered from the registry so the
+    /// restart ladder stays per client.
+    pub(crate) fn lsp_client_entry_for_event(
+        &self,
+        language: &str,
+        generation: u64,
+    ) -> Option<(String, LspClientHandle)> {
+        self.lsp_clients
+            .iter()
+            .find(|(client_key, handle)| {
+                lsp_client_key_language(client_key) == language && handle.generation() == generation
+            })
+            .map(|(client_key, handle)| (client_key.clone(), handle.clone()))
     }
 
     pub(crate) fn active_lsp_position(&self) -> Option<(BufferId, PathBuf, u64, usize, usize)> {
@@ -222,25 +419,28 @@ impl KuroyaApp {
     }
 
     pub(crate) fn flush_pending_lsp_restarts(&mut self) -> usize {
-        let languages =
+        let client_keys =
             take_due_lsp_restart_languages(&mut self.pending_lsp_restarts, Instant::now());
         let mut restarted = 0usize;
-        for language in languages {
-            let client_active = self.lsp_clients.contains_key(&language);
-            let unavailable = self.lsp_unavailable.contains(&language);
+        for client_key in client_keys {
+            let client_active = self.lsp_clients.contains_key(&client_key);
+            let unavailable = self.lsp_unavailable.contains(&client_key);
             if !pending_lsp_restart_should_run(self.workspace_trusted, client_active, unavailable) {
                 if unavailable || !self.workspace_trusted {
-                    self.lsp_restart_attempts.remove(&language);
+                    self.lsp_restart_attempts.remove(&client_key);
                 }
                 if !self.workspace_trusted {
-                    self.status = lsp_restart_skipped_restricted_status(&language);
+                    let lsp_configs = lsp_server_configs_for_settings(&self.settings);
+                    let label = lsp_client_display_label(&client_key, &lsp_configs);
+                    self.status = lsp_restart_skipped_restricted_status(&label);
                 }
                 continue;
             }
 
             let lsp_configs = lsp_server_configs_for_settings(&self.settings);
+            let label = lsp_client_display_label(&client_key, &lsp_configs);
             let restart_targets = lsp_restart_buffer_ids(
-                &language,
+                &client_key,
                 &self.buffers,
                 &lsp_configs,
                 &self.plugin_languages,
@@ -249,8 +449,8 @@ impl KuroyaApp {
                 &self.binary_preview_buffers,
             );
             if restart_targets.is_empty() {
-                self.lsp_restart_attempts.remove(&language);
-                self.status = lsp_restart_skipped_no_buffers_status(&language);
+                self.lsp_restart_attempts.remove(&client_key);
+                self.status = lsp_restart_skipped_no_buffers_status(&label);
                 continue;
             }
 
@@ -258,7 +458,7 @@ impl KuroyaApp {
                 self.notify_lsp_open(*id);
             }
             restarted = restarted.saturating_add(1);
-            self.status = lsp_restart_requested_status(&language, restart_targets.len());
+            self.status = lsp_restart_requested_status(&label, restart_targets.len());
         }
         restarted
     }
@@ -279,10 +479,10 @@ impl KuroyaApp {
 
         let unavailable = std::mem::take(&mut self.lsp_unavailable);
         self.lsp_restart_attempts
-            .retain(|language, _| !unavailable.contains(language));
+            .retain(|client_key, _| !unavailable.contains(client_key));
         self.pending_lsp_restarts
-            .retain(|language, _| !unavailable.contains(language));
-        self.reopen_lsp_buffers_for_languages(
+            .retain(|client_key, _| !unavailable.contains(client_key));
+        self.reopen_lsp_buffers_for_client_keys(
             unavailable.iter().map(String::as_str),
             &current_configs,
         )
@@ -298,21 +498,22 @@ impl KuroyaApp {
         self.lsp_unavailable.clear();
         self.lsp_restart_attempts.clear();
         self.pending_lsp_restarts.clear();
-        self.reopen_lsp_buffers_for_languages(
-            configs.iter().map(|config| config.language.as_str()),
-            configs,
-        )
+        let client_keys = configs
+            .iter()
+            .map(|config| lsp_client_key(config, configs))
+            .collect::<Vec<_>>();
+        self.reopen_lsp_buffers_for_client_keys(client_keys.iter().map(String::as_str), configs)
     }
 
-    fn reopen_lsp_buffers_for_languages<'a>(
+    fn reopen_lsp_buffers_for_client_keys<'a>(
         &mut self,
-        languages: impl IntoIterator<Item = &'a str>,
+        client_keys: impl IntoIterator<Item = &'a str>,
         configs: &[LspServerConfig],
     ) -> usize {
         let mut buffer_ids = Vec::new();
-        for language in languages {
+        for client_key in client_keys {
             buffer_ids.extend(lsp_restart_buffer_ids(
-                language,
+                client_key,
                 &self.buffers,
                 configs,
                 &self.plugin_languages,
@@ -364,8 +565,12 @@ pub(crate) fn lsp_restart_decision(
     }
 }
 
+/// Buffers eligible for a restart of the server identified by `client_key`:
+/// buffers whose resolved server set contains that key's config and whose
+/// path the server accepts. Plain language keys (legacy restart state)
+/// restart any server for the language.
 pub(crate) fn lsp_restart_buffer_ids(
-    language: &str,
+    client_key: &str,
     buffers: &[TextBuffer],
     configs: &[LspServerConfig],
     plugin_languages: &PluginLanguageRegistry,
@@ -373,6 +578,8 @@ pub(crate) fn lsp_restart_buffer_ids(
     lossy_buffers: &HashSet<BufferId>,
     binary_buffers: &HashSet<BufferId>,
 ) -> Vec<BufferId> {
+    let key_config = lsp_config_for_client_key(client_key, configs);
+    let key_language = lsp_client_key_language(client_key);
     buffers
         .iter()
         .filter_map(|buffer| {
@@ -382,10 +589,17 @@ pub(crate) fn lsp_restart_buffer_ids(
                 return None;
             }
 
-            let (config, _) = lsp_server_config_for_buffer(configs, plugin_languages, buffer)?;
-            if config.language != language {
-                return None;
-            }
+            let matched = lsp_server_configs_for_buffer(configs, plugin_languages, buffer);
+            let config = match key_config {
+                Some(key_config) if matched.iter().any(|(config, _)| *config == key_config) => {
+                    key_config
+                }
+                Some(_) => return None,
+                None => matched
+                    .iter()
+                    .find(|(config, _)| config.language == key_language)
+                    .map(|(config, _)| *config)?,
+            };
 
             let path = buffer.path()?;
             can_use_server_for_path(config, root, path).then_some(id)
@@ -471,21 +685,24 @@ pub(crate) fn take_due_lsp_symbol_refresh_ids(
 mod tests {
     use super::{
         LSP_LANGUAGE_LABEL_MAX_CHARS, LSP_METHOD_LABEL_MAX_CHARS, LSP_STATUS_MESSAGE_MAX_CHARS,
-        buffer_position_to_lsp_utf16_column, due_lsp_restart_languages,
-        lsp_command_queue_failed_status, lsp_language_display_label,
+        PENDING_LSP_RESYNC_LIMIT, buffer_position_to_lsp_utf16_column, due_lsp_restart_languages,
+        lsp_client_display_label, lsp_client_key, lsp_client_key_command, lsp_client_key_language,
+        lsp_command_queue_failed_status, lsp_config_for_client_key, lsp_language_display_label,
         lsp_language_display_label_cow, lsp_method_display_label_cow,
         lsp_read_error_status_message, lsp_restart_requested_status,
         lsp_restart_skipped_no_buffers_status, lsp_restart_skipped_restricted_status,
         lsp_server_config_for_language, lsp_status_display_message, lsp_status_display_message_cow,
         lsp_stopped_disabled_status, lsp_stopped_no_buffers_status,
         lsp_stopped_restart_scheduled_status, lsp_stopped_status_message,
+        lsp_stopped_status_message_with_detail, record_pending_lsp_resync_path,
         take_due_lsp_restart_languages, take_due_lsp_symbol_refresh_ids,
     };
     use crate::path_display::sanitized_display_label;
     use kuroya_core::{EditorSettings, LanguageId, LspServerConfig, TextBuffer};
     use std::{
         borrow::Cow,
-        collections::{HashMap, HashSet},
+        collections::{HashMap, HashSet, VecDeque},
+        path::PathBuf,
         time::{Duration, Instant},
     };
 
@@ -674,6 +891,29 @@ mod tests {
     }
 
     #[test]
+    fn stopped_status_with_detail_sanitizes_and_bounds_the_detail() {
+        let language = format!(
+            "rust\n{}\u{202e}",
+            "language-fragment-".repeat(LSP_LANGUAGE_LABEL_MAX_CHARS)
+        );
+        let dirty_detail = format!(
+            "exit code 1\nsecond line \u{2066}{}",
+            "detail-fragment-".repeat(40)
+        );
+
+        let with_detail = lsp_stopped_status_message_with_detail(&language, Some(&dirty_detail));
+        let blank_detail = lsp_stopped_status_message_with_detail(&language, Some("  \n "));
+        let no_detail = lsp_stopped_status_message_with_detail(&language, None);
+
+        assert!(with_detail.contains("LSP stopped ("), "{with_detail}");
+        assert_display_safe(&with_detail);
+        assert!(with_detail.chars().count() <= LSP_STATUS_MESSAGE_MAX_CHARS);
+        assert_eq!(blank_detail, no_detail);
+        assert!(no_detail.ends_with("LSP stopped"));
+        assert_display_safe(&no_detail);
+    }
+
+    #[test]
     fn due_lsp_restart_languages_preserves_raw_restart_keys() {
         let now = Instant::now();
         let raw_language = "rust\n\u{202e}".to_owned();
@@ -711,6 +951,7 @@ mod tests {
             args: Vec::new(),
             extensions: Vec::new(),
             root_markers: vec!["go.mod".to_owned()],
+            enabled: true,
         });
         let configs = settings.lsp_server_configs();
         let rust = lsp_server_config_for_language(&configs, LanguageId::Rust).expect("rust config");
@@ -720,6 +961,85 @@ mod tests {
         assert_eq!(go.command, "gopls");
         assert!(lsp_server_config_for_language(&configs, LanguageId::PlainText).is_none());
         assert!(lsp_server_config_for_language(&configs, LanguageId::Diff).is_none());
+    }
+
+    #[test]
+    fn lsp_client_keys_stay_plain_for_single_server_and_disambiguate_multiples() {
+        let mut configs = EditorSettings::default().lsp_server_configs();
+        let rust = configs
+            .iter()
+            .find(|config| config.language == "rust")
+            .expect("default rust config")
+            .clone();
+
+        // Single server per language keeps today's plain language key.
+        assert_eq!(lsp_client_key(&rust, &configs), "rust");
+        assert_eq!(lsp_client_key_language("rust"), "rust");
+        assert_eq!(lsp_client_key_command("rust"), "");
+
+        configs.push(LspServerConfig {
+            language: "rust".to_owned(),
+            command: "rust-analyzer-obsidian".to_owned(),
+            args: vec!["--stdio".to_owned()],
+            extensions: Vec::new(),
+            root_markers: Vec::new(),
+            enabled: true,
+        });
+        let primary_key = lsp_client_key(&rust, &configs);
+        let secondary_key = lsp_client_key(configs.last().expect("appended config"), &configs);
+
+        assert_eq!(primary_key, "rust\u{0}rust-analyzer\u{0}[]");
+        assert_eq!(
+            secondary_key,
+            "rust\u{0}rust-analyzer-obsidian\u{0}[\"--stdio\"]"
+        );
+        assert_eq!(lsp_client_key_language(&primary_key), "rust");
+        assert_eq!(lsp_client_key_command(&primary_key), "rust-analyzer");
+
+        // Config lookup round-trips, and plain language keys fall back to the
+        // first config for the language.
+        assert_eq!(
+            lsp_config_for_client_key(&secondary_key, &configs)
+                .map(|config| config.command.as_str()),
+            Some("rust-analyzer-obsidian")
+        );
+        assert_eq!(
+            lsp_config_for_client_key("rust", &configs).map(|config| config.command.as_str()),
+            Some("rust-analyzer")
+        );
+    }
+
+    #[test]
+    fn lsp_client_display_labels_append_command_only_for_shared_languages() {
+        let mut configs = EditorSettings::default().lsp_server_configs();
+        let rust = configs
+            .iter()
+            .find(|config| config.language == "rust")
+            .expect("default rust config")
+            .clone();
+
+        assert_eq!(lsp_client_display_label("rust", &configs), "rust");
+        assert_eq!(
+            lsp_client_display_label("rust LSP ready", &configs),
+            "rust LSP ready"
+        );
+
+        configs.push(LspServerConfig {
+            language: "rust".to_owned(),
+            command: "rust-analyzer-obsidian".to_owned(),
+            args: Vec::new(),
+            extensions: Vec::new(),
+            root_markers: Vec::new(),
+            enabled: true,
+        });
+        let key = lsp_client_key(&rust, &configs);
+
+        assert_eq!(
+            lsp_client_display_label(&key, &configs),
+            "rust (rust-analyzer)"
+        );
+        // Plain keys keep the plain label even when siblings exist.
+        assert_eq!(lsp_client_display_label("rust", &configs), "rust");
     }
 
     #[test]
@@ -740,6 +1060,75 @@ mod tests {
             pending.keys().copied().collect::<HashSet<_>>(),
             HashSet::from([9])
         );
+    }
+
+    #[test]
+    fn pending_lsp_resync_recording_stays_bounded() {
+        let mut pending = VecDeque::new();
+        for index in 0..PENDING_LSP_RESYNC_LIMIT * 2 {
+            record_pending_lsp_resync_path(&mut pending, PathBuf::from(format!("src/{index}.rs")));
+        }
+
+        assert_eq!(pending.len(), PENDING_LSP_RESYNC_LIMIT);
+        assert!(pending.contains(&PathBuf::from(format!(
+            "src/{}.rs",
+            PENDING_LSP_RESYNC_LIMIT * 2 - 1
+        ))));
+
+        assert!(record_pending_lsp_resync_path(
+            &mut pending,
+            PathBuf::from("src/newest.rs")
+        ));
+        assert_eq!(pending.len(), PENDING_LSP_RESYNC_LIMIT);
+        assert!(pending.contains(&PathBuf::from("src/newest.rs")));
+    }
+
+    #[test]
+    fn pending_lsp_resync_evicts_the_oldest_paths_first() {
+        let mut pending = VecDeque::new();
+        let inserted = 300usize;
+        for index in 0..inserted {
+            record_pending_lsp_resync_path(&mut pending, PathBuf::from(format!("src/{index}.rs")));
+        }
+
+        assert_eq!(pending.len(), PENDING_LSP_RESYNC_LIMIT);
+        let evicted = inserted - PENDING_LSP_RESYNC_LIMIT;
+        for index in 0..evicted {
+            assert!(
+                !pending.contains(&PathBuf::from(format!("src/{index}.rs"))),
+                "src/{index}.rs should have been evicted"
+            );
+        }
+        for index in evicted..inserted {
+            assert!(pending.contains(&PathBuf::from(format!("src/{index}.rs"))));
+        }
+        // Oldest survivor is at the front, newest at the back.
+        assert_eq!(
+            pending.front(),
+            Some(&PathBuf::from(format!("src/{evicted}.rs")))
+        );
+        assert_eq!(
+            pending.back(),
+            Some(&PathBuf::from(format!("src/{}.rs", inserted - 1)))
+        );
+    }
+
+    #[test]
+    fn pending_lsp_resync_requeue_moves_existing_path_to_the_back() {
+        let mut pending = VecDeque::new();
+        for index in 0..PENDING_LSP_RESYNC_LIMIT {
+            record_pending_lsp_resync_path(&mut pending, PathBuf::from(format!("src/{index}.rs")));
+        }
+        let oldest = PathBuf::from("src/0.rs");
+
+        assert!(!record_pending_lsp_resync_path(
+            &mut pending,
+            oldest.clone()
+        ));
+
+        assert_eq!(pending.len(), PENDING_LSP_RESYNC_LIMIT);
+        assert_eq!(pending.back(), Some(&oldest));
+        assert_ne!(pending.front(), Some(&oldest));
     }
 
     fn assert_display_safe(value: &str) {

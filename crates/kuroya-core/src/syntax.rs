@@ -65,6 +65,22 @@ const YAML_INDENT_SUFFIXES: &[&str] = &[":"];
 const SHELL_INDENT_SUFFIXES: &[&str] = &["then", "do", "case", "{"];
 const DEFAULT_INDENT_SUFFIXES: &[&str] = &["{", "(", "["];
 const NO_INDENT_SUFFIXES: &[&str] = &[];
+const SUPPORTED_FILE_TYPES: &str = include_str!("../supported-file-types.txt");
+
+fn supported_file_type_entries() -> impl Iterator<Item = (&'static str, &'static str)> {
+    SUPPORTED_FILE_TYPES.lines().filter_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return None;
+        }
+        let mut fields = line.split_whitespace();
+        Some((fields.next()?, fields.next()?))
+    })
+}
+
+pub fn supported_file_extensions() -> impl Iterator<Item = &'static str> {
+    supported_file_type_entries().map(|(extension, _)| extension)
+}
 
 fn matches_ignore_ascii_case(value: &str, candidates: &[&str]) -> bool {
     candidates
@@ -172,68 +188,46 @@ impl LanguageId {
     }
 
     fn from_extension(ext: &str) -> Self {
-        if ext.eq_ignore_ascii_case("rs") {
-            Self::Rust
-        } else if ext.eq_ignore_ascii_case("toml") {
-            Self::Toml
-        } else if matches_ignore_ascii_case(ext, &["json", "jsonc"]) {
-            Self::Json
-        } else if ext.eq_ignore_ascii_case("sql") {
-            Self::Sql
-        } else if matches_ignore_ascii_case(ext, &["md", "markdown", "mdx"]) {
-            Self::Markdown
-        } else if matches_ignore_ascii_case(ext, &["ps1", "psm1"]) {
-            Self::PowerShell
-        } else if ext.eq_ignore_ascii_case("py") {
-            Self::Python
-        } else if matches_ignore_ascii_case(ext, &["ts", "tsx", "mts", "cts"]) {
-            Self::TypeScript
-        } else if matches_ignore_ascii_case(ext, &["js", "jsx", "mjs", "cjs"]) {
-            Self::JavaScript
-        } else if matches_ignore_ascii_case(ext, &["css", "scss", "sass", "less"]) {
-            Self::Css
-        } else if matches_ignore_ascii_case(ext, &["html", "htm", "xhtml"]) {
-            Self::Html
-        } else if matches_ignore_ascii_case(ext, &["yaml", "yml"]) {
-            Self::Yaml
-        } else if ext.eq_ignore_ascii_case("go") {
-            Self::Go
-        } else if ext.eq_ignore_ascii_case("java") {
-            Self::Java
-        } else if matches_ignore_ascii_case(ext, &["c", "h"]) {
-            Self::C
-        } else if matches_ignore_ascii_case(ext, &["cc", "cpp", "cxx", "hh", "hpp", "hxx"]) {
-            Self::Cpp
-        } else if ext.eq_ignore_ascii_case("cs") {
-            Self::CSharp
-        } else if matches_ignore_ascii_case(ext, &["php", "phtml"]) {
-            Self::Php
-        } else if matches_ignore_ascii_case(ext, &["rb", "rake", "gemspec"]) {
-            Self::Ruby
-        } else if ext.eq_ignore_ascii_case("lua") {
-            Self::Lua
-        } else if ext.eq_ignore_ascii_case("dart") {
-            Self::Dart
-        } else if matches_ignore_ascii_case(ext, &["kt", "kts"]) {
-            Self::Kotlin
-        } else if ext.eq_ignore_ascii_case("swift") {
-            Self::Swift
-        } else if ext.eq_ignore_ascii_case("vue") {
-            Self::Vue
-        } else if ext.eq_ignore_ascii_case("svelte") {
-            Self::Svelte
-        } else if matches_ignore_ascii_case(ext, &["xml", "xsd", "xsl", "svg"]) {
-            Self::Xml
-        } else if matches_ignore_ascii_case(ext, &["dockerfile", "containerfile"]) {
-            Self::Dockerfile
-        } else if matches_ignore_ascii_case(ext, &["tf", "tfvars", "hcl"]) {
-            Self::Terraform
-        } else if matches_ignore_ascii_case(ext, &["sh", "bash", "zsh"]) {
-            Self::Shell
-        } else if matches_ignore_ascii_case(ext, &["diff", "patch"]) {
-            Self::Diff
-        } else {
-            Self::PlainText
+        supported_file_type_entries()
+            .find(|(extension, _)| extension.eq_ignore_ascii_case(ext))
+            .and_then(|(_, language_id)| Self::from_activation_id(language_id))
+            .unwrap_or(Self::PlainText)
+    }
+
+    fn from_activation_id(language_id: &str) -> Option<Self> {
+        match language_id {
+            "rust" => Some(Self::Rust),
+            "toml" => Some(Self::Toml),
+            "json" => Some(Self::Json),
+            "sql" => Some(Self::Sql),
+            "markdown" => Some(Self::Markdown),
+            "powershell" => Some(Self::PowerShell),
+            "python" => Some(Self::Python),
+            "typescript" => Some(Self::TypeScript),
+            "javascript" => Some(Self::JavaScript),
+            "css" => Some(Self::Css),
+            "html" => Some(Self::Html),
+            "yaml" => Some(Self::Yaml),
+            "go" => Some(Self::Go),
+            "java" => Some(Self::Java),
+            "c" => Some(Self::C),
+            "cpp" => Some(Self::Cpp),
+            "csharp" => Some(Self::CSharp),
+            "php" => Some(Self::Php),
+            "ruby" => Some(Self::Ruby),
+            "lua" => Some(Self::Lua),
+            "dart" => Some(Self::Dart),
+            "kotlin" => Some(Self::Kotlin),
+            "swift" => Some(Self::Swift),
+            "vue" => Some(Self::Vue),
+            "svelte" => Some(Self::Svelte),
+            "xml" => Some(Self::Xml),
+            "dockerfile" => Some(Self::Dockerfile),
+            "terraform" => Some(Self::Terraform),
+            "shellscript" => Some(Self::Shell),
+            "diff" => Some(Self::Diff),
+            "plaintext" => Some(Self::PlainText),
+            _ => None,
         }
     }
 
@@ -622,6 +616,50 @@ mod tests {
         assert_eq!(
             LanguageId::from_path(Path::new("component.TSX")),
             LanguageId::TypeScript
+        );
+    }
+
+    #[test]
+    fn supported_file_type_manifest_is_sorted_unique_and_resolvable() {
+        let mut extensions = std::collections::BTreeSet::new();
+        let mut previous_extension = None;
+
+        for line in SUPPORTED_FILE_TYPES.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let fields: Vec<_> = line.split_whitespace().collect();
+            assert_eq!(fields.len(), 2, "invalid supported file type row: {line}");
+            let extension = fields[0];
+            let language_id = fields[1];
+
+            assert_eq!(extension, extension.to_ascii_lowercase());
+            assert!(!extension.starts_with('.'));
+            assert!(
+                extension
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '_'))
+            );
+            if let Some(previous) = previous_extension {
+                assert!(previous < extension, "manifest is not sorted");
+            }
+            previous_extension = Some(extension);
+            assert!(
+                extensions.insert(extension),
+                "duplicate extension {extension}"
+            );
+
+            let language = LanguageId::from_activation_id(language_id)
+                .unwrap_or_else(|| panic!("unknown language ID {language_id}"));
+            assert_eq!(LanguageId::from_extension(extension), language);
+            assert_eq!(language.activation_id(), language_id);
+        }
+
+        assert!(extensions.contains("txt"));
+        assert_eq!(
+            supported_file_extensions().collect::<Vec<_>>(),
+            extensions.into_iter().collect::<Vec<_>>()
         );
     }
 

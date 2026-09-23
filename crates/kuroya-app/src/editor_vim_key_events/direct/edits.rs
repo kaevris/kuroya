@@ -64,14 +64,14 @@ pub(super) fn handle_vim_direct_edit_key(
             suppress_text,
         )),
         Key::D if modifiers.shift => Some(vim_repeatable_change_result(
-            vim_delete_to_line_end(buffer, count_value),
+            vim_delete_to_line_end(buffer, count_value, unnamed_register),
             last_change,
             EditorVimRepeatAction::DeleteToLineEnd,
             count_value,
             suppress_text,
         )),
         Key::C if modifiers.shift => {
-            let changed = vim_delete_to_line_end(buffer, count_value);
+            let changed = vim_delete_to_line_end(buffer, count_value, unnamed_register);
             *pending = None;
             *mode = EditorVimMode::Insert;
             Some(vim_repeatable_change_result(
@@ -83,7 +83,7 @@ pub(super) fn handle_vim_direct_edit_key(
             ))
         }
         Key::S if !modifiers.shift => {
-            let changed = vim_delete_forward_chars(buffer, count_value);
+            let changed = vim_delete_forward_chars(buffer, count_value, unnamed_register);
             *pending = None;
             *mode = EditorVimMode::Insert;
             Some(vim_repeatable_change_result(
@@ -113,21 +113,15 @@ pub(super) fn handle_vim_direct_edit_key(
             count_value,
             suppress_text,
         )),
-        Key::X if !modifiers.shift => {
-            let mut changed = false;
-            for _ in 0..count_value {
-                changed |= buffer.delete_forward();
-            }
-            Some(vim_repeatable_change_result(
-                changed,
-                last_change,
-                EditorVimRepeatAction::DeleteForwardChars,
-                count_value,
-                suppress_text,
-            ))
-        }
+        Key::X if !modifiers.shift => Some(vim_repeatable_change_result(
+            vim_delete_forward_chars(buffer, count_value, unnamed_register),
+            last_change,
+            EditorVimRepeatAction::DeleteForwardChars,
+            count_value,
+            suppress_text,
+        )),
         Key::X if modifiers.shift => Some(vim_repeatable_change_result(
-            vim_delete_backward_chars(buffer, count_value),
+            vim_delete_backward_chars(buffer, count_value, unnamed_register),
             last_change,
             EditorVimRepeatAction::DeleteBackwardChars,
             count_value,

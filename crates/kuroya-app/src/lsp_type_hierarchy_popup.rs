@@ -33,6 +33,9 @@ impl KuroyaApp {
         let mut row_label = String::with_capacity(LSP_POPUP_LABEL_MAX_CHARS);
 
         egui::Window::new("Type Hierarchy")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 168.0,
+            ))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 144.0])

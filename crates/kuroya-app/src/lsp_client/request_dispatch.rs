@@ -1,3 +1,4 @@
+use crate::lsp_client::pending::PendingLspRequests;
 mod edits;
 mod family;
 mod navigation;
@@ -13,14 +14,13 @@ use family::{RequestCommandFamily, request_command_family};
 use kuroya_core::LspWireMessage;
 use request_id::reserve_request_id;
 use serde_json::Value;
-use std::collections::HashMap;
 use tokio::process::ChildStdin;
 
 pub(super) async fn handle_lsp_request_command(
     command: LspClientCommand,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     let Some(family) = request_command_family(&command) else {
         return true;
@@ -133,7 +133,7 @@ impl PendingRequestIdBuffer {
 
 async fn write_cancel_symbol_request_messages(
     writer: &mut ChildStdin,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
     command: &LspClientCommand,
 ) -> Option<bool> {
     let mut request_ids = PendingRequestIdBuffer::new();
@@ -143,8 +143,8 @@ async fn write_cancel_symbol_request_messages(
     for (request_id, pending) in pending_requests.iter() {
         match symbol_pending_dispatch_action(command, pending) {
             PendingDispatchAction::Keep => {}
-            PendingDispatchAction::Cancel => request_ids.push(*request_id),
-            PendingDispatchAction::CancelAfterPrimary => follow_up_request_ids.push(*request_id),
+            PendingDispatchAction::Cancel => request_ids.push(request_id),
+            PendingDispatchAction::CancelAfterPrimary => follow_up_request_ids.push(request_id),
             PendingDispatchAction::Exact => has_exact_pending_request = true,
         }
     }
@@ -167,7 +167,7 @@ async fn write_cancel_symbol_request_messages(
 
 async fn write_cancel_coalesced_request_messages(
     writer: &mut ChildStdin,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
     command: &LspClientCommand,
 ) -> Option<bool> {
     let mut request_ids = PendingRequestIdBuffer::new();
@@ -176,7 +176,7 @@ async fn write_cancel_coalesced_request_messages(
     for (request_id, pending) in pending_requests.iter() {
         match coalesced_pending_dispatch_action(command, pending) {
             PendingDispatchAction::Keep | PendingDispatchAction::CancelAfterPrimary => {}
-            PendingDispatchAction::Cancel => request_ids.push(*request_id),
+            PendingDispatchAction::Cancel => request_ids.push(request_id),
             PendingDispatchAction::Exact => has_exact_pending_request = true,
         }
     }
@@ -378,7 +378,7 @@ fn symbol_pending_dispatch_action(
 
 async fn write_cancel_request_messages(
     writer: &mut ChildStdin,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
     request_ids: &[u64],
 ) -> bool {
     for request_id in request_ids {
@@ -398,7 +398,7 @@ async fn write_cancel_request_messages(
 
 pub(in crate::lsp_client) async fn write_request_message(
     writer: &mut ChildStdin,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
     request_id: u64,
     message: Value,
 ) -> bool {
@@ -413,9 +413,10 @@ pub(in crate::lsp_client) async fn write_request_message(
 #[cfg(test)]
 mod tests {
     use super::{PendingDispatchScan, handle_lsp_request_command, pending_dispatch_scan};
+    use crate::lsp_client::pending::PendingLspRequests;
     use crate::lsp_client::{commands::LspClientCommand, pending::PendingLspRequest};
     use kuroya_core::LspCodeLens;
-    use std::{collections::HashMap, path::PathBuf, process::Stdio};
+    use std::{path::PathBuf, process::Stdio};
     use tokio::process::{Child, ChildStdin, Command};
 
     async fn exited_child_stdin() -> ChildStdin {
@@ -543,7 +544,7 @@ mod tests {
     async fn request_write_failure_removes_pending_request() {
         let mut writer = exited_child_stdin().await;
         let mut next_request_id = 7;
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
 
         let wrote = handle_lsp_request_command(
             LspClientCommand::Completion {
@@ -568,7 +569,7 @@ mod tests {
     async fn inline_hierarchy_write_failure_removes_pending_request() {
         let mut writer = exited_child_stdin().await;
         let mut next_request_id = 11;
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
 
         let wrote = handle_lsp_request_command(
             LspClientCommand::PrepareCallHierarchy {
@@ -594,7 +595,7 @@ mod tests {
         let (mut child, mut writer) = stdin_sink_child().await;
         let mut next_request_id = 20;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([
+        let mut pending_requests = PendingLspRequests::from([
             (
                 7,
                 PendingLspRequest::Hover {
@@ -653,7 +654,7 @@ mod tests {
         let mut writer = exited_child_stdin().await;
         let mut next_request_id = 20;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([(
+        let mut pending_requests = PendingLspRequests::from([(
             7,
             PendingLspRequest::Hover {
                 id: 1,
@@ -696,7 +697,7 @@ mod tests {
         let (child, mut writer) = stdin_echo_child().await;
         let mut next_request_id = 20;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([
+        let mut pending_requests = PendingLspRequests::from([
             (
                 7,
                 PendingLspRequest::Hover {
@@ -762,7 +763,7 @@ mod tests {
         let mut writer = exited_child_stdin().await;
         let mut next_request_id = 20;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([
+        let mut pending_requests = PendingLspRequests::from([
             (
                 7,
                 PendingLspRequest::Hover {
@@ -811,7 +812,7 @@ mod tests {
         let (child, mut writer) = stdin_echo_child().await;
         let mut next_request_id = 20;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([
+        let mut pending_requests = PendingLspRequests::from([
             (
                 7,
                 PendingLspRequest::CodeLenses {
@@ -866,7 +867,7 @@ mod tests {
         let mut writer = exited_child_stdin().await;
         let mut next_request_id = 20;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([(
+        let mut pending_requests = PendingLspRequests::from([(
             7,
             PendingLspRequest::WorkspaceSymbols {
                 id: 1,
@@ -901,7 +902,7 @@ mod tests {
         let mut writer = exited_child_stdin().await;
         let mut next_request_id = 20;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([(
+        let mut pending_requests = PendingLspRequests::from([(
             7,
             PendingLspRequest::InlayHints {
                 id: 1,
@@ -945,7 +946,7 @@ mod tests {
         let (mut child, mut writer) = stdin_sink_child().await;
         let mut next_request_id = 20;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([
+        let mut pending_requests = PendingLspRequests::from([
             (
                 7,
                 PendingLspRequest::CodeLenses {
@@ -993,7 +994,7 @@ mod tests {
         let (mut child, mut writer) = stdin_sink_child().await;
         let mut next_request_id = 20;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([(
+        let mut pending_requests = PendingLspRequests::from([(
             7,
             PendingLspRequest::InlayHints {
                 id: 1,
@@ -1039,7 +1040,7 @@ mod tests {
         let (mut child, mut writer) = stdin_sink_child().await;
         let mut next_request_id = 20;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([(
+        let mut pending_requests = PendingLspRequests::from([(
             7,
             PendingLspRequest::WorkspaceSymbols {
                 id: 1,
@@ -1076,7 +1077,7 @@ mod tests {
         let mut writer = exited_child_stdin().await;
         let mut next_request_id = 20;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([(
+        let mut pending_requests = PendingLspRequests::from([(
             7,
             PendingLspRequest::Hover {
                 id: 1,
@@ -1111,7 +1112,7 @@ mod tests {
         let mut writer = exited_child_stdin().await;
         let mut next_request_id = 20;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([(
+        let mut pending_requests = PendingLspRequests::from([(
             7,
             PendingLspRequest::ResolveCodeLens {
                 id: 1,

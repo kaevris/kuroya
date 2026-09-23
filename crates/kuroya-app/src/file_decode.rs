@@ -3,6 +3,57 @@ pub(crate) struct DecodedText {
     pub(crate) text: String,
     pub(crate) lossy: bool,
     pub(crate) binary: bool,
+    /// The file carried a UTF-8 BOM that was stripped from `text`. Not yet
+    /// consumed by the UiEvent plumbing (buffer BOM state needs buffer.rs
+    /// coordination); surfaced for tests and upcoming BOM-indicator wiring.
+    #[allow(dead_code)]
+    pub(crate) had_bom: bool,
+    /// The bytes carried a UTF-16 LE/BE BOM; `text` is the unsupported-notice
+    /// preview. Detection from the opened buffer goes through
+    /// `utf16_unsupported_label` until the flag can ride the load event.
+    #[allow(dead_code)]
+    pub(crate) utf16: bool,
+}
+
+pub(crate) const UTF16_UNSUPPORTED_LABEL_LE: &str = "UTF-16 LE";
+pub(crate) const UTF16_UNSUPPORTED_LABEL_BE: &str = "UTF-16 BE";
+pub(crate) const UTF16_UNSUPPORTED_NOTICE_LE: &str =
+    "UTF-16 LE encoded files are not supported; opened as a read-only preview.";
+pub(crate) const UTF16_UNSUPPORTED_NOTICE_BE: &str =
+    "UTF-16 BE encoded files are not supported; opened as a read-only preview.";
+const UTF16_UNSUPPORTED_DETECT_PREFIX_LE: &str = "UTF-16 LE encoded files are not supported";
+const UTF16_UNSUPPORTED_DETECT_PREFIX_BE: &str = "UTF-16 BE encoded files are not supported";
+pub(crate) const UTF16_LABEL_DETECT_CHARS: usize = 64;
+
+const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+
+pub(crate) fn utf16_unsupported_label(text: &str) -> Option<&'static str> {
+    if text.starts_with(UTF16_UNSUPPORTED_DETECT_PREFIX_LE) {
+        Some(UTF16_UNSUPPORTED_LABEL_LE)
+    } else if text.starts_with(UTF16_UNSUPPORTED_DETECT_PREFIX_BE) {
+        Some(UTF16_UNSUPPORTED_LABEL_BE)
+    } else {
+        None
+    }
+}
+
+fn utf16_unsupported_notice(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        Some(UTF16_UNSUPPORTED_NOTICE_LE)
+    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        Some(UTF16_UNSUPPORTED_NOTICE_BE)
+    } else {
+        None
+    }
+}
+
+fn strip_utf8_bom(bytes: &mut Vec<u8>) -> bool {
+    if bytes.starts_with(&UTF8_BOM) {
+        bytes.drain(..UTF8_BOM.len());
+        true
+    } else {
+        false
+    }
 }
 
 pub(crate) const PROTECTED_PREVIEW_MAX_BYTES: usize =
@@ -13,9 +64,19 @@ pub(crate) fn decode_text_bytes(bytes: Vec<u8>) -> DecodedText {
 }
 
 fn decode_text_bytes_with_protected_preview_limit(
-    bytes: Vec<u8>,
+    mut bytes: Vec<u8>,
     protected_preview_max_bytes: usize,
 ) -> DecodedText {
+    let had_bom = strip_utf8_bom(&mut bytes);
+    if let Some(notice) = utf16_unsupported_notice(&bytes) {
+        return DecodedText {
+            text: notice.to_owned(),
+            lossy: false,
+            binary: true,
+            had_bom: false,
+            utf16: true,
+        };
+    }
     let binary = bytes.contains(&0);
     match String::from_utf8(bytes) {
         Ok(text) => DecodedText {
@@ -26,6 +87,8 @@ fn decode_text_bytes_with_protected_preview_limit(
             },
             lossy: false,
             binary,
+            had_bom,
+            utf16: false,
         },
         Err(error) => {
             let first_error = error.utf8_error();
@@ -38,6 +101,8 @@ fn decode_text_bytes_with_protected_preview_limit(
                 ),
                 lossy: true,
                 binary,
+                had_bom,
+                utf16: false,
             }
         }
     }
@@ -180,6 +245,7 @@ mod tests {
     use super::{
         decode_text_bytes_with_protected_preview_limit, lossy_utf8_prefix_by_output_bytes,
         protected_preview_truncation_notice, truncated_valid_utf8_preview_text,
+        utf16_unsupported_label,
     };
 
     #[test]
@@ -189,6 +255,83 @@ mod tests {
         assert_eq!(decoded.text, "abcdef");
         assert!(!decoded.lossy);
         assert!(!decoded.binary);
+        assert!(!decoded.had_bom);
+        assert!(!decoded.utf16);
+    }
+
+    #[test]
+    fn decode_sniffs_strips_and_flags_utf8_bom() {
+        let decoded = decode_text_bytes_with_protected_preview_limit(
+            b"\xEF\xBB\xBFparam($x)\r\n".to_vec(),
+            256,
+        );
+
+        assert_eq!(decoded.text, "param($x)\r\n");
+        assert!(decoded.had_bom);
+        assert!(!decoded.lossy);
+        assert!(!decoded.binary);
+        assert!(!decoded.utf16);
+    }
+
+    #[test]
+    fn decode_flags_bom_only_file_as_empty_bom_text() {
+        let decoded = decode_text_bytes_with_protected_preview_limit(b"\xEF\xBB\xBF".to_vec(), 256);
+
+        assert_eq!(decoded.text, "");
+        assert!(decoded.had_bom);
+        assert!(!decoded.binary);
+    }
+
+    #[test]
+    fn decode_rejects_utf16_le_bom_with_read_only_notice() {
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend_from_slice("h\0e\0l\0l\0o\0".as_bytes());
+        let decoded = decode_text_bytes_with_protected_preview_limit(bytes, 256);
+
+        assert!(decoded.utf16);
+        assert!(decoded.binary);
+        assert!(!decoded.lossy);
+        assert!(!decoded.had_bom);
+        assert!(
+            decoded
+                .text
+                .starts_with("UTF-16 LE encoded files are not supported")
+        );
+        assert!(!decoded.text.contains('\0'));
+    }
+
+    #[test]
+    fn decode_rejects_utf16_be_bom_with_read_only_notice() {
+        let mut bytes = vec![0xFE, 0xFF];
+        bytes.extend_from_slice("\0h\0e\0l\0l\0o".as_bytes());
+        let decoded = decode_text_bytes_with_protected_preview_limit(bytes, 256);
+
+        assert!(decoded.utf16);
+        assert!(decoded.binary);
+        assert!(!decoded.lossy);
+        assert!(
+            decoded
+                .text
+                .starts_with("UTF-16 BE encoded files are not supported")
+        );
+        assert!(!decoded.text.contains('\0'));
+    }
+
+    #[test]
+    fn utf16_unsupported_label_matches_notice_prefixes_only() {
+        assert_eq!(
+            utf16_unsupported_label(
+                "UTF-16 LE encoded files are not supported; opened as a read-only preview."
+            ),
+            Some("UTF-16 LE")
+        );
+        assert_eq!(
+            utf16_unsupported_label("UTF-16 BE encoded files are not supported; tail"),
+            Some("UTF-16 BE")
+        );
+        assert_eq!(utf16_unsupported_label("UTF-16 LE encoded"), None);
+        assert_eq!(utf16_unsupported_label("plain text"), None);
+        assert_eq!(utf16_unsupported_label(""), None);
     }
 
     #[test]

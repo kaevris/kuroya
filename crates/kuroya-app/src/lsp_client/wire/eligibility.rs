@@ -332,6 +332,7 @@ mod tests {
             args: Vec::new(),
             extensions: Vec::new(),
             root_markers: markers.iter().map(|marker| (*marker).to_owned()).collect(),
+            enabled: true,
         }
     }
 }

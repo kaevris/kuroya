@@ -1,7 +1,42 @@
 use kuroya_core::TextBuffer;
 
-use super::super::motion::vim_delete_line_backward;
-use super::super::{EditorVimInsertReplayStep, VIM_MAX_COUNT};
+use super::super::motion::{vim_delete_line_backward, vim_open_line_above, vim_open_line_below};
+use super::super::{
+    EditorVimInsertReplayStep, EditorVimLastChange, EditorVimRepeatAction, VIM_MAX_COUNT,
+};
+
+pub(in crate::editor_vim_key_events) fn vim_replay_counted_insert_session(
+    buffer: &mut TextBuffer,
+    last_change: &Option<EditorVimLastChange>,
+    indent_unit: &str,
+) {
+    let Some(change) = last_change else {
+        return;
+    };
+    if change.count <= 1 || change.insert_replay.is_empty() {
+        return;
+    }
+    let extra = change.count - 1;
+    if change.action.is_plain_insert() {
+        vim_replay_insert_steps(buffer, &change.insert_replay, extra, indent_unit);
+        return;
+    }
+    match change.action {
+        EditorVimRepeatAction::OpenLineAbove => {
+            for _ in 0..extra {
+                vim_open_line_above(buffer);
+                vim_replay_insert_steps(buffer, &change.insert_replay, 1, indent_unit);
+            }
+        }
+        EditorVimRepeatAction::OpenLineBelow => {
+            for _ in 0..extra {
+                vim_open_line_below(buffer);
+                vim_replay_insert_steps(buffer, &change.insert_replay, 1, indent_unit);
+            }
+        }
+        _ => {}
+    }
+}
 
 pub(super) fn vim_replay_insert_steps(
     buffer: &mut TextBuffer,

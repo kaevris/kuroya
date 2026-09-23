@@ -1,6 +1,6 @@
-use crate::lsp_client::pending::{PendingLspRequest, register_pending_request};
+use crate::lsp_client::pending::{PendingLspRequest, PendingLspRequests, register_pending_request};
 use kuroya_core::BufferId;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 pub(super) fn register_code_actions_request(
     request_id: u64,
@@ -9,7 +9,7 @@ pub(super) fn register_code_actions_request(
     version: u64,
     line: usize,
     character: usize,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) {
     register_pending_request(
         pending_requests,
@@ -31,7 +31,7 @@ pub(super) fn register_code_action_resolve_request(
     version: u64,
     line: usize,
     character: usize,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) {
     register_pending_request(
         pending_requests,
@@ -49,13 +49,13 @@ pub(super) fn register_code_action_resolve_request(
 #[cfg(test)]
 mod tests {
     use super::{register_code_action_resolve_request, register_code_actions_request};
-    use crate::lsp_client::pending::PendingLspRequest;
-    use std::{collections::HashMap, path::PathBuf};
+    use crate::lsp_client::pending::{PendingLspRequest, PendingLspRequests};
+    use std::path::PathBuf;
 
     #[test]
     fn code_actions_pending_request_keeps_origin_cursor_position() {
         let request_id = 1;
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
         let path = PathBuf::from("src/main.rs");
 
         register_code_actions_request(request_id, 9, path, 12, 4, 17, &mut pending_requests);
@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn code_action_resolve_pending_request_keeps_origin_cursor_position() {
         let request_id = 1;
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
         let path = PathBuf::from("src/main.rs");
 
         register_code_action_resolve_request(request_id, 9, path, 12, 4, 17, &mut pending_requests);

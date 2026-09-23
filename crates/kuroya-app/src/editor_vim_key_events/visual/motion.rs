@@ -1,6 +1,7 @@
 use eframe::egui::{Key, Modifiers};
 use kuroya_core::TextBuffer;
 
+use super::super::motion::vim_next_word_start;
 use super::super::{
     EditorVimCharFindMotion, VIM_MAX_COUNT, no_text_modifiers, vim_apply_char_find,
     vim_line_column_motion_key, vim_move_counted_line_first_non_whitespace,
@@ -106,7 +107,12 @@ pub(in crate::editor_vim_key_events) fn vim_visual_character_motion_target(
         }
         Key::W if !modifiers.shift => {
             for _ in 0..count {
-                buffer.move_word_right();
+                let cursor = buffer.cursor();
+                let next = vim_next_word_start(buffer, cursor);
+                if next == cursor {
+                    break;
+                }
+                buffer.set_single_cursor(next);
             }
         }
         Key::W if modifiers.shift => {
@@ -190,5 +196,8 @@ pub(in crate::editor_vim_key_events) fn vim_move_to_visual_line_end(
         .min(buffer.len_lines().saturating_sub(1));
     let line_start = buffer.line_column_to_char(line, 0);
     let content_end = buffer.line_content_end_char(line);
-    buffer.set_single_cursor(content_end.saturating_sub(1).max(line_start));
+    let last_cluster_start = buffer
+        .snap_back_to_grapheme_boundary(content_end.saturating_sub(1))
+        .max(line_start);
+    buffer.set_single_cursor(last_cluster_start);
 }

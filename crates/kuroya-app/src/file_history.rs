@@ -1,8 +1,10 @@
 use crate::persistence_storage::{atomic_write_async, read_file_bytes_with_limit_async};
 use std::{
     cmp::Ordering as CmpOrdering,
+    fs,
     io::ErrorKind,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 
 mod paths;
@@ -23,6 +25,10 @@ pub(crate) struct LocalHistorySnapshot {
     pub(crate) sequence: u128,
     pub(crate) path: PathBuf,
     pub(crate) bytes: u64,
+    /// File modification time recorded when the snapshot was enumerated.
+    /// Only the enumeration used by the local history browser stats each
+    /// snapshot; the "latest snapshot" read path leaves this empty.
+    pub(crate) modified: Option<SystemTime>,
 }
 
 pub(crate) async fn snapshot_file_before_save_async(
@@ -63,12 +69,12 @@ pub(crate) async fn snapshot_file_before_save_async(
         &lookup.dir,
         &lookup.primary_name,
         LOCAL_HISTORY_MAX_SNAPSHOTS_PER_FILE,
+        &snapshot,
     )
     .await?;
     Ok(Some(snapshot))
 }
 
-#[cfg(test)]
 pub(crate) async fn local_history_snapshots_for_file_async(
     workspace_root: &Path,
     path: &Path,
@@ -149,6 +155,7 @@ async fn readable_local_history_snapshot_text_async(
             sequence: candidate.sequence,
             path: candidate.path,
             bytes: bytes_len,
+            modified: None,
         },
         text,
     )))
@@ -226,6 +233,7 @@ struct LocalHistorySnapshotEntry {
     sequence: u128,
     path: PathBuf,
     bytes: u64,
+    modified: Option<SystemTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,7 +249,6 @@ struct LocalHistorySnapshotLookupCandidates {
 }
 
 impl LocalHistorySnapshotLookupCandidates {
-    #[cfg(test)]
     fn into_preferred(self) -> Vec<LocalHistorySnapshotCandidate> {
         if self.primary.is_empty() {
             self.legacy
@@ -257,6 +264,7 @@ impl From<LocalHistorySnapshotEntry> for LocalHistorySnapshot {
             sequence: entry.sequence,
             path: entry.path,
             bytes: entry.bytes,
+            modified: entry.modified,
         }
     }
 }
@@ -265,6 +273,7 @@ async fn prune_local_history_snapshots_async(
     dir: &Path,
     original_file_name: &str,
     max_snapshots: usize,
+    protected_path: &Path,
 ) -> anyhow::Result<()> {
     let suffix = local_history_snapshot_suffix(original_file_name);
     let mut entries = match tokio::fs::read_dir(dir).await {
@@ -283,13 +292,16 @@ async fn prune_local_history_snapshots_async(
             continue;
         };
         let Some(candidate) =
-            local_history_snapshot_file_candidate_from_entry_async(&entry, sequence).await?
+            local_history_snapshot_file_candidate_from_entry_async(&entry, sequence, dir).await?
         else {
             continue;
         };
-        if let Some(overflow) =
-            push_bounded_local_history_snapshot_candidate(&mut retained, candidate, max_snapshots)
-        {
+        if let Some(overflow) = push_bounded_local_history_snapshot_candidate(
+            &mut retained,
+            candidate,
+            max_snapshots,
+            Some(protected_path),
+        ) {
             remove_local_history_snapshot_file_if_present_async(&overflow.path).await?;
         }
     }
@@ -315,7 +327,6 @@ async fn local_history_snapshot_files_async(
     Ok(snapshots)
 }
 
-#[cfg(test)]
 async fn local_history_snapshot_lookup_files_async(
     lookup: &LocalHistorySnapshotLookup,
 ) -> anyhow::Result<Vec<LocalHistorySnapshotEntry>> {
@@ -332,22 +343,26 @@ async fn local_history_snapshot_lookup_files_async(
     Ok(snapshots)
 }
 
-#[cfg(test)]
 async fn local_history_snapshot_entry_from_candidate_async(
     candidate: LocalHistorySnapshotCandidate,
 ) -> anyhow::Result<Option<LocalHistorySnapshotEntry>> {
-    let Some(bytes) = local_history_snapshot_file_len_async(&candidate.path).await? else {
-        return Ok(None);
+    let metadata = match tokio::fs::symlink_metadata(&candidate.path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
     };
+    if !metadata.is_file() {
+        return Ok(None);
+    }
 
     Ok(Some(LocalHistorySnapshotEntry {
         sequence: candidate.sequence,
         path: candidate.path,
-        bytes,
+        bytes: metadata.len(),
+        modified: metadata.modified().ok(),
     }))
 }
 
-#[cfg(test)]
 async fn local_history_snapshot_lookup_candidates_async(
     lookup: &LocalHistorySnapshotLookup,
 ) -> anyhow::Result<Vec<LocalHistorySnapshotCandidate>> {
@@ -409,7 +424,7 @@ async fn collect_local_history_snapshot_lookup_candidates_async(
         let Some(file_name) = file_name.to_str() else {
             continue;
         };
-        if let Some(sequence) = local_history_snapshot_sequence(file_name, &primary_suffix) {
+        if let Some(sequence) = local_history_snapshot_sequence(file_name, primary_suffix) {
             push_local_history_snapshot_lookup_candidate_async(
                 if prefer_primary {
                     &mut candidates.primary
@@ -418,6 +433,7 @@ async fn collect_local_history_snapshot_lookup_candidates_async(
                 },
                 &entry,
                 sequence,
+                dir,
             )
             .await?;
             continue;
@@ -428,6 +444,7 @@ async fn collect_local_history_snapshot_lookup_candidates_async(
                     &mut candidates.legacy,
                     &entry,
                     sequence,
+                    dir,
                 )
                 .await?;
             }
@@ -459,7 +476,7 @@ async fn local_history_snapshot_candidates_async(
             continue;
         };
         if let Some(candidate) =
-            local_history_snapshot_file_candidate_from_entry_async(&entry, sequence).await?
+            local_history_snapshot_file_candidate_from_entry_async(&entry, sequence, dir).await?
         {
             candidates.push(candidate);
         }
@@ -473,6 +490,7 @@ async fn push_local_history_snapshot_lookup_candidate_async(
     candidates: &mut Vec<LocalHistorySnapshotCandidate>,
     entry: &tokio::fs::DirEntry,
     sequence: u128,
+    bucket_dir: &Path,
 ) -> anyhow::Result<()> {
     if !local_history_snapshot_sequence_may_enter_bounded_candidates(
         candidates,
@@ -482,7 +500,7 @@ async fn push_local_history_snapshot_lookup_candidate_async(
         return Ok(());
     }
     let Some(candidate) =
-        local_history_snapshot_file_candidate_from_entry_async(entry, sequence).await?
+        local_history_snapshot_file_candidate_from_entry_async(entry, sequence, bucket_dir).await?
     else {
         return Ok(());
     };
@@ -490,6 +508,7 @@ async fn push_local_history_snapshot_lookup_candidate_async(
         candidates,
         candidate,
         LOCAL_HISTORY_MAX_READ_CANDIDATES,
+        None,
     );
     Ok(())
 }
@@ -497,6 +516,7 @@ async fn push_local_history_snapshot_lookup_candidate_async(
 async fn local_history_snapshot_file_candidate_from_entry_async(
     entry: &tokio::fs::DirEntry,
     sequence: u128,
+    bucket_dir: &Path,
 ) -> anyhow::Result<Option<LocalHistorySnapshotCandidate>> {
     if !local_history_snapshot_entry_may_resolve_to_file_async(entry).await {
         return Ok(None);
@@ -508,20 +528,27 @@ async fn local_history_snapshot_file_candidate_from_entry_async(
     {
         return Ok(None);
     }
+    if !local_history_snapshot_resolves_within_bucket(&path, bucket_dir) {
+        return Ok(None);
+    }
     Ok(Some(LocalHistorySnapshotCandidate { sequence, path }))
 }
 
 async fn local_history_snapshot_entry_may_resolve_to_file_async(
     entry: &tokio::fs::DirEntry,
 ) -> bool {
-    match entry.file_type().await {
-        Ok(file_type) => file_type.is_file() || file_type.is_symlink(),
-        Err(_) => true,
+    matches!(entry.file_type().await, Ok(file_type) if file_type.is_file())
+}
+
+fn local_history_snapshot_resolves_within_bucket(path: &Path, bucket_dir: &Path) -> bool {
+    match (fs::canonicalize(path), fs::canonicalize(bucket_dir)) {
+        (Ok(resolved), Ok(bucket)) => resolved.starts_with(bucket),
+        _ => false,
     }
 }
 
 async fn local_history_snapshot_file_len_async(path: &Path) -> anyhow::Result<Option<u64>> {
-    let metadata = match tokio::fs::metadata(path).await {
+    let metadata = match tokio::fs::symlink_metadata(path).await {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
@@ -553,6 +580,7 @@ fn push_bounded_local_history_snapshot_candidate(
     candidates: &mut Vec<LocalHistorySnapshotCandidate>,
     candidate: LocalHistorySnapshotCandidate,
     max_candidates: usize,
+    protected_path: Option<&Path>,
 ) -> Option<LocalHistorySnapshotCandidate> {
     if max_candidates == 0 {
         return Some(candidate);
@@ -567,17 +595,47 @@ fn push_bounded_local_history_snapshot_candidate(
             candidates[index] = candidate;
             return None;
         }
-        Err(0) if candidates.len() == max_candidates => return Some(candidate),
+        Err(0) if candidates.len() == max_candidates => {
+            if Some(candidate.path.as_path()) == protected_path {
+                // The candidate sorts oldest in a full list because the
+                // system clock moved backwards after it was written; evict
+                // the next-oldest retained snapshot instead of it.
+                return evict_instead_of_protected_local_history_snapshot_candidate(
+                    candidates, candidate,
+                );
+            }
+            return Some(candidate);
+        }
         Err(_) => {}
     }
 
     let index = insertion.unwrap_or_else(|index| index);
     candidates.insert(index, candidate);
     if candidates.len() > max_candidates {
-        Some(candidates.remove(0))
-    } else {
-        None
+        let overflow = candidates.remove(0);
+        if Some(overflow.path.as_path()) == protected_path {
+            return evict_instead_of_protected_local_history_snapshot_candidate(
+                candidates, overflow,
+            );
+        }
+        return Some(overflow);
     }
+    None
+}
+
+fn evict_instead_of_protected_local_history_snapshot_candidate(
+    candidates: &mut Vec<LocalHistorySnapshotCandidate>,
+    protected: LocalHistorySnapshotCandidate,
+) -> Option<LocalHistorySnapshotCandidate> {
+    if candidates.is_empty() {
+        // Nothing else can be evicted: keep every snapshot. Being over cap
+        // by one is harmless; deleting the just-written snapshot is not.
+        candidates.push(protected);
+        return None;
+    }
+    let evicted = candidates.remove(0);
+    candidates.insert(0, protected);
+    Some(evicted)
 }
 
 fn local_history_snapshot_sequence_may_enter_bounded_candidates(
@@ -614,7 +672,8 @@ mod tests {
         LOCAL_HISTORY_MAX_READ_CANDIDATES, LOCAL_HISTORY_MAX_SNAPSHOTS_PER_FILE,
         LocalHistorySnapshotCandidate, history_unique_id_from_parts,
         latest_local_history_snapshot_text_async,
-        local_history_snapshot_entry_from_candidate_async, local_history_snapshot_files_async,
+        local_history_snapshot_entry_from_candidate_async,
+        local_history_snapshot_file_candidate_from_entry_async, local_history_snapshot_files_async,
         local_history_snapshot_lookup, local_history_snapshot_lookup_candidates_async,
         local_history_snapshot_path, local_history_snapshots_for_file_async,
         prune_local_history_snapshots_async, push_bounded_local_history_snapshot_candidate,
@@ -1099,9 +1158,13 @@ mod tests {
         };
         let duplicate = first.clone();
 
-        assert!(push_bounded_local_history_snapshot_candidate(&mut candidates, first, 2).is_none());
         assert!(
-            push_bounded_local_history_snapshot_candidate(&mut candidates, duplicate, 2).is_none()
+            push_bounded_local_history_snapshot_candidate(&mut candidates, first, 2, None)
+                .is_none()
+        );
+        assert!(
+            push_bounded_local_history_snapshot_candidate(&mut candidates, duplicate, 2, None)
+                .is_none()
         );
         assert_eq!(candidates.len(), 1);
 
@@ -1112,6 +1175,7 @@ mod tests {
                 path: PathBuf::from("2.main.rs.bak"),
             },
             2,
+            None,
         );
         let evicted = push_bounded_local_history_snapshot_candidate(
             &mut candidates,
@@ -1120,6 +1184,7 @@ mod tests {
                 path: PathBuf::from("3.main.rs.bak"),
             },
             2,
+            None,
         )
         .unwrap();
 
@@ -1131,6 +1196,60 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2, 3]
         );
+    }
+
+    #[tokio::test]
+    async fn local_history_prune_keeps_just_written_snapshot_when_clock_rolls_back() {
+        let workspace = temp_workspace("prune-protect-just-written");
+        let dir = state_dir(&workspace).join("history").join("src");
+        fs::create_dir_all(&dir).unwrap();
+        for sequence in [1_u128, 2] {
+            fs::write(
+                dir.join(format!("{sequence}.main.rs.bak")),
+                format!("snapshot {sequence}"),
+            )
+            .unwrap();
+        }
+        // Simulates the just-written snapshot after the system clock moved
+        // backwards: it exists on disk, but its sequence sorts below every
+        // snapshot retained from before the rollback.
+        let just_written = dir.join("1.main.rs.bak");
+
+        prune_local_history_snapshots_async(&dir, "main.rs", 1, &just_written)
+            .await
+            .unwrap();
+
+        assert!(just_written.exists());
+        assert!(!dir.join("2.main.rs.bak").exists());
+
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_history_prune_evicts_next_oldest_around_the_just_written_snapshot() {
+        let workspace = temp_workspace("prune-protect-next-oldest");
+        let dir = state_dir(&workspace).join("history").join("src");
+        fs::create_dir_all(&dir).unwrap();
+        for sequence in [1_u128, 2, 3] {
+            fs::write(
+                dir.join(format!("{sequence}.main.rs.bak")),
+                format!("snapshot {sequence}"),
+            )
+            .unwrap();
+        }
+        // Snapshot 1 was just written but sorts oldest after a clock
+        // rollback, so eviction must skip it and drop snapshot 2 instead.
+        let just_written = dir.join("1.main.rs.bak");
+
+        prune_local_history_snapshots_async(&dir, "main.rs", 2, &just_written)
+            .await
+            .unwrap();
+
+        assert!(just_written.exists());
+        assert!(dir.join("3.main.rs.bak").exists());
+        assert!(!dir.join("2.main.rs.bak").exists());
+
+        fs::remove_dir_all(workspace).unwrap();
     }
 
     #[tokio::test]
@@ -1148,7 +1267,7 @@ mod tests {
         fs::write(dir.join("1.other.rs.bak"), "other").unwrap();
         fs::write(dir.join("not-a-sequence.main.rs.bak"), "ignored").unwrap();
 
-        prune_local_history_snapshots_async(&dir, "main.rs", 2)
+        prune_local_history_snapshots_async(&dir, "main.rs", 2, Path::new(""))
             .await
             .unwrap();
 
@@ -1188,7 +1307,7 @@ mod tests {
         let stale_dir = dir.join(format!("{stale_dir_sequence}.main.rs.bak"));
         fs::create_dir(&stale_dir).unwrap();
 
-        prune_local_history_snapshots_async(&dir, "main.rs", keep)
+        prune_local_history_snapshots_async(&dir, "main.rs", keep, Path::new(""))
             .await
             .unwrap();
 
@@ -1303,13 +1422,68 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_history_candidates_keep_symlink_to_file_snapshots() {
+    async fn local_history_enumerates_three_saved_snapshots_newest_first_with_timestamps() {
+        let workspace = temp_workspace("browser-enumerate");
+        fs::create_dir_all(workspace.join("src")).unwrap();
+        let path = workspace.join("src/main.rs");
+        for (index, saved_text) in ["one", "two", "three"].into_iter().enumerate() {
+            fs::write(&path, saved_text).unwrap();
+            snapshot_file_before_save_async(
+                &workspace,
+                &path,
+                format!("next {index}").as_bytes(),
+                1024,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        }
+
+        let snapshots = local_history_snapshots_for_file_async(&workspace, &path)
+            .await
+            .unwrap();
+
+        assert_eq!(snapshots.len(), 3);
+        let mut sequences = snapshots
+            .iter()
+            .map(|snapshot| snapshot.sequence)
+            .collect::<Vec<_>>();
+        sequences.sort();
+        sequences.dedup();
+        assert_eq!(sequences.len(), 3, "each save records its own snapshot");
+        let newest_first = snapshots
+            .iter()
+            .map(|snapshot| snapshot.sequence)
+            .collect::<Vec<_>>();
+        let mut ascending = newest_first.clone();
+        ascending.sort();
+        ascending.reverse();
+        assert_eq!(newest_first, ascending, "snapshots list newest first");
+        let contents = {
+            let mut contents = Vec::with_capacity(snapshots.len());
+            for snapshot in &snapshots {
+                contents.push(fs::read_to_string(&snapshot.path).unwrap());
+            }
+            contents
+        };
+        assert_eq!(contents, vec!["three", "two", "one"]);
+        assert!(
+            snapshots.iter().all(|snapshot| snapshot.modified.is_some()),
+            "enumeration derives the modified timestamp from each snapshot"
+        );
+
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_history_candidates_reject_symlink_to_file_snapshots() {
         let workspace = temp_workspace("symlink-candidate");
         let dir = state_dir(&workspace).join("history").join("src");
         fs::create_dir_all(&dir).unwrap();
         let target = dir.join("target-snapshot");
         let link = dir.join("7.main.rs.bak");
         fs::write(&target, "linked").unwrap();
+        fs::write(dir.join("8.main.rs.bak"), "regular").unwrap();
         if !create_file_symlink_for_test(&target, &link) {
             fs::remove_dir_all(workspace).unwrap();
             return;
@@ -1321,9 +1495,51 @@ mod tests {
                 .unwrap();
 
         assert_eq!(snapshots.len(), 1);
-        assert_eq!(snapshots[0].sequence, 7);
-        assert_eq!(snapshots[0].path, link);
-        assert_eq!(snapshots[0].bytes, 6);
+        assert_eq!(snapshots[0].sequence, 8);
+        assert_eq!(snapshots[0].path, dir.join("8.main.rs.bak"));
+        assert_eq!(snapshots[0].bytes, 7);
+
+        let (snapshot, text) = latest_local_history_snapshot_text_async(
+            &workspace,
+            &workspace.join("src/main.rs"),
+            64,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(snapshot.sequence, 8);
+        assert_eq!(text, "regular");
+
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_history_candidate_rejected_when_resolving_outside_bucket_root() {
+        let workspace = temp_workspace("candidate-outside-bucket");
+        let outside = workspace.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("7.main.rs.bak"), "escaped").unwrap();
+        let bucket = workspace.join("bucket");
+        fs::create_dir_all(&bucket).unwrap();
+
+        let mut entries = tokio::fs::read_dir(&outside).await.unwrap();
+        let entry = entries.next_entry().await.unwrap().unwrap();
+
+        let candidate = local_history_snapshot_file_candidate_from_entry_async(&entry, 7, &bucket)
+            .await
+            .unwrap();
+        assert!(candidate.is_none());
+
+        let candidate = local_history_snapshot_file_candidate_from_entry_async(
+            &entry,
+            7,
+            &workspace.join("outside"),
+        )
+        .await
+        .unwrap()
+        .expect("candidates resolving inside their bucket stay eligible");
+        assert_eq!(candidate.sequence, 7);
+        assert_eq!(candidate.path, outside.join("7.main.rs.bak"));
 
         fs::remove_dir_all(workspace).unwrap();
     }

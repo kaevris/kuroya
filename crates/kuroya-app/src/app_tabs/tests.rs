@@ -759,6 +759,77 @@ fn diff_tab_context_action_command_gracefully_skips_non_command_actions() {
     );
 }
 
+#[test]
+fn close_all_buffers_queues_guarded_closes_for_dirty_buffers() {
+    let root = PathBuf::from("workspace");
+    let mut app = app_for_test(root.clone());
+    app.buffers.push(TextBuffer::from_text(
+        1,
+        Some(root.join("clean.rs")),
+        "clean".to_owned(),
+    ));
+    let mut first_dirty = TextBuffer::from_text(2, Some(root.join("first.rs")), "first".to_owned());
+    first_dirty.mark_dirty();
+    app.buffers.push(first_dirty);
+    let mut second_dirty =
+        TextBuffer::from_text(3, Some(root.join("second.rs")), "second".to_owned());
+    second_dirty.mark_dirty();
+    app.buffers.push(second_dirty);
+
+    app.close_all_buffers();
+
+    assert!(app.buffer(1).is_none());
+    assert_eq!(app.dirty_close_buffer, Some(2));
+    assert_eq!(app.pending_close_buffers, vec![3]);
+    assert!(app.buffer(2).is_some());
+    assert!(app.buffer(3).is_some());
+    assert!(app.status.starts_with("Unsaved changes in "));
+}
+
+#[test]
+fn close_all_buffers_force_closes_clean_buffers_without_guard() {
+    let root = PathBuf::from("workspace");
+    let mut app = app_for_test(root.clone());
+    app.buffers.push(TextBuffer::from_text(
+        1,
+        Some(root.join("one.rs")),
+        "one".to_owned(),
+    ));
+    app.buffers.push(TextBuffer::from_text(
+        2,
+        Some(root.join("two.rs")),
+        "two".to_owned(),
+    ));
+
+    app.close_all_buffers();
+
+    assert!(app.buffers.is_empty());
+    assert_eq!(app.dirty_close_buffer, None);
+    assert!(app.pending_close_buffers.is_empty());
+}
+
+#[test]
+fn close_all_buffers_does_not_duplicate_buffers_already_under_close_guard() {
+    let root = PathBuf::from("workspace");
+    let mut app = app_for_test(root.clone());
+    app.buffers.push(TextBuffer::from_text(
+        1,
+        Some(root.join("clean.rs")),
+        "clean".to_owned(),
+    ));
+    let mut guarded = TextBuffer::from_text(2, Some(root.join("guarded.rs")), "guarded".to_owned());
+    guarded.mark_dirty();
+    app.buffers.push(guarded);
+    app.dirty_close_buffer = Some(2);
+
+    app.close_all_buffers();
+
+    assert!(app.buffer(1).is_none());
+    assert_eq!(app.dirty_close_buffer, Some(2));
+    assert!(app.pending_close_buffers.is_empty());
+    assert!(app.buffer(2).is_some());
+}
+
 fn app_for_test(root: PathBuf) -> KuroyaApp {
     let (tx, rx) = crate::ui_event_channel::ui_event_channel();
     let settings = EditorSettings::default();

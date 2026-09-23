@@ -1,8 +1,45 @@
 use crate::buffer::TextBuffer;
 use regex::Regex;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Mutex, OnceLock};
 
 pub(super) const MINIMAP_SECTION_HEADER_SCAN_CHAR_LIMIT: usize = 2_048;
+const MAX_CACHED_MARK_SECTION_HEADER_REGEXES: usize = 16;
+
+fn minimap_mark_regex_cache() -> &'static Mutex<HashMap<String, Option<Regex>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<Regex>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Compiles each distinct mark-header pattern at most once per process. The
+/// pattern is user-configurable, so entries are keyed by pattern, and failed
+/// compiles are cached too so an invalid setting is not re-parsed on every
+/// rescan.
+fn minimap_cached_mark_regex(pattern: &str) -> Option<Regex> {
+    let mut cache = minimap_mark_regex_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cache.len() >= MAX_CACHED_MARK_SECTION_HEADER_REGEXES && !cache.contains_key(pattern) {
+        cache.clear();
+    }
+    cache
+        .entry(pattern.to_owned())
+        .or_insert_with(|| Regex::new(pattern).ok())
+        .clone()
+}
+
+#[cfg(test)]
+pub(super) fn minimap_cached_mark_regexes_for_test() -> Vec<(String, bool)> {
+    let cache = minimap_mark_regex_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut entries: Vec<_> = cache
+        .iter()
+        .map(|(pattern, regex)| (pattern.clone(), regex.is_some()))
+        .collect();
+    entries.sort();
+    entries
+}
 
 pub fn minimap_section_header_lines(
     buffer: &TextBuffer,
@@ -15,7 +52,7 @@ pub fn minimap_section_header_lines(
     }
 
     let mark_regex = show_mark_headers
-        .then(|| Regex::new(mark_section_header_regex).ok())
+        .then(|| minimap_cached_mark_regex(mark_section_header_regex))
         .flatten();
     let mut headers = BTreeMap::new();
     for line_idx in 0..buffer.len_lines() {

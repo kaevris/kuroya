@@ -16,7 +16,7 @@ pub(super) use case::{
     vim_convert_case_lines, vim_convert_case_range, vim_toggle_case_forward_chars,
     vim_toggle_case_range,
 };
-pub(super) use char_find::vim_apply_char_find;
+pub(super) use char_find::{vim_apply_char_find, vim_apply_char_find_repeat};
 pub(super) use character_edits::{
     vim_delete_backward_chars, vim_delete_backward_chars_into_named_register,
     vim_delete_forward_chars, vim_delete_forward_chars_into_named_register,
@@ -44,4 +44,7 @@ pub(super) use scroll::{
     vim_ctrl_scroll_lines, vim_line_scroll_lines, vim_move_down_lines, vim_move_up_lines,
     vim_page_scroll_lines,
 };
-pub(super) use words::vim_move_previous_big_word_end;
+pub(super) use words::{
+    vim_change_word_motion_range, vim_move_previous_big_word_end, vim_next_word_start,
+    vim_word_motion_range,
+};

@@ -8,6 +8,7 @@ use crate::{
         record_buffer_find_replacement_history,
     },
     popup_buttons::{PopupButtonKind, popup_button, popup_compact_button},
+    ui_switch::ui_switch_with_label,
 };
 use eframe::egui::{self, Color32, Context, Id, Key, RichText, TextEdit};
 use kuroya_core::validate_find_regex;
@@ -34,6 +35,7 @@ impl KuroyaApp {
         let mut options_changed = false;
 
         egui::Window::new("Find")
+            .max_size(crate::layout::popup_window_max_size(ctx))
             .collapsible(false)
             .resizable(false)
             .anchor(
@@ -131,22 +133,22 @@ impl KuroyaApp {
                     }
                 });
                 ui.horizontal(|ui| {
-                    options_changed |= ui
-                        .checkbox(&mut self.buffer_find_case_sensitive, "Case")
-                        .on_hover_text("Match case")
-                        .changed();
-                    options_changed |= ui
-                        .checkbox(&mut self.buffer_find_whole_word, "Word")
-                        .on_hover_text("Match whole word")
-                        .changed();
-                    options_changed |= ui
-                        .checkbox(&mut self.buffer_find_regex, "Regex")
-                        .on_hover_text("Use regular expression")
-                        .changed();
-                    options_changed |= ui
-                        .checkbox(&mut self.buffer_find_preserve_case, "Preserve")
-                        .on_hover_text("Preserve case while replacing")
-                        .changed();
+                    options_changed |=
+                        ui_switch_with_label(ui, &mut self.buffer_find_case_sensitive, "Case")
+                            .on_hover_text("Match case")
+                            .changed();
+                    options_changed |=
+                        ui_switch_with_label(ui, &mut self.buffer_find_whole_word, "Word")
+                            .on_hover_text("Match whole word")
+                            .changed();
+                    options_changed |=
+                        ui_switch_with_label(ui, &mut self.buffer_find_regex, "Regex")
+                            .on_hover_text("Use regular expression")
+                            .changed();
+                    options_changed |=
+                        ui_switch_with_label(ui, &mut self.buffer_find_preserve_case, "Preserve")
+                            .on_hover_text("Preserve case while replacing")
+                            .changed();
 
                     let large_file_find_blocked = self.active_find_blocked_by_large_file_mode();
                     let query_too_large =

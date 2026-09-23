@@ -1,6 +1,8 @@
+use crate::native_paths::normalize_native_path;
 use std::{
     env,
     ffi::OsStr,
+    fs,
     path::{Component, Path, PathBuf},
 };
 
@@ -28,8 +30,27 @@ pub(crate) fn app_settings_path() -> PathBuf {
 }
 
 pub(crate) fn state_dir(workspace_root: &Path) -> PathBuf {
-    let normalized = normalize_workspace_root_for_storage(workspace_root);
+    let normalized = canonical_workspace_root_for_storage(workspace_root);
     external_workspace_state_dir(&normalized)
+}
+
+/// Buckets workspace state by the canonical workspace root so the same
+/// folder opened through different spellings — case differences, junctions,
+/// subst drives, `.`/`..` segments — hashes to a single bucket instead of
+/// silently stranding the session and re-arming the trust prompt.
+/// Canonicalization needs the path to exist; when it fails (fresh or
+/// inaccessible root) the lexical normalization below is used, which keeps
+/// such buckets stable. Sessions saved before canonicalization stay under
+/// the old raw-text bucket; the canonical bucket starts fresh (accepted
+/// one-time migration cost for already-saved workspaces).
+fn canonical_workspace_root_for_storage(workspace_root: &Path) -> PathBuf {
+    let normalized = normalize_workspace_root_for_storage(workspace_root);
+    match fs::canonicalize(&normalized) {
+        // canonicalize yields `\\?\`-prefixed verbatim paths on Windows;
+        // strip the prefix so the hashed text matches plain spellings.
+        Ok(canonical) => normalize_native_path(canonical),
+        Err(_) => normalized,
+    }
 }
 
 pub(crate) fn legacy_state_dir(workspace_root: &Path) -> PathBuf {
@@ -216,8 +237,8 @@ fn workspace_state_hash(workspace_root: &Path) -> u64 {
 
 #[cfg(test)]
 pub(crate) fn app_state_dir() -> PathBuf {
-    if let Some(path) = env::var_os("KUROYA_STATE_DIR") {
-        return PathBuf::from(path);
+    if let Some(path) = configured_app_state_dir() {
+        return path;
     }
 
     env::temp_dir()
@@ -228,8 +249,8 @@ pub(crate) fn app_state_dir() -> PathBuf {
 
 #[cfg(not(test))]
 pub(crate) fn app_state_dir() -> PathBuf {
-    if let Some(path) = env::var_os("KUROYA_STATE_DIR") {
-        return PathBuf::from(path);
+    if let Some(path) = configured_app_state_dir() {
+        return path;
     }
 
     #[cfg(target_os = "windows")]
@@ -263,6 +284,17 @@ pub(crate) fn app_state_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
         .join(".kuroya")
         .join("app-state")
+}
+
+fn configured_app_state_dir() -> Option<PathBuf> {
+    let path = PathBuf::from(env::var_os("KUROYA_STATE_DIR")?);
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    if path.is_absolute() {
+        return Some(path);
+    }
+    Some(env::current_dir().map_or(path.clone(), |current| current.join(path)))
 }
 
 #[cfg(all(not(test), not(target_os = "windows")))]
@@ -450,5 +482,43 @@ mod tests {
         );
 
         fs::remove_file(workspace).unwrap();
+    }
+
+    #[test]
+    fn workspace_state_bucket_matches_lexical_equivalents_of_existing_roots() {
+        let workspace = temp_path("canonical-equivalent");
+        fs::create_dir_all(workspace.join("src")).unwrap();
+        let dotted = workspace.join("src").join("..");
+
+        // Canonicalization resolves `.`/`..` spellings of an existing root
+        // to one bucket.
+        assert_eq!(state_dir(&dotted), state_dir(&workspace));
+
+        fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn workspace_state_bucket_falls_back_to_lexical_normalization_for_missing_roots() {
+        let workspace = temp_path("canonical-missing-root");
+        let dotted = workspace.join(".").join("sub").join("..");
+
+        // Neither spelling exists, so canonicalization fails for both and
+        // the lexical normalization keeps one bucket.
+        assert_eq!(state_dir(&dotted), state_dir(&workspace));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn workspace_state_bucket_matches_roots_differing_only_by_case() {
+        let workspace = temp_path("case-bucket-root");
+        fs::create_dir_all(&workspace).unwrap();
+        let lower_spelling = PathBuf::from(workspace.to_string_lossy().to_ascii_lowercase());
+        assert_ne!(lower_spelling, workspace);
+
+        // Canonicalization resolves both spellings to the true on-disk
+        // casing, so one folder hashes to one bucket either way.
+        assert_eq!(state_dir(&lower_spelling), state_dir(&workspace));
+
+        fs::remove_dir_all(&workspace).unwrap();
     }
 }

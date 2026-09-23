@@ -19,6 +19,9 @@ impl KuroyaApp {
         let ExplorerDialogText { title, label, hint } = explorer_dialog_text(action);
 
         egui::Window::new(title)
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 24.0,
+            ))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

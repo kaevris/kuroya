@@ -3,6 +3,7 @@ use crate::preference_panels::sections::{
     bounded_settings_text_edit_width, bounded_singleline_text_edit, guarded_f32_drag_value,
     settings_target_heading,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::{
     DEFAULT_EDITOR_LETTER_SPACING, DEFAULT_EDITOR_LINE_HEIGHT, EditorAccessibilitySupport,
@@ -77,16 +78,26 @@ pub(super) fn render_text_layout_settings_with_highlight(
             ui.end_row();
 
             ui.label("Automatic layout");
-            ui.checkbox(&mut draft.automatic_layout, "Measure layout automatically");
+            ui_switch(ui, &mut draft.automatic_layout)
+                .on_hover_text("Measure layout automatically");
             ui.end_row();
 
             ui.label("Render optimizations");
             ui.vertical(|ui| {
-                ui.checkbox(&mut draft.disable_layer_hinting, "Disable layer hinting");
-                ui.checkbox(
-                    &mut draft.disable_monospace_optimizations,
-                    "Disable monospace optimizations",
-                );
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.disable_layer_hinting);
+                    ui.label(egui::RichText::new("Disable layer hinting").small().weak());
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.disable_monospace_optimizations);
+                    ui.label(
+                        egui::RichText::new("Disable monospace optimizations")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
             });
             ui.end_row();
 
@@ -95,19 +106,25 @@ pub(super) fn render_text_layout_settings_with_highlight(
             ui.end_row();
 
             ui.label("Variable line heights");
-            ui.checkbox(
-                &mut draft.allow_variable_line_heights,
-                "Allow variable line heights",
-            );
+            ui_switch(ui, &mut draft.allow_variable_line_heights);
             ui.end_row();
 
             ui.label("Variable fonts");
             ui.vertical(|ui| {
-                ui.checkbox(&mut draft.allow_variable_fonts, "Allow variable fonts");
-                ui.checkbox(
-                    &mut draft.allow_variable_fonts_in_accessibility_mode,
-                    "Allow in accessibility mode",
-                );
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.allow_variable_fonts);
+                    ui.label(egui::RichText::new("Allow variable fonts").small().weak());
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.allow_variable_fonts_in_accessibility_mode);
+                    ui.label(
+                        egui::RichText::new("Allow in accessibility mode")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
             });
             ui.end_row();
 
@@ -132,17 +149,13 @@ pub(super) fn render_text_layout_settings_with_highlight(
             ui.end_row();
 
             ui.label("ARIA required");
-            ui.checkbox(
-                &mut draft.aria_required,
-                "Mark the editor textarea as required",
-            );
+            ui_switch(ui, &mut draft.aria_required)
+                .on_hover_text("Mark the editor textarea as required");
             ui.end_row();
 
             ui.label("Screen reader suggestions");
-            ui.checkbox(
-                &mut draft.screen_reader_announce_inline_suggestion,
-                "Announce inline suggestions",
-            );
+            ui_switch(ui, &mut draft.screen_reader_announce_inline_suggestion)
+                .on_hover_text("Announce inline suggestions");
             ui.end_row();
 
             ui.label("Tab index");
@@ -155,29 +168,45 @@ pub(super) fn render_text_layout_settings_with_highlight(
 
             ui.label("Overflow widgets");
             ui.vertical(|ui| {
-                ui.checkbox(&mut draft.allow_overflow, "Allow widget overflow");
-                ui.checkbox(
-                    &mut draft.fixed_overflow_widgets,
-                    "Use fixed overflow widgets",
-                );
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.allow_overflow);
+                    ui.label(egui::RichText::new("Allow widget overflow").small().weak());
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.fixed_overflow_widgets);
+                    ui.label(
+                        egui::RichText::new("Use fixed overflow widgets")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
             });
             ui.end_row();
 
             ui.label("Edit context");
             ui.vertical(|ui| {
-                ui.checkbox(&mut draft.edit_context, "Use EditContext input");
-                ui.checkbox(
-                    &mut draft.render_rich_screen_reader_content,
-                    "Render rich screen reader content",
-                );
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.edit_context);
+                    ui.label(egui::RichText::new("Use EditContext input").small().weak());
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.render_rich_screen_reader_content);
+                    ui.label(
+                        egui::RichText::new("Render rich screen reader content")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
             });
             ui.end_row();
 
             ui.label("Whitespace delete");
-            ui.checkbox(
-                &mut draft.trim_whitespace_on_delete,
-                "Trim indentation when deleting a newline",
-            );
+            ui_switch(ui, &mut draft.trim_whitespace_on_delete)
+                .on_hover_text("Trim indentation when deleting a newline");
             ui.end_row();
 
             ui.label("Line terminators");
@@ -189,11 +218,11 @@ pub(super) fn render_text_layout_settings_with_highlight(
             ui.end_row();
 
             ui.label("Shadow DOM");
-            ui.checkbox(&mut draft.use_shadow_dom, "Use Shadow DOM");
+            ui_switch(ui, &mut draft.use_shadow_dom);
             ui.end_row();
 
             ui.label("Tab stops");
-            ui.checkbox(&mut draft.use_tab_stops, "Insert and delete by tab stops");
+            ui_switch(ui, &mut draft.use_tab_stops).on_hover_text("Insert and delete by tab stops");
             ui.end_row();
 
             ui.label("Tab width");
@@ -205,14 +234,12 @@ pub(super) fn render_text_layout_settings_with_highlight(
             ui.end_row();
 
             ui.label("Insert spaces");
-            ui.checkbox(&mut draft.insert_spaces, "Use spaces for Tab");
+            ui_switch(ui, &mut draft.insert_spaces).on_hover_text("Use spaces for Tab");
             ui.end_row();
 
             ui.label("Detect indentation");
-            ui.checkbox(
-                &mut draft.detect_indentation,
-                "Use file indentation when detected",
-            );
+            ui_switch(ui, &mut draft.detect_indentation)
+                .on_hover_text("Use file indentation when detected");
             ui.end_row();
 
             ui.label("Word separators");
@@ -284,10 +311,8 @@ pub(super) fn render_text_layout_settings_with_highlight(
             ui.end_row();
 
             ui.label("Escaped line feeds");
-            ui.checkbox(
-                &mut draft.wrap_on_escaped_line_feeds,
-                "Wrap on literal newline escapes",
-            );
+            ui_switch(ui, &mut draft.wrap_on_escaped_line_feeds)
+                .on_hover_text("Wrap on literal newline escapes");
             ui.end_row();
 
             ui.label("Word break");
@@ -306,7 +331,7 @@ pub(super) fn render_text_layout_settings_with_highlight(
             ui.end_row();
 
             ui.label("Rounded selection");
-            ui.checkbox(&mut draft.rounded_selection, "Round selection corners");
+            ui_switch(ui, &mut draft.rounded_selection);
             ui.end_row();
 
             ui.label("Overview ruler lanes");
@@ -330,10 +355,8 @@ pub(super) fn render_text_layout_settings_with_highlight(
             ui.end_row();
 
             ui.label("Definition links");
-            ui.checkbox(
-                &mut draft.definition_link_opens_in_peek,
-                "Open definition links in Peek",
-            );
+            ui_switch(ui, &mut draft.definition_link_opens_in_peek)
+                .on_hover_text("Open definition links in Peek");
             ui.end_row();
 
             ui.label("Long line limit");

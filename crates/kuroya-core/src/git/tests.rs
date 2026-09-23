@@ -9,24 +9,27 @@ use git2::{BranchType, Oid, Repository, RepositoryState, Signature, build::Check
 use super::{
     DEFAULT_GIT_COMMIT_SHORT_HASH_LENGTH, DEFAULT_GIT_DETECT_SUBMODULES_LIMIT,
     DEFAULT_GIT_SIMILARITY_THRESHOLD, DEFAULT_GIT_STATUS_LIMIT, DiffAlgorithm, DiffOptions,
-    GitChangeStage, GitCheckoutType, GitFileStatus, GitLineChangeKind, GitSmartCommitChanges,
-    GitSnapshot, GitStatusCounts, GitTimelineDate, changed_line_kinds_against_head, checkout_ref,
-    delete_branch, diff_max_file_size_bytes, discard_path, discard_worktree_hunk,
-    file_text_at_head, file_text_at_index, head_diff_with_text, line_change_kinds,
-    line_change_kinds_with_options, list_checkout_refs, list_commit_history,
-    list_commit_history_with_short_hash_length, list_commit_history_with_timeline_date,
-    list_local_branches, list_stashes, path_is_committed, rename_branch, stage_path,
-    stage_worktree_hunk, staged_diff_hunks, staged_diff_with_texts,
-    try_unified_diff_between_texts_with_options, unified_diff_against_head,
-    unified_diff_against_index, unified_diff_against_worktree, unified_diff_between_texts,
-    unified_diff_between_texts_with_options, unified_diff_for_commit, unified_diff_for_stash,
-    unified_diff_hunks, unstage_path, unstage_staged_hunk, worktree_diff_hunks,
-    worktree_diff_with_index_text, worktree_relative_path,
+    GitChangeStage, GitCheckoutType, GitFileStatus, GitLineChangeKind, GitRemoteDivergence,
+    GitScopedStatus, GitSmartCommitChanges, GitSnapshot, GitStatusCounts, GitStatusEntry,
+    GitTimelineDate, MAX_GIT_COMMIT_DIFF_PATCH_BYTES, changed_line_kinds_against_head,
+    checkout_ref, delete_branch, diff_max_file_size_bytes, discard_path, discard_paths,
+    discard_worktree_hunk, file_text_at_head, file_text_at_index, git_scoped_status_snapshot,
+    head_diff_with_text, line_change_kinds, line_change_kinds_with_options, list_checkout_refs,
+    list_commit_history, list_commit_history_with_short_hash_length,
+    list_commit_history_with_timeline_date, list_local_branches, list_stashes, path_is_committed,
+    rename_branch, stage_path, stage_paths, stage_worktree_hunk, staged_diff_hunks,
+    staged_diff_with_texts, status_entries_for_paths, try_unified_diff_between_texts_with_options,
+    unified_diff_against_head, unified_diff_against_index, unified_diff_against_worktree,
+    unified_diff_for_commit, unified_diff_for_stash, unified_diff_hunks, unstage_path,
+    unstage_paths, unstage_staged_hunk, worktree_diff_hunks, worktree_diff_with_index_text,
+    worktree_relative_path,
 };
 
 mod branch_checkout;
 mod commit_smart_commit;
 mod diff_hunks;
+mod revision;
+mod scoped_status;
 mod stash_history_blame;
 mod status_paths;
 

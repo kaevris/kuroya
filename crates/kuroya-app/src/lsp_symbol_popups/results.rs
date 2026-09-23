@@ -16,6 +16,8 @@ use std::{
 };
 
 pub(super) const WORKSPACE_SYMBOL_ROW_HEIGHT: f32 = 24.0;
+/// Results visible before the list starts scrolling.
+const WORKSPACE_SYMBOL_MAX_VISIBLE_ROWS: usize = 12;
 const WORKSPACE_SYMBOL_DISPLAY_CACHE_ID: &str = "kuroya.workspace_symbol_results.display_cache";
 const WORKSPACE_SYMBOL_DISPLAY_CACHE_MAX_ROWS: usize = 128;
 const WORKSPACE_SYMBOL_NAME_MAX_CHARS: usize = 160;
@@ -42,7 +44,11 @@ pub(super) fn render_workspace_symbol_results(
     let mut open = None;
     let symbol_count = symbols.len();
     let viewport_height = ui.available_height();
-    let mut scroll_area = ScrollArea::vertical();
+    // Cap the viewport so the popup hugs its results instead of stretching
+    // to fill the window; more results simply scroll.
+    let max_height =
+        (symbol_count.min(WORKSPACE_SYMBOL_MAX_VISIBLE_ROWS) as f32) * WORKSPACE_SYMBOL_ROW_HEIGHT;
+    let mut scroll_area = ScrollArea::vertical().max_height(max_height);
     if scroll_to_selection {
         scroll_area = scroll_area.vertical_scroll_offset(selected_row_scroll_offset(
             *selected,

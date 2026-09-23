@@ -1,11 +1,14 @@
 use eframe::egui::{
-    Color32, FontId, Rect, Response, Sense, Stroke, StrokeKind, TextStyle, Ui, pos2, vec2,
+    Color32, Context, FontId, Rect, Response, Sense, Stroke, StrokeKind, TextStyle, Ui, pos2, vec2,
 };
 
 pub(crate) const SOURCE_CONTROL_GIT_ROW_HEIGHT: f32 = 24.0;
-pub(crate) const SOURCE_CONTROL_GIT_HISTORY_PANEL_DEFAULT_SIZE: [f32; 2] = [560.0, 340.0];
 pub(crate) const SOURCE_CONTROL_GIT_STASH_PANEL_DEFAULT_SIZE: [f32; 2] = [520.0, 320.0];
 pub(crate) const SOURCE_CONTROL_GIT_HUNK_PANEL_DEFAULT_SIZE: [f32; 2] = [520.0, 320.0];
+
+/// Room above and below a git panel's scrollable list: search/title row,
+/// separator, and footer action buttons.
+const GIT_PANEL_LIST_CHROME_HEIGHT: f32 = 150.0;
 
 const GIT_PANEL_ROW_MIN_WIDTH: f32 = 180.0;
 const GIT_PANEL_ROW_CORNER_RADIUS: f32 = 4.0;
@@ -18,6 +21,16 @@ pub(crate) fn apply_git_panel_spacing(ui: &mut Ui) {
     let spacing = ui.spacing_mut();
     spacing.item_spacing = vec2(6.0, 5.0);
     spacing.button_padding = vec2(8.0, 3.0);
+}
+
+/// Largest height for a git panel's scrollable list so the panel never grows
+/// past the screen: these panels' scroll areas expand to all available space
+/// (`auto_shrink` off), which would otherwise resize the window to its clamped
+/// maximum every frame. `anchor_offset` is the panel's top anchor offset.
+pub(crate) fn git_panel_list_max_height(ctx: &Context, anchor_offset: f32) -> f32 {
+    (crate::layout::popup_window_max_size_with_top_margin(ctx, anchor_offset).y
+        - GIT_PANEL_LIST_CHROME_HEIGHT)
+        .max(120.0)
 }
 
 pub(crate) fn render_git_panel_row(

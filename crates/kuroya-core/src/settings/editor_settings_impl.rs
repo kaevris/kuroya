@@ -59,6 +59,7 @@ impl Default for EditorSettings {
             tab_focus_mode: false,
             vim_keybindings: false,
             vim: EditorVimSettings::default(),
+            discord: DiscordSettings::default(),
             quick_suggestions: false,
             quick_suggestions_delay_ms: DEFAULT_QUICK_SUGGESTIONS_DELAY_MS,
             suggest_on_trigger_characters: true,
@@ -181,7 +182,9 @@ impl Default for EditorSettings {
             format_on_paste: false,
             paste_as_enabled: true,
             paste_as_show_paste_selector: EditorPasteAsShowPasteSelector::default(),
-            autosave: true,
+            // Autosave is opt-in: the app must never write the user's file
+            // unless they explicitly save (or confirm saving on close).
+            autosave: false,
             autosave_mode: EditorAutoSaveMode::AfterDelay,
             autosave_delay_ms: DEFAULT_AUTOSAVE_DELAY_MS,
             smooth_scrolling: true,
@@ -250,7 +253,8 @@ impl Default for EditorSettings {
             status_bar_visible: true,
             devtools_verbose_logging: false,
             devtools_profiling_enabled: false,
-            lsp_servers: Vec::new(),
+            lsp_servers: default_server_configs(),
+            lsp_suggest_missing_servers: false,
             window_zoom_level: DEFAULT_WINDOW_ZOOM_LEVEL,
             line_numbers: EditorLineNumbers::default(),
             line_decorations_width: EditorLineDecorationsWidth::default(),
@@ -329,6 +333,18 @@ impl Default for EditorSettings {
             diff_word_wrap: DiffWordWrap::default(),
             diff_only_show_accessible_viewer: false,
             diff_is_in_embedded_editor: false,
+            background_image_enabled: false,
+            background_image_path: None,
+            background_image_scope: EditorBackgroundImageScope::default(),
+            background_image_dim: DEFAULT_EDITOR_BACKGROUND_IMAGE_DIM,
+            background_image_fit: EditorBackgroundImageFit::default(),
+            background_image_position: EditorBackgroundImagePosition::default(),
+            project_index_max_files: DEFAULT_PROJECT_INDEX_MAX_FILES,
+            project_index_exclude_globs: default_project_index_exclude_globs(),
+            project_index_include_hidden_dirs: false,
+            project_search_exclude_globs: default_project_search_exclude_globs(),
+            project_search_max_file_size_mb: DEFAULT_PROJECT_SEARCH_MAX_FILE_SIZE_MB,
+            project_search_max_results: DEFAULT_PROJECT_SEARCH_MAX_RESULTS,
             git_enabled: true,
             git_add_ai_co_author: GitAddAiCoAuthor::default(),
             git_allow_force_push: false,
@@ -377,7 +393,6 @@ impl Default for EditorSettings {
             git_rebase_when_sync: false,
             git_remember_post_commit_command: false,
             git_replace_tags_when_pull: false,
-            git_scan_repositories: Vec::new(),
             git_support_cancellation: false,
             git_terminal_authentication: true,
             git_terminal_git_editor: false,
@@ -545,6 +560,7 @@ impl Default for EditorSettings {
             theme: ThemeSettings::default(),
             custom_theme_paths: Vec::new(),
             active_custom_theme_path: None,
+            plugins: PluginSettings::default(),
         }
     }
 }
@@ -558,8 +574,13 @@ impl EditorSettings {
         }
     }
 
+    /// The server list handed to the LSP runtime: disabled entries are kept
+    /// in settings (so their configuration survives) but are not exposed.
     pub fn lsp_server_configs(&self) -> Vec<LspServerConfig> {
         effective_lsp_server_configs(&self.lsp_servers)
+            .into_iter()
+            .filter(|server| server.enabled)
+            .collect()
     }
 
     pub(super) fn sanitize(&mut self) -> bool {
@@ -607,6 +628,7 @@ impl EditorSettings {
             true,
         );
         changed |= self.vim.sanitize();
+        changed |= self.discord.sanitize();
 
         field!(
             quick_suggestions_delay_ms,
@@ -797,6 +819,35 @@ impl EditorSettings {
                 self.diff_render_side_by_side_inline_breakpoint,
             ),
         );
+        changed |= sanitize_settings_optional_string(&mut self.background_image_path);
+        field!(
+            background_image_dim,
+            clamp_editor_background_image_dim(self.background_image_dim),
+        );
+        field!(
+            project_index_max_files,
+            clamp_project_index_max_files(self.project_index_max_files),
+        );
+        changed |= sanitize_settings_string_list(
+            &mut self.project_index_exclude_globs,
+            SETTINGS_LIST_MAX_ITEMS,
+            SETTINGS_MAP_KEY_MAX_CHARS,
+            true,
+        );
+        changed |= sanitize_settings_string_list(
+            &mut self.project_search_exclude_globs,
+            SETTINGS_LIST_MAX_ITEMS,
+            SETTINGS_MAP_KEY_MAX_CHARS,
+            true,
+        );
+        field!(
+            project_search_max_file_size_mb,
+            clamp_project_search_max_file_size_mb(self.project_search_max_file_size_mb),
+        );
+        field!(
+            project_search_max_results,
+            clamp_project_search_max_results(self.project_search_max_results),
+        );
 
         changed |= sanitize_settings_string_list(
             &mut self.git_commands_to_log,
@@ -831,12 +882,6 @@ impl EditorSettings {
         changed |= sanitize_settings_string_map(&mut self.git_diagnostics_commit_hook_sources);
         changed |= sanitize_settings_string_list(
             &mut self.git_path,
-            SETTINGS_LIST_MAX_ITEMS,
-            SETTINGS_STRING_MAX_CHARS,
-            true,
-        );
-        changed |= sanitize_settings_string_list(
-            &mut self.git_scan_repositories,
             SETTINGS_LIST_MAX_ITEMS,
             SETTINGS_STRING_MAX_CHARS,
             true,
@@ -1016,6 +1061,8 @@ impl EditorSettings {
             changed = true;
         }
 
+        changed |= self.plugins.sanitize();
+
         changed
     }
 
@@ -1059,9 +1106,23 @@ impl EditorSettings {
                 Ok(EditorSettingsLoad {
                     settings,
                     quarantined_path: None,
+                    future_schema_version: None,
                 })
             }
-            Err(_) => Self::recover_default_settings_with(path, quarantine),
+            Err(_) => {
+                // A future schema_version means the file was written by a
+                // newer Kuroya: quarantining or rewriting it would destroy
+                // settings this build cannot parse, so keep it on disk
+                // untouched and run this session on defaults.
+                if let Some(version) = settings_schema_version_newer_than_supported(&text) {
+                    return Ok(EditorSettingsLoad {
+                        settings: Self::default(),
+                        quarantined_path: None,
+                        future_schema_version: Some(version),
+                    });
+                }
+                Self::recover_default_settings_with(path, quarantine)
+            }
         }
     }
 
@@ -1075,6 +1136,7 @@ impl EditorSettings {
         Ok(EditorSettingsLoad {
             settings: Self::create_default_settings(path)?,
             quarantined_path: None,
+            future_schema_version: None,
         })
     }
 
@@ -1100,6 +1162,7 @@ impl EditorSettings {
         Ok(EditorSettingsLoad {
             settings,
             quarantined_path,
+            future_schema_version: None,
         })
     }
 
@@ -1133,6 +1196,28 @@ impl EditorSettings {
         }
         if source_version < 3 {
             changed |= self.keymap.ensure_default_command_palette_binding();
+        }
+        if source_version < 4 {
+            // Schema 4 made the settings list authoritative: materialize the
+            // built-in defaults into it so they can be edited or removed.
+            self.lsp_servers = merge_lsp_server_configs_with_defaults(&self.lsp_servers);
+            changed = true;
+        }
+        if source_version < 5 {
+            // Schema 5 made most built-ins ship disabled by default: reset the
+            // enabled flag of untouched default entries to the new defaults.
+            // Entries the user customized keep their enabled state.
+            for server in &mut self.lsp_servers {
+                if let Some(default) = default_lsp_server_for_language(&server.language)
+                    && server.command == default.command
+                    && server.args == default.args
+                    && server.extensions == default.extensions
+                    && server.root_markers == default.root_markers
+                {
+                    server.enabled = default.enabled;
+                }
+            }
+            changed = true;
         }
         self.schema_version = SETTINGS_SCHEMA_VERSION;
         changed || source_version < SETTINGS_SCHEMA_VERSION

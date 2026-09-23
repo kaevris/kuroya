@@ -49,10 +49,10 @@ fn session_defaults_terminal_layout_for_older_snapshots() {
     assert!(session.explorer_expanded.is_empty());
     assert!(session.explorer_revealed_path.is_none());
     assert!(!session.project_search_open);
-    assert_eq!(session.project_search_width, 330.0);
     assert!(session.project_search_query.is_empty());
     assert!(!session.project_search_case_sensitive);
     assert!(!session.project_search_whole_word);
+    assert!(!session.project_search_regex);
     assert!(session.project_search_include.is_empty());
     assert!(session.project_search_exclude.is_empty());
     assert!(session.project_search_recent.is_empty());
@@ -68,10 +68,6 @@ fn session_defaults_terminal_layout_for_older_snapshots() {
     assert!(!session.settings_panel_open);
     assert!(!session.theme_picker_open);
     assert!(!session.keybindings_open);
-    assert_eq!(
-        session.project_search_placement,
-        PanelPlacement::DockedRight
-    );
     assert!(!session.symbols_panel_open);
     assert_eq!(session.symbols_panel_placement, PanelPlacement::DockedRight);
     assert_eq!(session.symbols_panel_width, 300.0);
@@ -99,6 +95,7 @@ fn session_defaults_terminal_layout_for_older_snapshots() {
     assert!(session.source_control_commit_message.is_empty());
     assert!(session.source_control_commit_history.is_empty());
     assert!(session.source_control_stash_message.is_empty());
+    assert!(session.source_control_stash_query.is_empty());
     assert!(!session.source_control_stashes_open);
     assert!(!session.source_control_history_open);
     assert!(session.source_control_history_query.is_empty());
@@ -290,8 +287,11 @@ fn session_deserialize_bounds_restored_strings_paths_and_lists() {
     .unwrap();
 
     assert_eq!(session.open_files.len(), PERSISTED_SESSION_PATHS_MAX);
-    assert_eq!(session.open_files[0], PathBuf::new());
-    assert_eq!(session.active_path, Some(PathBuf::new()));
+    // Over-length paths are pruned from path lists instead of being
+    // restored as empty placeholder paths.
+    assert_eq!(session.open_files[0], workspace.join("src/file-0.rs"));
+    // An over-length single path restores as absent rather than empty.
+    assert_eq!(session.active_path, None);
     assert_eq!(
         session.project_search_query.chars().count(),
         PERSISTED_SESSION_VOLATILE_TEXT_MAX_CHARS
@@ -343,7 +343,9 @@ fn session_deserialize_bounds_restored_strings_paths_and_lists() {
         session.recovery.len(),
         PERSISTED_SESSION_RECOVERY_BUFFERS_MAX
     );
-    assert_eq!(session.recovery[0].path, Some(PathBuf::new()));
+    // The over-length path is dropped so no empty placeholder path is kept,
+    // while the recovered text survives as an untitled buffer.
+    assert_eq!(session.recovery[0].path, None);
     assert_eq!(
         session.recovery[0].display_name.chars().count(),
         PERSISTED_SESSION_DISPLAY_TEXT_MAX_CHARS
@@ -389,7 +391,7 @@ fn session_serializes_explorer_ui_state() {
 }
 
 #[test]
-fn session_serializes_project_search_ui_state() {
+fn session_serializes_project_search_state_and_drops_legacy_layout_fields() {
     let session: PersistedSession = serde_json::from_str(
         r#"{
                 "workspace_root": "workspace",
@@ -403,6 +405,7 @@ fn session_serializes_project_search_ui_state() {
                 "project_search_query": "SearchTerm",
                 "project_search_case_sensitive": true,
                 "project_search_whole_word": true,
+                "project_search_regex": true,
                 "project_search_include": "src/**/*.rs",
                 "project_search_exclude": "target/**,*.snap",
                 "project_search_recent": [
@@ -410,6 +413,7 @@ fn session_serializes_project_search_ui_state() {
                         "query": "PreviousTerm",
                         "case_sensitive": true,
                         "whole_word": false,
+                        "regex": true,
                         "include": "crates/**/*.rs",
                         "exclude": "target/**"
                     }
@@ -421,25 +425,28 @@ fn session_serializes_project_search_ui_state() {
     .unwrap();
 
     assert!(session.project_search_open);
-    assert_eq!(session.project_search_placement, PanelPlacement::Floating);
-    assert_eq!(session.project_search_width, 414.0);
     assert_eq!(session.project_search_query, "SearchTerm");
     assert!(session.project_search_case_sensitive);
     assert!(session.project_search_whole_word);
+    assert!(session.project_search_regex);
     assert_eq!(session.project_search_include, "src/**/*.rs");
     assert_eq!(session.project_search_exclude, "target/**,*.snap");
     assert_eq!(session.project_search_recent.len(), 1);
     assert_eq!(session.project_search_recent[0].query, "PreviousTerm");
     assert!(session.project_search_recent[0].case_sensitive);
+    assert!(session.project_search_recent[0].regex);
 
     let encoded = serde_json::to_value(&session).unwrap();
-    assert_eq!(encoded["project_search_placement"], "floating");
+    assert!(encoded.get("project_search_placement").is_none());
+    assert!(encoded.get("project_search_width").is_none());
     assert_eq!(encoded["project_search_query"], "SearchTerm");
     assert_eq!(encoded["project_search_case_sensitive"], true);
     assert_eq!(encoded["project_search_whole_word"], true);
+    assert_eq!(encoded["project_search_regex"], true);
     assert_eq!(encoded["project_search_include"], "src/**/*.rs");
     assert_eq!(encoded["project_search_exclude"], "target/**,*.snap");
     assert_eq!(encoded["project_search_recent"][0]["query"], "PreviousTerm");
+    assert_eq!(encoded["project_search_recent"][0]["regex"], true);
 }
 
 #[test]

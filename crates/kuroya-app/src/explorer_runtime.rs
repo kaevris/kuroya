@@ -73,6 +73,7 @@ impl KuroyaApp {
     pub(crate) fn apply_explorer_operation(&mut self, operation: ExplorerOperationResult) {
         match operation {
             ExplorerOperationResult::Created { path, kind } => {
+                self.invalidate_explorer_directory_for_path(&path);
                 self.expand_parent_of(&path);
                 match kind {
                     ExplorerEntryKind::File => {
@@ -91,6 +92,8 @@ impl KuroyaApp {
                 new_path,
                 kind,
             } => {
+                self.invalidate_explorer_directory_for_path(&old_path);
+                self.invalidate_explorer_directory_for_path(&new_path);
                 self.expand_parent_of(&new_path);
                 if kind == ExplorerEntryKind::Folder {
                     self.retarget_expanded_paths(&old_path, &new_path);
@@ -108,6 +111,7 @@ impl KuroyaApp {
                 };
             }
             ExplorerOperationResult::Deleted { path, kind } => {
+                self.invalidate_explorer_directory_for_path(&path);
                 self.explorer_expanded
                     .retain(|expanded| !path_matches_kind(expanded, &path, kind));
                 self.clear_deleted_revealed_path(&path, kind);

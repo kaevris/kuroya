@@ -28,6 +28,7 @@ const SOURCE_CONTROL_STASH_HASH_DISPLAY_MAX_CHARS: usize = 64;
 impl KuroyaApp {
     pub(crate) fn begin_git_stashes_panel(&mut self) {
         self.source_control_stashes_open = true;
+        self.git_panel_open_generation += 1;
         self.source_control_stash_selected = 0;
         if self.source_control_stash_message.trim().is_empty() {
             self.source_control_stash_message = source_control_stash_message_from_inputs(

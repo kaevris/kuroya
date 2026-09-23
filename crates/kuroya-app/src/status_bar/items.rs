@@ -2,7 +2,7 @@ use crate::{
     path_display::sanitized_display_label_cow,
     ui_icons::{IconKind, icon_label},
 };
-use egui::{RichText, Ui};
+use egui::{Color32, RichText, Ui};
 use kuroya_core::{
     GitCountBadge, GitSnapshot, GitStatusCounts, ScmCountBadge, ScmProviderCountBadge,
 };
@@ -10,11 +10,27 @@ use std::borrow::Cow;
 
 const STATUS_ITEM_TEXT_MAX_CHARS: usize = 96;
 const STATUS_ITEM_TOOLTIP_MAX_CHARS: usize = 240;
+const STATUS_ITEM_CHROME_WIDTH: f32 = 42.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PreparedStatusItem<'a> {
     text: Cow<'a, str>,
     tooltip: Cow<'a, str>,
+}
+
+pub(crate) fn status_item_width(ui: &Ui, item: &PreparedStatusItem<'_>) -> f32 {
+    STATUS_ITEM_CHROME_WIDTH + small_text_width(ui, item.text.as_ref())
+}
+
+pub(crate) fn small_text_width(ui: &Ui, text: &str) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), font, Color32::WHITE)
+        .size()
+        .x
 }
 
 pub(crate) fn prepare_status_item<'a>(

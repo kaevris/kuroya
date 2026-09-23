@@ -11,6 +11,20 @@ fn partial_settings_toml_uses_defaults() {
     assert_eq!(settings.ui_font_size, 13.0);
     assert_eq!(settings.editor_font_path, None);
     assert_eq!(settings.ui_font_path, None);
+    assert!(!settings.background_image_enabled);
+    assert_eq!(settings.background_image_path, None);
+    assert_eq!(
+        settings.background_image_dim,
+        DEFAULT_EDITOR_BACKGROUND_IMAGE_DIM
+    );
+    assert_eq!(
+        settings.background_image_fit,
+        EditorBackgroundImageFit::Cover
+    );
+    assert_eq!(
+        settings.background_image_position,
+        EditorBackgroundImagePosition::Center
+    );
     assert_eq!(settings.font_family, DEFAULT_EDITOR_FONT_FAMILY);
     assert_eq!(settings.font_weight, DEFAULT_EDITOR_FONT_WEIGHT);
     assert_eq!(settings.font_ligatures, DEFAULT_EDITOR_FONT_LIGATURES);
@@ -301,12 +315,10 @@ fn partial_settings_toml_uses_defaults() {
         settings.paste_as_show_paste_selector,
         EditorPasteAsShowPasteSelector::AfterPaste
     );
-    assert!(settings.autosave);
+    // Autosave is opt-in: defaults must never write the user's file.
+    assert!(!settings.autosave);
     assert_eq!(settings.autosave_mode, EditorAutoSaveMode::AfterDelay);
-    assert_eq!(
-        settings.effective_autosave_mode(),
-        EditorAutoSaveMode::AfterDelay
-    );
+    assert_eq!(settings.effective_autosave_mode(), EditorAutoSaveMode::Off);
     assert_eq!(settings.autosave_delay_ms, DEFAULT_AUTOSAVE_DELAY_MS);
     assert!(settings.scroll_beyond_last_line);
     assert_eq!(
@@ -454,7 +466,7 @@ fn partial_settings_toml_uses_defaults() {
         settings.select_on_line_numbers,
         DEFAULT_EDITOR_SELECT_ON_LINE_NUMBERS
     );
-    assert_eq!(settings.word_wrap, EditorWordWrap::On);
+    assert_eq!(settings.word_wrap, EditorWordWrap::Off);
     assert_eq!(
         settings.word_wrap_override1,
         EditorWordWrapOverride::Inherit
@@ -659,7 +671,6 @@ fn partial_settings_toml_uses_defaults() {
     assert!(!settings.git_rebase_when_sync);
     assert!(!settings.git_remember_post_commit_command);
     assert!(!settings.git_replace_tags_when_pull);
-    assert!(settings.git_scan_repositories.is_empty());
     assert!(!settings.git_support_cancellation);
     assert!(settings.git_terminal_authentication);
     assert!(!settings.git_terminal_git_editor);
@@ -1045,6 +1056,151 @@ fn zed_style_vim_mode_setting_alias_enables_vim_keybindings() {
 }
 
 #[test]
+fn project_index_and_search_settings_load_from_toml() {
+    let settings: EditorSettings = toml::from_str(
+        "project_index_max_files = 120000\n\
+         project_index_exclude_globs = [\"dist\", \"build\"]\n\
+         project_search_exclude_globs = \"cache\"\n\
+         project_search_max_file_size_mb = 8\n\
+         project_search_max_results = 1234\n",
+    )
+    .expect("project search settings should load");
+
+    assert_eq!(settings.project_index_max_files, 120_000);
+    assert_eq!(settings.project_index_exclude_globs, ["dist", "build"]);
+    assert_eq!(settings.project_search_exclude_globs, ["cache"]);
+    assert_eq!(settings.project_search_max_file_size_mb, 8);
+    assert_eq!(settings.project_search_max_results, 1234);
+}
+
+#[test]
+fn editor_background_image_settings_parse_with_named_enum_values() {
+    let settings: EditorSettings = toml::from_str(
+        "background_image_enabled = true\n\
+         background_image_path = \"assets/editor.png\"\n\
+         background_image_scope = \"full_app\"\n\
+         background_image_dim = 0.8\n\
+         background_image_fit = \"contain\"\n\
+         background_image_position = \"bottom\"\n",
+    )
+    .expect("editor background image settings should load");
+
+    assert!(settings.background_image_enabled);
+    assert_eq!(
+        settings.background_image_path.as_deref(),
+        Some("assets/editor.png")
+    );
+    assert_eq!(
+        settings.background_image_scope,
+        EditorBackgroundImageScope::FullApp
+    );
+    assert_eq!(settings.background_image_dim, 0.8);
+    assert_eq!(
+        settings.background_image_fit,
+        EditorBackgroundImageFit::Contain
+    );
+    assert_eq!(
+        settings.background_image_position,
+        EditorBackgroundImagePosition::Bottom
+    );
+}
+
+#[test]
+fn editor_background_image_settings_save_and_reload_preserves_values() {
+    let path = temp_settings_path("background-image-roundtrip");
+    let root = path.parent().unwrap().parent().unwrap().to_path_buf();
+    let settings = EditorSettings {
+        background_image_enabled: true,
+        background_image_path: Some("assets/editor.png".to_owned()),
+        background_image_scope: EditorBackgroundImageScope::FullApp,
+        background_image_dim: 0.6,
+        background_image_fit: EditorBackgroundImageFit::Stretch,
+        background_image_position: EditorBackgroundImagePosition::Top,
+        ..EditorSettings::default()
+    };
+
+    settings.save(&path).unwrap();
+
+    let loaded = EditorSettings::load_or_create(&path).unwrap();
+    assert_eq!(loaded, settings);
+    assert_no_setting_temps(&path);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_index_and_search_settings_default_and_sanitize() {
+    let defaults = EditorSettings::default();
+    assert_eq!(
+        defaults.project_index_exclude_globs,
+        default_project_index_exclude_globs()
+    );
+    assert!(!defaults.project_index_include_hidden_dirs);
+    assert_eq!(
+        defaults.project_search_exclude_globs,
+        default_project_search_exclude_globs()
+    );
+
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-project-settings-sanitize-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("settings.toml");
+    std::fs::write(
+        &path,
+        "project_index_max_files = 0\n\
+         project_index_exclude_globs = [\" target \", \"\", \"target\"]\n\
+         project_search_exclude_globs = [\" cache \", \"cache\"]\n\
+         project_search_max_file_size_mb = 0\n\
+         project_search_max_results = 0\n",
+    )
+    .unwrap();
+
+    let settings = EditorSettings::load_or_create(&path).unwrap();
+
+    assert_eq!(
+        settings.project_index_max_files,
+        MIN_PROJECT_INDEX_MAX_FILES
+    );
+    assert_eq!(settings.project_index_exclude_globs, ["target"]);
+    assert_eq!(settings.project_search_exclude_globs, ["cache"]);
+    assert_eq!(
+        settings.project_search_max_file_size_mb,
+        MIN_PROJECT_SEARCH_MAX_FILE_SIZE_MB
+    );
+    assert_eq!(
+        settings.project_search_max_results,
+        MIN_PROJECT_SEARCH_MAX_RESULTS
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_index_include_hidden_dirs_setting_save_and_reload_preserves_value() {
+    let path = temp_settings_path("project-index-hidden-dirs-roundtrip");
+    let root = path.parent().unwrap().parent().unwrap().to_path_buf();
+    assert!(!EditorSettings::default().project_index_include_hidden_dirs);
+    let settings = EditorSettings {
+        project_index_include_hidden_dirs: true,
+        ..EditorSettings::default()
+    };
+
+    settings.save(&path).unwrap();
+
+    let loaded = EditorSettings::load_or_create(&path).unwrap();
+    assert_eq!(loaded, settings);
+    assert!(loaded.project_index_include_hidden_dirs);
+    assert_no_setting_temps(&path);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn built_in_themes_are_named_and_cyclable() {
     let expected_names: Vec<String> = [
         "Matte Dark",
@@ -1241,8 +1397,10 @@ fn settings_parse_and_save_sanitize_stale_keymap_bindings() {
 
 #[test]
 fn settings_migrates_schema_two_keymap_to_include_command_palette_shortcut() {
-    let mut raw = EditorSettings::default();
-    raw.schema_version = 2;
+    let mut raw = EditorSettings {
+        schema_version: 2,
+        ..EditorSettings::default()
+    };
     raw.keymap
         .bindings
         .retain(|binding| binding.command != Command::ToggleCommandPalette);
@@ -1265,8 +1423,10 @@ fn settings_migrates_schema_two_keymap_to_include_command_palette_shortcut() {
 
 #[test]
 fn settings_command_palette_keymap_migration_respects_custom_ctrl_shift_p_binding() {
-    let mut raw = EditorSettings::default();
-    raw.schema_version = 2;
+    let mut raw = EditorSettings {
+        schema_version: 2,
+        ..EditorSettings::default()
+    };
     raw.keymap
         .bindings
         .retain(|binding| binding.command != Command::ToggleCommandPalette);
@@ -1307,6 +1467,7 @@ fn settings_save_sanitizes_lsp_server_configs() {
                 args: vec![" --stdio ".to_owned()],
                 extensions: vec![".rs".to_owned(), "rs".to_owned(), ".".to_owned()],
                 root_markers: vec![" Cargo.toml ".to_owned()],
+                enabled: true,
             },
             crate::lsp::LspServerConfig {
                 language: "kuroya-empty".to_owned(),
@@ -1314,6 +1475,7 @@ fn settings_save_sanitizes_lsp_server_configs() {
                 args: Vec::new(),
                 extensions: Vec::new(),
                 root_markers: Vec::new(),
+                enabled: true,
             },
             crate::lsp::LspServerConfig {
                 language: " kuroya-test ".to_owned(),
@@ -1321,6 +1483,7 @@ fn settings_save_sanitizes_lsp_server_configs() {
                 args: vec![" --stdio ".to_owned()],
                 extensions: vec![".kuroya".to_owned(), "kuroya".to_owned(), ".".to_owned()],
                 root_markers: vec![" .kuroya-root ".to_owned()],
+                enabled: true,
             },
             crate::lsp::LspServerConfig {
                 language: "RUST".to_owned(),
@@ -1328,6 +1491,7 @@ fn settings_save_sanitizes_lsp_server_configs() {
                 args: Vec::new(),
                 extensions: Vec::new(),
                 root_markers: Vec::new(),
+                enabled: true,
             },
         ],
         ..EditorSettings::default()
@@ -1338,15 +1502,18 @@ fn settings_save_sanitizes_lsp_server_configs() {
         parse_settings_text(&fs::read_to_string(&path).unwrap()).unwrap();
 
     assert!(!should_resave_saved);
+    // Both distinct rust servers survive sanitization; only the invalid
+    // entry (empty command) is dropped.
     assert_eq!(
         saved.lsp_servers,
         vec![
             crate::lsp::LspServerConfig {
                 language: "rust".to_owned(),
-                command: "rust-analyzer-final".to_owned(),
-                args: Vec::new(),
-                extensions: Vec::new(),
-                root_markers: Vec::new(),
+                command: "rust-analyzer-custom".to_owned(),
+                args: vec!["--stdio".to_owned()],
+                extensions: vec!["rs".to_owned()],
+                root_markers: vec!["Cargo.toml".to_owned()],
+                enabled: true,
             },
             crate::lsp::LspServerConfig {
                 language: "kuroya-test".to_owned(),
@@ -1354,11 +1521,122 @@ fn settings_save_sanitizes_lsp_server_configs() {
                 args: vec!["--stdio".to_owned()],
                 extensions: vec!["kuroya".to_owned()],
                 root_markers: vec![".kuroya-root".to_owned()],
+                enabled: true,
+            },
+            crate::lsp::LspServerConfig {
+                language: "rust".to_owned(),
+                command: "rust-analyzer-final".to_owned(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+                enabled: true,
             },
         ]
     );
 
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn schema_3_settings_materialize_builtin_lsp_servers() {
+    let text = r#"
+        schema_version = 3
+
+        [[lsp_servers]]
+        language = "rust"
+        command = "rust-analyzer-custom"
+        root_markers = ["Cargo.toml"]
+    "#;
+
+    let (settings, should_resave) = parse_settings_text(text).unwrap();
+
+    assert!(should_resave);
+    assert_eq!(settings.schema_version, SETTINGS_SCHEMA_VERSION);
+
+    let servers = settings.lsp_servers;
+    let defaults = crate::lsp::default_server_configs();
+    // The rust override replaced the built-in rust default in place and
+    // every other default was materialized.
+    assert_eq!(servers.len(), defaults.len());
+    let rust = servers
+        .iter()
+        .find(|server| server.language == "rust")
+        .expect("rust config should be present");
+    assert_eq!(rust.command, "rust-analyzer-custom");
+    assert_eq!(rust.root_markers, ["Cargo.toml"]);
+    assert!(rust.enabled, "customized core server stays enabled");
+    let python = servers
+        .iter()
+        .find(|server| server.language == "python")
+        .expect("python config should be present");
+    assert!(
+        python.enabled,
+        "python is a core language and stays enabled"
+    );
+    let java = servers
+        .iter()
+        .find(|server| server.language == "java")
+        .expect("java config should be present");
+    assert!(
+        !java.enabled,
+        "untouched non-core defaults materialize disabled"
+    );
+    for default in &defaults {
+        if default.language == "rust" {
+            continue;
+        }
+        assert!(
+            servers.contains(default),
+            "default for {} should be materialized",
+            default.language
+        );
+    }
+}
+
+#[test]
+fn schema_5_settings_trim_pristine_non_core_defaults_to_disabled() {
+    let text = r#"
+        schema_version = 4
+
+        [[lsp_servers]]
+        language = "java"
+        command = "jdtls"
+        root_markers = ["pom.xml", "build.gradle", "build.gradle.kts", ".project", ".git"]
+
+        [[lsp_servers]]
+        language = "dart"
+        command = "my-dart-lsp"
+        args = ["language-server"]
+    "#;
+
+    let (settings, should_resave) = parse_settings_text(text).unwrap();
+
+    assert!(should_resave);
+    let java = settings
+        .lsp_servers
+        .iter()
+        .find(|server| server.language == "java")
+        .expect("java config should be present");
+    assert!(
+        !java.enabled,
+        "pristine non-core default is disabled by the migration"
+    );
+    let dart = settings
+        .lsp_servers
+        .iter()
+        .find(|server| server.language == "dart")
+        .expect("dart config should be present");
+    assert!(dart.enabled, "customized entries keep their enabled state");
+}
+
+#[test]
+fn schema_3_settings_without_lsp_servers_materialize_all_defaults() {
+    let text = "schema_version = 3\n";
+
+    let (settings, should_resave) = parse_settings_text(text).unwrap();
+
+    assert!(should_resave);
+    assert_eq!(settings.lsp_servers, crate::lsp::default_server_configs());
 }
 
 #[test]

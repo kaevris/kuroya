@@ -2,23 +2,27 @@ use eframe::egui::{self, Context, Key};
 
 use crate::{
     KuroyaApp,
+    app_update_overlays::PopupDismissalGuard,
     popup_buttons::{PopupButtonKind, popup_button_enabled},
     ui_icons::{IconKind, icon_button, icon_label},
+    ui_state::{handle_list_navigation_keys, selected_row_scroll_offset, selection_page_step},
 };
+use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 
 mod actions;
 mod apply;
+mod background_files;
 mod font_files;
 mod sections;
 
 use actions::PendingSettingsPanelActions;
 use sections::{
-    SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_DEVELOPER, SETTINGS_SECTION_EDITOR,
-    SETTINGS_SECTION_FILES, SETTINGS_SECTION_GENERAL, SETTINGS_SECTION_LSP,
-    SETTINGS_SECTION_SOURCE_CONTROL, SETTINGS_SECTION_TERMINAL, SETTINGS_SECTION_VIM,
-    SETTINGS_SECTIONS, SETTINGS_TARGET_APPEARANCE, SETTINGS_TARGET_DEVELOPER,
-    SETTINGS_TARGET_EDITOR_CODE_VIEW, SETTINGS_TARGET_EDITOR_CURSOR, SETTINGS_TARGET_EDITOR_DIFF,
-    SETTINGS_TARGET_EDITOR_DISPLAY, SETTINGS_TARGET_EDITOR_LANGUAGE,
+    SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_DEVELOPER, SETTINGS_SECTION_DISCORD,
+    SETTINGS_SECTION_EDITOR, SETTINGS_SECTION_FILES, SETTINGS_SECTION_GENERAL,
+    SETTINGS_SECTION_LSP, SETTINGS_SECTION_PLUGINS, SETTINGS_SECTION_SOURCE_CONTROL,
+    SETTINGS_SECTION_TERMINAL, SETTINGS_SECTION_VIM, SETTINGS_SECTIONS, SETTINGS_TARGET_APPEARANCE,
+    SETTINGS_TARGET_DEVELOPER, SETTINGS_TARGET_EDITOR_CODE_VIEW, SETTINGS_TARGET_EDITOR_CURSOR,
+    SETTINGS_TARGET_EDITOR_DIFF, SETTINGS_TARGET_EDITOR_DISPLAY, SETTINGS_TARGET_EDITOR_LANGUAGE,
     SETTINGS_TARGET_EDITOR_TEXT_LAYOUT, SETTINGS_TARGET_EDITOR_TYPING,
     SETTINGS_TARGET_FILES_SAVE_ACTIONS, SETTINGS_TARGET_FILES_SAVE_CLEANUP,
     SETTINGS_TARGET_GENERAL, SETTINGS_TARGET_LSP, SETTINGS_TARGET_SCROLLBARS,
@@ -26,20 +30,32 @@ use sections::{
     SETTINGS_TARGET_TERMINAL_COLOR, SETTINGS_TARGET_TERMINAL_CURSOR,
     SETTINGS_TARGET_TERMINAL_INTERACTION, SETTINGS_TARGET_TERMINAL_PROFILE,
     SETTINGS_TARGET_VIM_KEYBINDINGS, SettingsHighlightState, bounded_settings_singleline_input,
-    render_appearance_settings, render_developer_settings, render_editor_settings,
-    render_files_settings, render_general_settings, render_lsp_settings, render_settings_sidebar,
+    render_appearance_settings, render_developer_settings, render_discord_settings,
+    render_editor_settings, render_files_settings, render_general_settings, render_lsp_settings,
+    render_plugins_settings, render_settings_section_picker, render_settings_sidebar,
     render_source_control_settings, render_terminal_settings, render_vim_settings,
     vim_key_capture_active, vim_key_capture_clear,
 };
 
-const SETTINGS_WINDOW_SIZE: [f32; 2] = [620.0, 440.0];
+const SETTINGS_WINDOW_PREFERRED_SIZE: [f32; 2] = [920.0, 640.0];
 const SETTINGS_WINDOW_MIN_SIZE: [f32; 2] = [380.0, 320.0];
-const SETTINGS_SIDEBAR_WIDTH: f32 = 142.0;
+const SETTINGS_WINDOW_MARGIN: [f32; 2] = [48.0, 120.0];
+const SETTINGS_WIDE_LAYOUT_MIN_WIDTH: f32 = 720.0;
+const SETTINGS_SIDEBAR_WIDTH_RATIO: f32 = 0.21;
+const SETTINGS_SIDEBAR_MIN_WIDTH: f32 = 180.0;
+const SETTINGS_SIDEBAR_MAX_WIDTH: f32 = 240.0;
 const SETTINGS_FOOTER_HEIGHT: f32 = 38.0;
 const SETTINGS_FOOTER_BUTTON_WIDTH: f32 = 78.0;
+const SETTINGS_CONTENT_HEADER_HEIGHT: f32 = 44.0;
 const SETTINGS_SEARCH_QUERY_ID: &str = "settings-panel-search-query";
+const SETTINGS_SEARCH_SELECTION_ID: &str = "settings-panel-search-selection";
 const SETTINGS_HIGHLIGHT_TARGET_ID: &str = "settings-panel-highlight-target";
 const SETTINGS_PENDING_SCROLL_TARGET_ID: &str = "settings-panel-pending-scroll-target";
+const SETTINGS_SEARCH_RESULT_BUTTON_HEIGHT: f32 = 32.0;
+const SETTINGS_SEARCH_RESULT_DETAIL_HEIGHT: f32 = 18.0;
+const SETTINGS_SEARCH_RESULT_ROW_GAP: f32 = 4.0;
+const SETTINGS_CONFIRM_DISCARD_ID: &str = "settings-panel-confirm-discard";
+const SETTINGS_CONFIRM_DISCARD_PROMPT: &str = "Unsaved changes — click again to discard";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SettingsSearchEntry {
@@ -91,6 +107,12 @@ const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
         group: "General",
         title: "Status bar",
         keywords: "footer diagnostics git branch visible",
+    },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_DEVELOPER,
+        group: "Developer",
+        title: "Application info",
+        keywords: "app version package build profile target platform settings schema update source repository",
     },
     SettingsSearchEntry {
         section: SETTINGS_SECTION_DEVELOPER,
@@ -542,29 +564,81 @@ const SETTINGS_SEARCH_ENTRIES: &[SettingsSearchEntry] = &[
         title: "UI font file",
         keywords: "font file ui interface custom choose clear bundled ttf otf",
     },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_APPEARANCE,
+        group: "Editor background",
+        title: "Editor background image",
+        keywords: "editor background image wallpaper picture choose clear enable dim opacity",
+    },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_APPEARANCE,
+        group: "Editor background",
+        title: "Editor background area",
+        keywords: "editor background image wallpaper scope area full app editor only",
+    },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_APPEARANCE,
+        group: "Editor background",
+        title: "Editor background scaling",
+        keywords: "editor background image scaling fit cover contain stretch size",
+    },
+    SettingsSearchEntry {
+        section: SETTINGS_SECTION_APPEARANCE,
+        group: "Editor background",
+        title: "Editor background position",
+        keywords: "editor background image vertical position top center bottom alignment",
+    },
 ];
 
 impl KuroyaApp {
     pub(crate) fn render_settings_panel(&mut self, ctx: &Context) {
         let mut actions = PendingSettingsPanelActions::default();
+        let dismissal = PopupDismissalGuard::capture(ctx);
+        let opened_key = egui::Id::new("settings_panel_was_open_last_frame");
+        let was_open = ctx.data_mut(|data| *data.get_temp::<bool>(opened_key).get_or_insert(false));
+        if !was_open {
+            reset_settings_panel_memory(ctx);
+            self.sync_settings_panel_inputs();
+        }
+        // A discard confirmation only stays armed while the draft holds
+        // unsaved edits, so a freshly opened (or just applied) panel never
+        // discards on the first dismissal attempt.
+        if !self.settings_panel_has_pending_inputs() {
+            set_settings_panel_confirm_discard_armed(ctx, false);
+        }
+        record_settings_panel_focus(ctx);
         let window_size = settings_window_size(ctx);
         let mut search_query = settings_panel_search_query(ctx);
         let mut highlighted_target = settings_panel_highlight_target(ctx);
         let mut pending_scroll_target = settings_panel_pending_scroll_target(ctx);
         let vim_capture_active = vim_key_capture_active(ctx);
 
-        egui::Window::new("Settings")
+        let window_response = egui::Window::new("Settings")
+            // Pin the window to exactly the computed size: without min+max,
+            // egui re-fits non-resizable windows to each section's content,
+            // so switching sections visibly resizes the popup.
+            .min_size(egui::Vec2::from(window_size))
+            .max_size(egui::Vec2::from(window_size))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 72.0])
             .fixed_size(window_size)
-            .min_size(SETTINGS_WINDOW_MIN_SIZE)
-            .max_size(SETTINGS_WINDOW_SIZE)
             .show(ctx, |ui| {
+                ui.set_min_width(window_size[0]);
+                ui.set_max_width(window_size[0]);
                 if ui.input(|input| input.key_pressed(Key::Escape))
                     && settings_panel_escape_should_apply(vim_capture_active)
                 {
-                    apply_settings_panel_escape(&mut search_query, &mut actions);
+                    let mut discard_confirmed = settings_panel_confirm_discard_armed(ctx);
+                    let has_pending_inputs =
+                        self.settings_panel_draft_validation().has_pending_inputs();
+                    apply_settings_panel_escape(
+                        &mut search_query,
+                        &mut actions,
+                        &mut discard_confirmed,
+                        has_pending_inputs,
+                    );
+                    set_settings_panel_confirm_discard_armed(ctx, discard_confirmed);
                 }
 
                 self.settings_panel_section = self
@@ -585,25 +659,44 @@ impl KuroyaApp {
                 } else {
                     Vec::new()
                 };
-                let body_height = (ui.available_height() - SETTINGS_FOOTER_HEIGHT).max(220.0);
+                let wide_layout = settings_panel_uses_sidebar(ui.available_width());
+                if !wide_layout {
+                    let previous_section = self.settings_panel_section;
+                    ui.add_enabled_ui(
+                        settings_panel_navigation_enabled(vim_capture_active),
+                        |ui| render_settings_section_picker(ui, &mut self.settings_panel_section),
+                    );
+                    apply_settings_panel_section_change(
+                        ctx,
+                        previous_section,
+                        self.settings_panel_section,
+                        &mut highlighted_target,
+                        &mut pending_scroll_target,
+                    );
+                    ui.add_space(ui.spacing().item_spacing.y);
+                }
+
+                let body_height = (ui.available_height() - SETTINGS_FOOTER_HEIGHT).max(0.0);
                 ui.horizontal(|ui| {
                     ui.set_height(body_height);
-                    ui.vertical(|ui| {
-                        ui.set_width(SETTINGS_SIDEBAR_WIDTH);
-                        let previous_section = self.settings_panel_section;
-                        ui.add_enabled_ui(
-                            settings_panel_navigation_enabled(vim_capture_active),
-                            |ui| render_settings_sidebar(ui, &mut self.settings_panel_section),
-                        );
-                        if self.settings_panel_section != previous_section {
-                            if previous_section == SETTINGS_SECTION_VIM {
-                                vim_key_capture_clear(ctx);
-                            }
-                            highlighted_target = None;
-                            pending_scroll_target = None;
-                        }
-                    });
-                    ui.separator();
+                    if wide_layout {
+                        ui.vertical(|ui| {
+                            ui.set_width(settings_sidebar_width(ui.available_width()));
+                            let previous_section = self.settings_panel_section;
+                            ui.add_enabled_ui(
+                                settings_panel_navigation_enabled(vim_capture_active),
+                                |ui| render_settings_sidebar(ui, &mut self.settings_panel_section),
+                            );
+                            apply_settings_panel_section_change(
+                                ctx,
+                                previous_section,
+                                self.settings_panel_section,
+                                &mut highlighted_target,
+                                &mut pending_scroll_target,
+                            );
+                        });
+                        ui.separator();
+                    }
                     ui.vertical(|ui| {
                         ui.set_width(ui.available_width());
                         if search_active {
@@ -611,7 +704,7 @@ impl KuroyaApp {
                                 ui,
                                 &search_query_trimmed,
                                 &search_results,
-                                (body_height - 44.0).max(160.0),
+                                settings_content_height(body_height),
                             );
                             if let Some(entry) = clicked_result {
                                 search_query.clear();
@@ -623,15 +716,19 @@ impl KuroyaApp {
                         } else {
                             ui.heading(SETTINGS_SECTIONS[self.settings_panel_section]);
                             ui.separator();
-                            egui::ScrollArea::vertical()
+                            // Scroll both axes: with a vertical-only area, any widget
+                            // wider than the window (e.g. an over-wide grid row)
+                            // propagates its min width up and resizes the window.
+                            // Horizontal overflow becomes a scrollbar instead.
+                            egui::ScrollArea::both()
                                 .id_salt((
                                     "settings_panel_section_scroll",
                                     self.settings_panel_section,
                                 ))
                                 .scroll_bar_visibility(
-                                    egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                                    egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
                                 )
-                                .max_height((body_height - 44.0).max(160.0))
+                                .max_height(settings_content_height(body_height))
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| {
                                     ui.set_width(ui.available_width());
@@ -681,6 +778,8 @@ impl KuroyaApp {
                                             &mut actions.clear_editor_font,
                                             &mut actions.choose_ui_font,
                                             &mut actions.clear_ui_font,
+                                            &mut actions.choose_background_image,
+                                            &mut actions.clear_background_image,
                                             &mut actions.status,
                                             &mut highlight,
                                         ),
@@ -696,6 +795,17 @@ impl KuroyaApp {
                                             &mut self.settings_panel_draft,
                                             &mut highlight,
                                         ),
+                                        SETTINGS_SECTION_PLUGINS => render_plugins_settings(
+                                            ui,
+                                            &mut self.settings_panel_draft,
+                                            &self.plugins,
+                                            &mut highlight,
+                                        ),
+                                        SETTINGS_SECTION_DISCORD => render_discord_settings(
+                                            ui,
+                                            &mut self.settings_panel_draft,
+                                            &mut highlight,
+                                        ),
                                         _ => {}
                                     }
                                 });
@@ -706,7 +816,13 @@ impl KuroyaApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     let validation = self.settings_panel_draft_validation();
-                    let footer_text = validation.footer_message();
+                    let confirm_discard_armed = settings_panel_confirm_discard_armed(ctx)
+                        && validation.has_pending_inputs();
+                    let footer_text = if confirm_discard_armed {
+                        SETTINGS_CONFIRM_DISCARD_PROMPT.to_owned()
+                    } else {
+                        validation.footer_message()
+                    };
                     let footer_color = if validation.has_warnings() {
                         ui.visuals().warn_fg_color
                     } else {
@@ -771,6 +887,47 @@ impl KuroyaApp {
                 });
             });
 
+        if window_response
+            .as_ref()
+            .is_some_and(|response| dismissal.clicked_outside(ctx, response.response.rect))
+        {
+            let mut discard_confirmed = settings_panel_confirm_discard_armed(ctx);
+            apply_settings_panel_outside_click(
+                &mut actions,
+                &mut discard_confirmed,
+                self.settings_panel_has_pending_inputs(),
+            );
+            set_settings_panel_confirm_discard_armed(ctx, discard_confirmed);
+        }
+
+        #[cfg(debug_assertions)]
+        if std::env::var("KUROYA_DEBUG_SETTINGS").is_ok() {
+            if let Some(response) = window_response.as_ref() {
+                let rect = response.response.rect;
+                use std::fmt::Write as _;
+                let mut line = String::new();
+                let _ = writeln!(
+                    line,
+                    "{}, {:?}",
+                    SETTINGS_SECTIONS[self.settings_panel_section],
+                    (rect.left(), rect.top(), rect.width(), rect.height())
+                );
+                let path = std::env::temp_dir().join("kuroya_settings_debug.log");
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
+            }
+            static DEBUG_FRAME: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let frame = DEBUG_FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if frame != 0 && frame.is_multiple_of(120) {
+                self.settings_panel_section =
+                    (self.settings_panel_section + 1) % SETTINGS_SECTIONS.len();
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+
         if actions.close {
             vim_key_capture_clear(ctx);
             search_query.clear();
@@ -780,16 +937,119 @@ impl KuroyaApp {
         set_settings_panel_search_query(ctx, search_query);
         set_settings_panel_highlight_target(ctx, highlighted_target);
         set_settings_panel_pending_scroll_target(ctx, pending_scroll_target);
+        ctx.data_mut(|data| data.insert_temp(opened_key, true));
+        let closed = actions.close;
         self.apply_settings_panel_actions(actions);
+        if closed {
+            restore_settings_panel_focus(ctx);
+        }
+    }
+}
+
+/// Reset egui's memory when the settings panel opens, keeping the app theme and
+/// the focused widget (e.g. the terminal input) intact.
+///
+/// The active style lives in `Memory::options`, so it is saved across the wipe
+/// instead of being reset to egui's stock gray style.
+fn reset_settings_panel_memory(ctx: &Context) {
+    let options = ctx.memory(|memory| memory.options.clone());
+    let focused = ctx.memory(|memory| memory.focused());
+    ctx.memory_mut(|memory| *memory = egui::Memory::default());
+    ctx.memory_mut(|memory| {
+        memory.options = options;
+        if let Some(id) = focused {
+            memory.request_focus(id);
+        }
+    });
+}
+
+/// Remember the focused widget while the settings panel is open so focus can
+/// return to it when the panel closes instead of being orphaned (keystrokes
+/// would otherwise fall through to the editor).
+fn record_settings_panel_focus(ctx: &Context) {
+    if let Some(id) = ctx.memory(|memory| memory.focused()) {
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("settings_panel_focus_to_restore"), Some(id))
+        });
+    }
+}
+
+fn restore_settings_panel_focus(ctx: &Context) {
+    let focused = ctx.data_mut(|data| {
+        data.remove_temp::<Option<egui::Id>>(egui::Id::new("settings_panel_focus_to_restore"))
+    });
+    if let Some(id) = focused.flatten() {
+        ctx.memory_mut(|memory| memory.request_focus(id));
     }
 }
 
 fn settings_window_size(ctx: &Context) -> [f32; 2] {
-    let available = ctx.available_rect().size();
+    let available = ctx.content_rect().size();
+    settings_window_size_for_available(available.x, available.y)
+}
+
+fn settings_window_size_for_available(available_width: f32, available_height: f32) -> [f32; 2] {
     [
-        SETTINGS_WINDOW_SIZE[0].min((available.x - 32.0).max(SETTINGS_WINDOW_MIN_SIZE[0])),
-        SETTINGS_WINDOW_SIZE[1].min((available.y - 96.0).max(SETTINGS_WINDOW_MIN_SIZE[1])),
+        settings_window_dimension(
+            SETTINGS_WINDOW_PREFERRED_SIZE[0],
+            SETTINGS_WINDOW_MIN_SIZE[0],
+            available_width,
+            SETTINGS_WINDOW_MARGIN[0],
+        ),
+        settings_window_dimension(
+            SETTINGS_WINDOW_PREFERRED_SIZE[1],
+            SETTINGS_WINDOW_MIN_SIZE[1],
+            available_height,
+            SETTINGS_WINDOW_MARGIN[1],
+        ),
     ]
+}
+
+fn settings_window_dimension(preferred: f32, minimum: f32, available: f32, margin: f32) -> f32 {
+    if !available.is_finite() || available <= 0.0 {
+        return preferred;
+    }
+
+    let usable = (available - margin).max(1.0);
+    preferred.min(usable).max(minimum.min(usable))
+}
+
+fn settings_panel_uses_sidebar(available_width: f32) -> bool {
+    available_width.is_finite() && available_width >= SETTINGS_WIDE_LAYOUT_MIN_WIDTH
+}
+
+fn settings_sidebar_width(available_width: f32) -> f32 {
+    if !available_width.is_finite() || available_width <= 0.0 {
+        return SETTINGS_SIDEBAR_MIN_WIDTH;
+    }
+
+    (available_width * SETTINGS_SIDEBAR_WIDTH_RATIO)
+        .clamp(SETTINGS_SIDEBAR_MIN_WIDTH, SETTINGS_SIDEBAR_MAX_WIDTH)
+        .min(available_width)
+}
+
+fn settings_content_height(body_height: f32) -> f32 {
+    if !body_height.is_finite() {
+        return 0.0;
+    }
+    (body_height - SETTINGS_CONTENT_HEADER_HEIGHT).max(0.0)
+}
+
+fn apply_settings_panel_section_change(
+    ctx: &Context,
+    previous_section: usize,
+    current_section: usize,
+    highlighted_target: &mut Option<String>,
+    pending_scroll_target: &mut Option<String>,
+) {
+    if previous_section == current_section {
+        return;
+    }
+    if previous_section == SETTINGS_SECTION_VIM {
+        vim_key_capture_clear(ctx);
+    }
+    *highlighted_target = None;
+    *pending_scroll_target = None;
 }
 
 fn settings_panel_close_button_label(has_pending_inputs: bool) -> &'static str {
@@ -811,12 +1071,36 @@ fn settings_panel_close_button_hover_text(has_pending_inputs: bool) -> &'static 
 fn apply_settings_panel_escape(
     search_query: &mut String,
     actions: &mut PendingSettingsPanelActions,
+    discard_confirmed: &mut bool,
+    has_pending_inputs: bool,
 ) {
-    if search_query.trim().is_empty() {
-        actions.close = true;
-    } else {
+    if !search_query.trim().is_empty() {
         search_query.clear();
+        return;
     }
+    if has_pending_inputs && !*discard_confirmed {
+        // First Escape with unsaved edits: arm the discard confirmation so a
+        // single stray keystroke cannot throw the draft away.
+        *discard_confirmed = true;
+        return;
+    }
+    *discard_confirmed = false;
+    actions.close = true;
+}
+
+fn apply_settings_panel_outside_click(
+    actions: &mut PendingSettingsPanelActions,
+    discard_confirmed: &mut bool,
+    has_pending_inputs: bool,
+) {
+    if has_pending_inputs && !*discard_confirmed {
+        // First click outside with unsaved edits: arm the discard
+        // confirmation and keep the panel (and the draft) open.
+        *discard_confirmed = true;
+        return;
+    }
+    *discard_confirmed = false;
+    actions.close = true;
 }
 
 fn settings_panel_escape_should_apply(vim_capture_active: bool) -> bool {
@@ -874,43 +1158,68 @@ fn set_settings_panel_pending_scroll_target(ctx: &Context, target: Option<String
     });
 }
 
+fn settings_panel_confirm_discard_armed(ctx: &Context) -> bool {
+    ctx.data_mut(|data| {
+        data.get_temp::<bool>(egui::Id::new(SETTINGS_CONFIRM_DISCARD_ID))
+            .unwrap_or(false)
+    })
+}
+
+fn set_settings_panel_confirm_discard_armed(ctx: &Context, armed: bool) {
+    ctx.data_mut(|data| data.insert_temp(egui::Id::new(SETTINGS_CONFIRM_DISCARD_ID), armed));
+}
+
 fn render_settings_search(ui: &mut egui::Ui, query: &mut String, enabled: bool) {
     let sanitized = bounded_settings_singleline_input(query);
     if sanitized != *query {
         *query = sanitized;
     }
 
-    ui.horizontal(|ui| {
-        icon_label(
-            ui,
-            IconKind::Search,
-            ui.visuals().weak_text_color(),
-            "Search settings",
-        );
-        let clear_button_width = if query.is_empty() {
-            0.0
-        } else {
-            ui.spacing().interact_size.y + ui.spacing().item_spacing.x
-        };
-        let search_width = (ui.available_width() - clear_button_width).max(120.0);
-        let search_response = ui
-            .add_enabled_ui(enabled, |ui| {
-                ui.add_sized(
-                    [search_width, ui.spacing().interact_size.y],
-                    egui::TextEdit::singleline(query)
-                        .hint_text("Search settings")
-                        .clip_text(true),
-                )
-            })
-            .inner;
-        if enabled
-            && !query.is_empty()
-            && icon_button(ui, IconKind::Close, "Clear search").clicked()
-        {
-            query.clear();
-            search_response.request_focus();
-        }
-    });
+    let visuals = ui.visuals();
+    let fill = visuals.widgets.inactive.weak_bg_fill;
+    let stroke = visuals.widgets.inactive.bg_stroke;
+    egui::Frame::new()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 3))
+        .show(ui, |ui| {
+            ui.set_min_height(34.0);
+            ui.horizontal(|ui| {
+                icon_label(
+                    ui,
+                    IconKind::Search,
+                    ui.visuals().weak_text_color(),
+                    "Search settings",
+                );
+
+                let clear_button_side = ui.spacing().interact_size.y.max(34.0);
+                let clear_button_width = clear_button_side + ui.spacing().item_spacing.x;
+                let search_width = (ui.available_width() - clear_button_width).max(0.0);
+                let search_response = ui
+                    .add_enabled_ui(enabled, |ui| {
+                        ui.add_sized(
+                            [search_width, 34.0],
+                            egui::TextEdit::singleline(query)
+                                .hint_text("Search settings")
+                                .clip_text(true)
+                                .frame(false)
+                                .margin(egui::Margin::symmetric(4, 6)),
+                        )
+                    })
+                    .inner;
+
+                if query.is_empty() {
+                    ui.allocate_exact_size(
+                        egui::vec2(clear_button_side, clear_button_side),
+                        egui::Sense::hover(),
+                    );
+                } else if enabled && icon_button(ui, IconKind::Close, "Clear search").clicked() {
+                    query.clear();
+                    search_response.request_focus();
+                }
+            });
+        });
 }
 
 fn render_settings_search_results(
@@ -930,49 +1239,73 @@ fn render_settings_search_results(
     });
     ui.separator();
 
+    let row_height = settings_search_result_row_height(ui);
+    let mut selected = settings_search_selected_index(ui.ctx(), query, results.len());
+    let selection_changed = ui.input(|input| {
+        handle_list_navigation_keys(
+            input,
+            &mut selected,
+            results.len(),
+            selection_page_step(row_height, max_height),
+        )
+    });
+    let enter_pressed = ui.input(|input| input.key_pressed(Key::Enter));
+
     let mut clicked_result = None;
-    egui::ScrollArea::vertical()
+    let mut scroll_area = egui::ScrollArea::both()
         .id_salt("settings_panel_search_results_scroll")
-        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
         .max_height(max_height)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            if results.is_empty() {
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(format!("No settings found for \"{}\"", query))
-                        .color(ui.visuals().weak_text_color()),
-                );
-                return;
-            }
+        .auto_shrink([false, false]);
+    if selection_changed {
+        scroll_area = scroll_area.vertical_scroll_offset(selected_row_scroll_offset(
+            selected,
+            results.len(),
+            row_height,
+            max_height,
+        ));
+    }
+    scroll_area.show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        if results.is_empty() {
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!("No settings found for \"{query}\""))
+                    .color(ui.visuals().weak_text_color()),
+            );
+            return;
+        }
 
-            for entry in results {
-                let label = format!("{} > {}", SETTINGS_SECTIONS[entry.section], entry.title);
-                let detail = format!("{} section", entry.group);
-                let response = ui.add_sized(
-                    [ui.available_width(), 32.0],
-                    egui::Button::new(egui::RichText::new(label).strong())
-                        .fill(egui::Color32::TRANSPARENT),
-                );
-                response
-                    .clone()
-                    .on_hover_text(format!("Open {} in Settings", entry.title));
-                if response.clicked() {
-                    clicked_result = Some(*entry);
-                }
-                ui.add_sized(
-                    [ui.available_width(), 18.0],
-                    egui::Label::new(
-                        egui::RichText::new(detail).color(ui.visuals().weak_text_color()),
-                    )
+        let selected_fill = ui.visuals().selection.bg_fill;
+        for (index, entry) in results.iter().enumerate() {
+            let label = format!("{} > {}", SETTINGS_SECTIONS[entry.section], entry.title);
+            let detail = format!("{} section", entry.group);
+            let mut button = egui::Button::new(egui::RichText::new(label).strong())
+                .fill(egui::Color32::TRANSPARENT);
+            if index == selected {
+                button = button.fill(selected_fill);
+            }
+            let response = ui.add_sized(
+                [ui.available_width(), SETTINGS_SEARCH_RESULT_BUTTON_HEIGHT],
+                button,
+            );
+            response
+                .clone()
+                .on_hover_text(format!("Open {} in Settings", entry.title));
+            if response.clicked() {
+                clicked_result = Some(*entry);
+            }
+            ui.add_sized(
+                [ui.available_width(), SETTINGS_SEARCH_RESULT_DETAIL_HEIGHT],
+                egui::Label::new(egui::RichText::new(detail).color(ui.visuals().weak_text_color()))
                     .truncate(),
-                );
-                ui.add_space(4.0);
-            }
-        });
+            );
+            ui.add_space(SETTINGS_SEARCH_RESULT_ROW_GAP);
+        }
+    });
 
-    clicked_result
+    set_settings_search_selected_index(ui.ctx(), query, selected);
+    clicked_result.or_else(|| results.get(selected).copied().filter(|_| enter_pressed))
 }
 
 fn settings_search_count_label(count: usize) -> String {
@@ -1015,12 +1348,124 @@ fn settings_search_results(query: &str) -> Vec<SettingsSearchEntry> {
     if tokens.is_empty() {
         return Vec::new();
     }
+    let haystacks = settings_search_haystacks();
 
-    SETTINGS_SEARCH_ENTRIES
+    // AND semantics: every token must match somewhere in the entry. Each
+    // matching token contributes its best relevance score, so entries whose
+    // titles match rank above keyword-only matches.
+    let mut matches: Vec<SettingsSearchMatch> = Vec::new();
+    for (index, haystack) in haystacks.iter().enumerate() {
+        let mut score = 0;
+        let mut tokens_matched = 0;
+        for token in &tokens {
+            let Some(token_score) = settings_search_token_score(haystack, token) else {
+                break;
+            };
+            score += token_score;
+            tokens_matched += 1;
+        }
+        if tokens_matched == tokens.len() {
+            matches.push(SettingsSearchMatch {
+                entry: SETTINGS_SEARCH_ENTRIES[index],
+                score,
+                tokens_matched,
+                index,
+            });
+        }
+    }
+    if !matches.is_empty() {
+        matches.sort_unstable_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then(b.tokens_matched.cmp(&a.tokens_matched))
+                .then(a.index.cmp(&b.index))
+        });
+        return matches.into_iter().map(|hit| hit.entry).collect();
+    }
+
+    // Fuzzy fallback: no entry contains every token, so score the whole
+    // query as one case-insensitive subsequence instead ("srch" still finds
+    // entries mentioning "Search").
+    settings_search_fuzzy_results(&tokens.join(" "))
+}
+
+fn settings_search_fuzzy_results(query: &str) -> Vec<SettingsSearchEntry> {
+    let matcher = SkimMatcherV2::default();
+    let mut matches: Vec<(usize, i64)> = settings_search_haystacks()
         .iter()
-        .copied()
-        .filter(|entry| settings_search_entry_matches(entry, &tokens))
+        .enumerate()
+        .filter_map(|(index, haystack)| {
+            matcher
+                .fuzzy_match(&haystack.haystack, query)
+                .map(|score| (index, score))
+        })
+        .collect();
+    matches.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    matches
+        .into_iter()
+        .map(|(index, _)| SETTINGS_SEARCH_ENTRIES[index])
         .collect()
+}
+
+/// Precomputed lowercase search fields for `SETTINGS_SEARCH_ENTRIES`.
+///
+/// The entry table is const, so its lowercase haystacks are built once and
+/// reused every frame instead of re-running `format!` + `to_lowercase` per
+/// entry on each repaint.
+struct SettingsSearchHaystack {
+    /// Lowercase "section group title keywords".
+    haystack: String,
+    /// Lowercase entry title, kept separate for relevance scoring.
+    title: String,
+}
+
+fn settings_search_haystacks() -> &'static Vec<SettingsSearchHaystack> {
+    static HAYSTACKS: std::sync::OnceLock<Vec<SettingsSearchHaystack>> = std::sync::OnceLock::new();
+    HAYSTACKS.get_or_init(|| {
+        SETTINGS_SEARCH_ENTRIES
+            .iter()
+            .map(|entry| {
+                let haystack = format!(
+                    "{} {} {} {}",
+                    SETTINGS_SECTIONS[entry.section], entry.group, entry.title, entry.keywords
+                )
+                .to_lowercase();
+                let title = entry.title.to_lowercase();
+                SettingsSearchHaystack { haystack, title }
+            })
+            .collect()
+    })
+}
+
+/// Relevance tiers for one matched query token, highest first: exact
+/// full-title match > title prefix > title substring > group/keywords only.
+const SETTINGS_SEARCH_SCORE_EXACT_TITLE: u32 = 4;
+const SETTINGS_SEARCH_SCORE_TITLE_PREFIX: u32 = 3;
+const SETTINGS_SEARCH_SCORE_TITLE_CONTAINS: u32 = 2;
+const SETTINGS_SEARCH_SCORE_KEYWORD: u32 = 1;
+
+fn settings_search_token_score(haystack: &SettingsSearchHaystack, token: &str) -> Option<u32> {
+    if haystack.title == token {
+        Some(SETTINGS_SEARCH_SCORE_EXACT_TITLE)
+    } else if haystack.title.starts_with(token) {
+        Some(SETTINGS_SEARCH_SCORE_TITLE_PREFIX)
+    } else if haystack.title.contains(token) {
+        Some(SETTINGS_SEARCH_SCORE_TITLE_CONTAINS)
+    } else if haystack.haystack.contains(token) {
+        Some(SETTINGS_SEARCH_SCORE_KEYWORD)
+    } else {
+        None
+    }
+}
+
+struct SettingsSearchMatch {
+    entry: SettingsSearchEntry,
+    /// Sum of per-token relevance scores.
+    score: u32,
+    /// How many query tokens matched (all of them under AND semantics).
+    tokens_matched: usize,
+    /// Position in the entry table; lower index wins ties.
+    index: usize,
 }
 
 fn settings_search_tokens(query: &str) -> Vec<String> {
@@ -1033,31 +1478,105 @@ fn settings_search_tokens(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn settings_search_entry_matches(entry: &SettingsSearchEntry, tokens: &[String]) -> bool {
-    let haystack = format!(
-        "{} {} {} {}",
-        SETTINGS_SECTIONS[entry.section], entry.group, entry.title, entry.keywords
-    )
-    .to_lowercase();
-    tokens.iter().all(|token| haystack.contains(token))
+/// Selected result row for `query`: resets to the top whenever the query
+/// changes and stays clamped to the current result count.
+fn settings_search_selected_index(ctx: &Context, query: &str, results_len: usize) -> usize {
+    let stored = ctx.data_mut(|data| {
+        data.get_temp::<(String, usize)>(egui::Id::new(SETTINGS_SEARCH_SELECTION_ID))
+    });
+    settings_search_selection_for_query(stored, query, results_len)
+}
+
+fn settings_search_selection_for_query(
+    stored: Option<(String, usize)>,
+    query: &str,
+    results_len: usize,
+) -> usize {
+    stored
+        .filter(|(stored_query, _)| stored_query == query)
+        .map(|(_, selection)| selection)
+        .unwrap_or_default()
+        .min(results_len.saturating_sub(1))
+}
+
+fn set_settings_search_selected_index(ctx: &Context, query: &str, selection: usize) {
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new(SETTINGS_SEARCH_SELECTION_ID),
+            (query.to_owned(), selection),
+        )
+    });
+}
+
+fn settings_search_result_row_height(ui: &egui::Ui) -> f32 {
+    let spacing = ui.spacing().item_spacing.y;
+    SETTINGS_SEARCH_RESULT_BUTTON_HEIGHT
+        + SETTINGS_SEARCH_RESULT_DETAIL_HEIGHT
+        + SETTINGS_SEARCH_RESULT_ROW_GAP
+        + spacing * 2.0
 }
 
 #[cfg(test)]
 mod tests {
     use super::actions::PendingSettingsPanelActions;
     use super::{
+        SETTINGS_SEARCH_SCORE_EXACT_TITLE, SETTINGS_SEARCH_SCORE_KEYWORD,
+        SETTINGS_SEARCH_SCORE_TITLE_CONTAINS, SETTINGS_SEARCH_SCORE_TITLE_PREFIX,
         SETTINGS_SECTION_APPEARANCE, SETTINGS_SECTION_DEVELOPER, SETTINGS_SECTION_EDITOR,
         SETTINGS_SECTION_FILES, SETTINGS_SECTION_GENERAL, SETTINGS_SECTION_LSP,
-        SETTINGS_SECTION_SOURCE_CONTROL, SETTINGS_SECTION_TERMINAL, SETTINGS_SECTION_VIM,
-        SETTINGS_TARGET_APPEARANCE, SETTINGS_TARGET_DEVELOPER, SETTINGS_TARGET_FILES_SAVE_ACTIONS,
-        SETTINGS_TARGET_GENERAL, SETTINGS_TARGET_LSP, SETTINGS_TARGET_SCROLLBARS,
-        SETTINGS_TARGET_SOURCE_CONTROL, SETTINGS_TARGET_TERMINAL_INTERACTION,
-        SETTINGS_TARGET_VIM_KEYBINDINGS, apply_settings_panel_escape,
+        SETTINGS_SECTION_PLUGINS, SETTINGS_SECTION_SOURCE_CONTROL, SETTINGS_SECTION_TERMINAL,
+        SETTINGS_SECTION_VIM, SETTINGS_TARGET_APPEARANCE, SETTINGS_TARGET_DEVELOPER,
+        SETTINGS_TARGET_FILES_SAVE_ACTIONS, SETTINGS_TARGET_GENERAL, SETTINGS_TARGET_LSP,
+        SETTINGS_TARGET_SCROLLBARS, SETTINGS_TARGET_SOURCE_CONTROL,
+        SETTINGS_TARGET_TERMINAL_INTERACTION, SETTINGS_TARGET_VIM_KEYBINDINGS,
+        apply_settings_panel_escape, apply_settings_panel_outside_click,
+        record_settings_panel_focus, reset_settings_panel_memory, restore_settings_panel_focus,
+        set_settings_panel_search_query, settings_content_height,
         settings_panel_close_button_hover_text, settings_panel_close_button_label,
-        settings_panel_escape_should_apply, settings_panel_footer_actions_enabled,
-        settings_panel_navigation_enabled, settings_search_count_label, settings_search_enabled,
-        settings_search_entry_target, settings_search_results, settings_search_tokens,
+        settings_panel_confirm_discard_armed, settings_panel_escape_should_apply,
+        settings_panel_footer_actions_enabled, settings_panel_navigation_enabled,
+        settings_panel_search_query, settings_panel_uses_sidebar, settings_search_count_label,
+        settings_search_enabled, settings_search_entry_target, settings_search_haystacks,
+        settings_search_results, settings_search_selection_for_query, settings_search_token_score,
+        settings_search_tokens, settings_sidebar_width, settings_window_size_for_available,
     };
+
+    #[test]
+    fn settings_window_size_uses_large_preferred_size_and_shrinks_to_viewport() {
+        assert_eq!(
+            settings_window_size_for_available(1600.0, 900.0),
+            [920.0, 640.0]
+        );
+        assert_eq!(
+            settings_window_size_for_available(800.0, 600.0),
+            [752.0, 480.0]
+        );
+        assert_eq!(
+            settings_window_size_for_available(360.0, 260.0),
+            [312.0, 140.0]
+        );
+        assert_eq!(
+            settings_window_size_for_available(f32::NAN, f32::INFINITY),
+            [920.0, 640.0]
+        );
+    }
+
+    #[test]
+    fn settings_navigation_switches_layout_and_bounds_sidebar_width() {
+        assert!(!settings_panel_uses_sidebar(719.0));
+        assert!(settings_panel_uses_sidebar(720.0));
+        assert!(!settings_panel_uses_sidebar(f32::NAN));
+        assert_eq!(settings_sidebar_width(720.0), 180.0);
+        assert!((settings_sidebar_width(1100.0) - 231.0).abs() < f32::EPSILON);
+        assert_eq!(settings_sidebar_width(100.0), 100.0);
+    }
+
+    #[test]
+    fn settings_content_height_never_overflows_short_viewports() {
+        assert_eq!(settings_content_height(500.0), 456.0);
+        assert_eq!(settings_content_height(30.0), 0.0);
+        assert_eq!(settings_content_height(f32::NAN), 0.0);
+    }
 
     #[test]
     fn settings_search_finds_vim_keybindings() {
@@ -1114,6 +1633,27 @@ mod tests {
         assert!(results.iter().any(|entry| {
             entry.section == SETTINGS_SECTION_APPEARANCE && entry.title == "Custom theme files"
         }));
+    }
+
+    #[test]
+    fn settings_search_finds_editor_background_controls() {
+        for title in [
+            "Editor background image",
+            "Editor background area",
+            "Editor background scaling",
+            "Editor background position",
+        ] {
+            let results = settings_search_results(title);
+            let entry = results
+                .iter()
+                .find(|entry| entry.section == SETTINGS_SECTION_APPEARANCE && entry.title == title)
+                .copied()
+                .expect("editor background search result");
+            assert_eq!(
+                settings_search_entry_target(entry),
+                SETTINGS_TARGET_APPEARANCE
+            );
+        }
     }
 
     #[test]
@@ -1182,6 +1722,12 @@ mod tests {
             (
                 "devtools profiling",
                 "Devtools",
+                SETTINGS_SECTION_DEVELOPER,
+                SETTINGS_TARGET_DEVELOPER,
+            ),
+            (
+                "app version",
+                "Application info",
                 SETTINGS_SECTION_DEVELOPER,
                 SETTINGS_TARGET_DEVELOPER,
             ),
@@ -1332,6 +1878,283 @@ mod tests {
     }
 
     #[test]
+    fn settings_search_scores_exact_title_above_prefix_contains_and_keywords() {
+        let exact = settings_search_token_score(haystack_with_title("Minimap"), "minimap");
+        let prefix = settings_search_token_score(haystack_with_title("Scrollbars"), "scroll");
+        let contains =
+            settings_search_token_score(haystack_with_title("Smooth scrolling"), "scroll");
+        let keyword = settings_search_token_score(haystack_with_title("Minimap"), "overview");
+        let miss = settings_search_token_score(haystack_with_title("Minimap"), "terminal");
+
+        assert_eq!(exact, Some(SETTINGS_SEARCH_SCORE_EXACT_TITLE));
+        assert_eq!(prefix, Some(SETTINGS_SEARCH_SCORE_TITLE_PREFIX));
+        assert_eq!(contains, Some(SETTINGS_SEARCH_SCORE_TITLE_CONTAINS));
+        assert_eq!(keyword, Some(SETTINGS_SEARCH_SCORE_KEYWORD));
+        assert_eq!(miss, None);
+        assert!(exact.unwrap() > prefix.unwrap());
+        assert!(prefix.unwrap() > contains.unwrap());
+        assert!(contains.unwrap() > keyword.unwrap());
+    }
+
+    #[test]
+    fn settings_search_orders_results_by_relevance_then_table_order() {
+        let minimap = settings_search_results("minimap");
+        assert_eq!(minimap[0].title, "Minimap");
+        assert_eq!(minimap[1].title, "Editor minimap");
+
+        // "Scroll beyond last line", "Scrollbars", and "Scrollback rows" all
+        // start with the token, so the table order breaks that tie before
+        // mere contains matches ("Smooth scrolling", "Sticky scroll", ...).
+        let scroll = settings_search_results("scroll");
+        assert_eq!(scroll[0].title, "Scroll beyond last line");
+        assert_eq!(scroll[1].title, "Scrollbars");
+        assert_eq!(scroll[2].title, "Scrollback rows");
+        assert_eq!(scroll[3].title, "Smooth scrolling");
+    }
+
+    #[test]
+    fn settings_search_fuzzy_fallback_finds_subsequence_matches() {
+        // No entry haystack contains "srch" literally, so only the fuzzy
+        // subsequence fallback can produce results for this query.
+        let results = settings_search_results("srch");
+
+        assert!(!results.is_empty());
+        assert!(
+            results.iter().any(|entry| entry.title == "Find"),
+            "\"srch\" should fuzzy-match the Find entry"
+        );
+    }
+
+    #[test]
+    fn settings_search_haystacks_are_precomputed_lowercase() {
+        let haystacks = settings_search_haystacks();
+
+        assert_eq!(haystacks.len(), super::SETTINGS_SEARCH_ENTRIES.len());
+        assert!(
+            haystacks
+                .iter()
+                .all(|haystack| haystack.haystack.chars().all(|ch| !ch.is_uppercase()))
+        );
+    }
+
+    #[test]
+    fn settings_search_selection_resets_on_query_change_and_clamps() {
+        assert_eq!(settings_search_selection_for_query(None, "minimap", 2), 0);
+        assert_eq!(
+            settings_search_selection_for_query(Some(("minimap".to_owned(), 1)), "minimap", 2),
+            1
+        );
+        assert_eq!(
+            settings_search_selection_for_query(Some(("minimap".to_owned(), 1)), "vim", 2),
+            0
+        );
+        assert_eq!(
+            settings_search_selection_for_query(Some(("minimap".to_owned(), 5)), "minimap", 2),
+            1
+        );
+        assert_eq!(
+            settings_search_selection_for_query(Some(("minimap".to_owned(), 1)), "minimap", 0),
+            0
+        );
+    }
+
+    #[test]
+    fn settings_search_keyboard_navigation_opens_selected_result() {
+        let root = settings_test_root("settings-search-keyboard");
+        let mut app = settings_test_app(root);
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 850.0));
+        app.settings_panel_open = true;
+
+        let key = |key: egui::Key| egui::Event::Key {
+            key,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+            physical_key: None,
+        };
+        let frame = |app: &mut crate::KuroyaApp, ctx: &egui::Context, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..egui::RawInput::default()
+            };
+            let _ = ctx.run(input, |ctx| app.render_settings_panel(ctx));
+        };
+
+        frame(&mut app, &ctx, Vec::new());
+        // "minimap" ranks [Minimap (General), Editor minimap (Editor)].
+        set_settings_panel_search_query(&ctx, "minimap".to_owned());
+        frame(&mut app, &ctx, Vec::new());
+        assert_eq!(app.settings_panel_section, SETTINGS_SECTION_GENERAL);
+
+        // ArrowDown moves the selection to the second row, Enter opens it.
+        frame(&mut app, &ctx, vec![key(egui::Key::ArrowDown)]);
+        frame(&mut app, &ctx, vec![key(egui::Key::Enter)]);
+
+        assert_eq!(app.settings_panel_section, SETTINGS_SECTION_EDITOR);
+        assert!(settings_panel_search_query(&ctx).is_empty());
+    }
+
+    #[test]
+    fn settings_outside_click_needs_a_second_click_to_discard_unsaved_edits() {
+        let root = settings_test_root("settings-discard-click");
+        let mut app = settings_test_app(root);
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 850.0));
+        app.settings_panel_open = true;
+
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        app.settings_panel_draft.font_size = 22.0;
+
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+
+        // The first click only arms the discard confirmation: the panel stays
+        // open and the draft survives.
+        assert!(app.settings_panel_open);
+        assert_eq!(app.settings_panel_draft.font_size, 22.0);
+        assert!(settings_panel_confirm_discard_armed(&ctx));
+
+        // Later frames keep showing the armed confirmation.
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        assert!(app.settings_panel_open);
+        assert!(settings_panel_confirm_discard_armed(&ctx));
+
+        // The second click discards the draft and closes the panel.
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+
+        assert!(!app.settings_panel_open);
+        assert_eq!(
+            app.settings_panel_draft.font_size,
+            kuroya_core::EditorSettings::default().font_size
+        );
+        assert_eq!(app.status, "Closed settings");
+        assert!(!settings_panel_confirm_discard_armed(&ctx));
+    }
+
+    #[test]
+    fn settings_outside_click_closes_immediately_without_unsaved_edits() {
+        let root = settings_test_root("settings-outside-no-pending");
+        let mut app = settings_test_app(root);
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 850.0));
+        app.settings_panel_open = true;
+
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+
+        assert!(!app.settings_panel_open);
+        assert_eq!(app.status, "Closed settings");
+        assert!(!settings_panel_confirm_discard_armed(&ctx));
+    }
+
+    #[test]
+    fn settings_escape_needs_a_second_press_to_discard_unsaved_edits() {
+        let root = settings_test_root("settings-discard-escape");
+        let mut app = settings_test_app(root);
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 850.0));
+        app.settings_panel_open = true;
+
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        app.settings_panel_draft.font_size = 22.0;
+
+        settings_frame(&mut app, &ctx, screen, settings_escape_events());
+
+        assert!(app.settings_panel_open);
+        assert_eq!(app.settings_panel_draft.font_size, 22.0);
+        assert!(settings_panel_confirm_discard_armed(&ctx));
+
+        settings_frame(&mut app, &ctx, screen, settings_escape_events());
+
+        assert!(!app.settings_panel_open);
+        assert_eq!(
+            app.settings_panel_draft.font_size,
+            kuroya_core::EditorSettings::default().font_size
+        );
+        assert_eq!(app.status, "Closed settings");
+        assert!(!settings_panel_confirm_discard_armed(&ctx));
+    }
+
+    #[test]
+    fn settings_apply_wins_over_the_armed_discard_confirmation() {
+        let root = settings_test_root("settings-apply-beats-discard");
+        let mut app = settings_test_app(root);
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 850.0));
+        app.settings_panel_open = true;
+
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        app.settings_panel_draft.font_size = 22.0;
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+
+        assert!(app.settings_panel_open);
+        assert!(settings_panel_confirm_discard_armed(&ctx));
+
+        app.apply_settings_panel_actions(PendingSettingsPanelActions {
+            apply: true,
+            ..PendingSettingsPanelActions::default()
+        });
+
+        assert_eq!(app.settings.font_size, 22.0);
+        assert!(app.settings_panel_open);
+        assert!(!app.settings_panel_has_pending_inputs());
+
+        // The frame after applying disarms the confirmation, so the next
+        // outside click closes cleanly instead of demanding another
+        // confirmation round.
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        assert!(!settings_panel_confirm_discard_armed(&ctx));
+
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+
+        assert!(!app.settings_panel_open);
+    }
+
+    fn settings_frame(
+        app: &mut crate::KuroyaApp,
+        ctx: &egui::Context,
+        screen: egui::Rect,
+        events: Vec<egui::Event>,
+    ) {
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..egui::RawInput::default()
+        };
+        let _ = ctx.run(input, |ctx| app.render_settings_panel(ctx));
+    }
+
+    /// A primary press + release in the top-left corner, safely outside the
+    /// settings window anchored to the top-center of the 1600x850 test screen.
+    fn settings_outside_click_events() -> Vec<egui::Event> {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: egui::Pos2::new(40.0, 20.0),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        vec![button(true), button(false)]
+    }
+
+    fn settings_escape_events() -> Vec<egui::Event> {
+        vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+            physical_key: None,
+        }]
+    }
+
+    fn haystack_with_title(title: &str) -> &'static super::SettingsSearchHaystack {
+        settings_search_haystacks()
+            .iter()
+            .find(|haystack| haystack.title == title.to_lowercase())
+            .unwrap_or_else(|| panic!("no search haystack for {title:?}"))
+    }
+
+    #[test]
     fn settings_close_button_reflects_pending_inputs() {
         assert_eq!(settings_panel_close_button_label(false), "Close");
         assert_eq!(
@@ -1349,15 +2172,59 @@ mod tests {
     fn settings_escape_clears_search_before_closing() {
         let mut query = "vim".to_owned();
         let mut actions = PendingSettingsPanelActions::default();
+        let mut discard_confirmed = false;
 
-        apply_settings_panel_escape(&mut query, &mut actions);
+        // Escape with a search query clears it without closing or arming.
+        apply_settings_panel_escape(&mut query, &mut actions, &mut discard_confirmed, true);
 
         assert!(query.is_empty());
         assert!(!actions.close);
+        assert!(!discard_confirmed);
 
-        apply_settings_panel_escape(&mut query, &mut actions);
+        // First Escape with unsaved edits arms the discard confirmation.
+        apply_settings_panel_escape(&mut query, &mut actions, &mut discard_confirmed, true);
+
+        assert!(!actions.close);
+        assert!(discard_confirmed);
+
+        // Second Escape discards the draft and closes.
+        apply_settings_panel_escape(&mut query, &mut actions, &mut discard_confirmed, true);
 
         assert!(actions.close);
+        assert!(!discard_confirmed);
+
+        // Without unsaved edits the first Escape closes right away.
+        let mut actions = PendingSettingsPanelActions::default();
+        let mut discard_confirmed = false;
+
+        apply_settings_panel_escape(&mut query, &mut actions, &mut discard_confirmed, false);
+
+        assert!(actions.close);
+        assert!(!discard_confirmed);
+    }
+
+    #[test]
+    fn settings_outside_click_only_closes_once_the_draft_is_clean() {
+        let mut actions = PendingSettingsPanelActions::default();
+        let mut discard_confirmed = false;
+
+        apply_settings_panel_outside_click(&mut actions, &mut discard_confirmed, true);
+
+        assert!(!actions.close);
+        assert!(discard_confirmed);
+
+        apply_settings_panel_outside_click(&mut actions, &mut discard_confirmed, true);
+
+        assert!(actions.close);
+        assert!(!discard_confirmed);
+
+        let mut actions = PendingSettingsPanelActions::default();
+        let mut discard_confirmed = false;
+
+        apply_settings_panel_outside_click(&mut actions, &mut discard_confirmed, false);
+
+        assert!(actions.close);
+        assert!(!discard_confirmed);
     }
 
     #[test]
@@ -1384,10 +2251,153 @@ mod tests {
         assert!(!settings_panel_footer_actions_enabled(true));
     }
 
+    #[test]
+    fn settings_panel_memory_reset_preserves_style() {
+        let ctx = egui::Context::default();
+        let panel_fill = egui::Color32::from_rgb(12, 34, 56);
+        ctx.set_visuals(egui::Visuals {
+            panel_fill,
+            ..egui::Visuals::default()
+        });
+
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            reset_settings_panel_memory(ctx)
+        });
+
+        assert_eq!(ctx.style().visuals.panel_fill, panel_fill);
+    }
+
+    #[test]
+    fn settings_panel_memory_reset_preserves_focused_widget() {
+        let ctx = egui::Context::default();
+        let terminal_input_id = egui::Id::new("terminal_input");
+
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            ctx.memory_mut(|memory| memory.request_focus(terminal_input_id));
+            reset_settings_panel_memory(ctx);
+            // Asserted within the same frame: egui drops focus for widgets that
+            // were not rendered once the frame ends, which is unrelated to the reset.
+            assert!(ctx.memory(|memory| memory.has_focus(terminal_input_id)));
+        });
+    }
+
+    #[test]
+    fn settings_panel_focus_restore_returns_focus_to_recorded_widget() {
+        let ctx = egui::Context::default();
+        let terminal_input_id = egui::Id::new("terminal_input");
+
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            ctx.memory_mut(|memory| memory.request_focus(terminal_input_id));
+            record_settings_panel_focus(ctx);
+            restore_settings_panel_focus(ctx);
+            // Asserted within the same frame: egui drops focus for widgets that
+            // were not rendered once the frame ends, which is unrelated to the restore.
+            assert!(ctx.memory(|memory| memory.has_focus(terminal_input_id)));
+        });
+    }
+
+    #[test]
+    fn settings_panel_focus_restore_without_a_recorded_widget_is_a_no_op() {
+        let ctx = egui::Context::default();
+        let terminal_input_id = egui::Id::new("terminal_input");
+
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            restore_settings_panel_focus(ctx);
+
+            assert!(!ctx.memory(|memory| memory.has_focus(terminal_input_id)));
+        });
+    }
+
     fn search_result(query: &str, title: &str) -> super::SettingsSearchEntry {
         settings_search_results(query)
             .into_iter()
             .find(|entry| entry.title == title)
             .unwrap_or_else(|| panic!("{query:?} should find {title:?}"))
+    }
+
+    #[test]
+    fn settings_window_rect_is_independent_of_the_selected_section() {
+        let root = settings_test_root("settings-window-rect");
+        let mut app = settings_test_app(root);
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 850.0));
+        app.settings_panel_open = true;
+
+        let render_section = |app: &mut crate::KuroyaApp, section: usize| -> [f32; 2] {
+            app.settings_panel_section = section;
+            let mut rect = egui::Rect::NOTHING;
+            for _ in 0..4 {
+                let input = egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..egui::RawInput::default()
+                };
+                let _ = ctx.run(input, |ctx| {
+                    app.render_settings_panel(ctx);
+                });
+                rect = largest_settings_window_rect(&ctx);
+            }
+            [rect.width(), rect.height()]
+        };
+
+        let baseline = render_section(&mut app, SETTINGS_SECTION_LSP);
+        println!("settings rect LSP:        {baseline:?}");
+        for (name, section) in [
+            ("General", SETTINGS_SECTION_GENERAL),
+            ("Editor", SETTINGS_SECTION_EDITOR),
+            ("Vim", SETTINGS_SECTION_VIM),
+            ("Terminal", SETTINGS_SECTION_TERMINAL),
+            ("Files", SETTINGS_SECTION_FILES),
+            ("Appearance", SETTINGS_SECTION_APPEARANCE),
+            ("Source Control", SETTINGS_SECTION_SOURCE_CONTROL),
+            ("Developer", SETTINGS_SECTION_DEVELOPER),
+            ("Plugins", SETTINGS_SECTION_PLUGINS),
+        ] {
+            let size = render_section(&mut app, section);
+            println!("settings rect {name:<12}: {size:?}");
+            assert_eq!(size, baseline, "{name} section resizes the settings window");
+        }
+    }
+
+    fn largest_settings_window_rect(ctx: &egui::Context) -> egui::Rect {
+        ctx.memory(|memory| {
+            memory
+                .area_rect(egui::Id::new("Settings"))
+                .unwrap_or(egui::Rect::NOTHING)
+        })
+    }
+
+    fn settings_test_root(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!("kuroya-{name}-{}-{nanos}", std::process::id()))
+    }
+
+    fn settings_test_app(root: std::path::PathBuf) -> crate::KuroyaApp {
+        use crate::{app_startup_context::AppStartupContext, terminal::TerminalPane};
+        use kuroya_core::{EditorSettings, Workspace};
+        use tokio::runtime::Runtime;
+
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let settings = EditorSettings::default();
+        crate::KuroyaApp::from_startup_context(AppStartupContext {
+            runtime: Runtime::new().expect("test runtime"),
+            tx,
+            rx,
+            workspace: Workspace::new(root.clone()),
+            settings: settings.clone(),
+            settings_panel_draft: settings,
+            settings_editor_font_path: String::new(),
+            settings_ui_font_path: String::new(),
+            theme_picker_selected: 0,
+            saved_session: None,
+            terminal: TerminalPane::new(root.clone(), 100, 12.0, 1.2),
+            watcher: None,
+            recent_projects: Vec::new(),
+            trusted_workspaces: vec![root],
+            now: std::time::Instant::now(),
+            startup_timings: Vec::new(),
+        })
     }
 }

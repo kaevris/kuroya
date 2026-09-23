@@ -9,8 +9,7 @@ use crate::source_control_history_runtime::{
 use crate::{
     KuroyaApp,
     source_control_git_panel_ui::{
-        SOURCE_CONTROL_GIT_HISTORY_PANEL_DEFAULT_SIZE, SOURCE_CONTROL_GIT_ROW_HEIGHT,
-        apply_git_panel_spacing, render_git_panel_row,
+        SOURCE_CONTROL_GIT_ROW_HEIGHT, apply_git_panel_spacing, render_git_panel_row,
     },
     ui_state::{handle_list_navigation_keys, selected_row_scroll_offset, selection_page_step},
 };
@@ -52,11 +51,20 @@ impl KuroyaApp {
             self.source_control_history_selected = commit_indices.len().saturating_sub(1);
         }
 
+        // Full-page layout: the panel fills the viewport (inside margins) so
+        // long commit lists stay readable. The filter field and the commit
+        // list expand to the fixed window; the list scrolls internally.
         egui::Window::new("Git History")
+            .id(egui::Id::new((
+                "git_history_panel",
+                self.git_panel_open_generation,
+            )))
+            .fixed_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 84.0,
+            ))
             .collapsible(false)
-            .resizable(true)
+            .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 84.0])
-            .default_size(SOURCE_CONTROL_GIT_HISTORY_PANEL_DEFAULT_SIZE)
             .show(ctx, |ui| {
                 apply_git_panel_spacing(ui);
                 ui.horizontal(|ui| {

@@ -67,6 +67,10 @@ pub(crate) fn minimap_target_line_from_y(
         .min(line_count.saturating_sub(visible_lines.max(1)))
 }
 
+pub(crate) fn minimap_content_fits_viewport(visible_lines: usize, line_count: usize) -> bool {
+    visible_lines.max(1) >= line_count.max(1)
+}
+
 pub(crate) fn minimap_viewport_rect(
     rect: Rect,
     first_visible_line: usize,
@@ -87,7 +91,7 @@ pub(crate) fn minimap_viewport_rect(
     }
 
     let visible_lines = visible_lines.min(line_count);
-    if visible_lines >= line_count {
+    if minimap_content_fits_viewport(visible_lines, line_count) {
         return rect;
     }
 
@@ -135,9 +139,18 @@ fn minimap_finite_or_zero(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        minimap_line_from_y, minimap_sample_line, minimap_target_line_from_y, minimap_viewport_rect,
+        minimap_content_fits_viewport, minimap_line_from_y, minimap_sample_line,
+        minimap_target_line_from_y, minimap_viewport_rect,
     };
     use egui::{Rect, pos2, vec2};
+
+    #[test]
+    fn minimap_content_fits_viewport_detects_full_rect_thumb_case() {
+        assert!(minimap_content_fits_viewport(10, 10));
+        assert!(minimap_content_fits_viewport(20, 10));
+        assert!(minimap_content_fits_viewport(0, 0));
+        assert!(!minimap_content_fits_viewport(5, 10));
+    }
 
     #[test]
     fn minimap_line_from_y_rejects_non_finite_geometry() {

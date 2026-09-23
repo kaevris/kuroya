@@ -3,11 +3,13 @@ use kuroya_core::TextBuffer;
 
 use super::super::{
     EditorVimCharFind, EditorVimLastChange, EditorVimMode, EditorVimPendingKey, EditorVimRegister,
-    VimKeyResult, vim_search_word_under_cursor,
+    EditorVimRepeatAction, VimKeyResult, vim_repeatable_change_result,
+    vim_search_word_under_cursor,
 };
 use super::{
-    handle_vim_visual_character_key_event, vim_restore_visual_character_pending,
+    handle_vim_visual_character_key_event, vim_join_visual_character_lines_without_whitespace,
     vim_set_visual_character_selection, vim_visual_character_clamped_cursor,
+    vim_visual_character_join_repeat_count,
 };
 
 pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_go_key_event(
@@ -51,12 +53,19 @@ pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_go_key_event
             VimKeyResult::handled(suppress_text)
         }
         Key::J if modifiers.shift => {
-            vim_restore_visual_character_pending(pending, anchor, cursor, count);
-            if suppress_text.is_some() {
-                VimKeyResult::handled(suppress_text)
-            } else {
-                VimKeyResult::ignored()
-            }
+            let amount = count.unwrap_or(0).max(
+                vim_visual_character_join_repeat_count(buffer, anchor, cursor).saturating_add(1),
+            );
+            let changed =
+                vim_join_visual_character_lines_without_whitespace(buffer, anchor, cursor, amount);
+            *pending = None;
+            vim_repeatable_change_result(
+                changed,
+                last_change,
+                EditorVimRepeatAction::JoinLinesWithoutWhitespace,
+                amount.saturating_sub(1).max(1),
+                suppress_text,
+            )
         }
         _ => handle_vim_visual_character_key_event(
             buffer,

@@ -30,6 +30,22 @@ pub(super) fn handle_vim_pending_or_direct_normal_key_event(
     suppress_text: Option<char>,
 ) -> VimKeyResult {
     if let Some(pending_key) = pending.take() {
+        if let Some(motion) = vim_operator_last_find_motion_for_key(key, modifiers, *last_char_find)
+            && let Some((operator_count, motion_count, operator)) =
+                vim_pending_key_last_find_operator_go(&pending_key)
+        {
+            return handle_vim_operator_go_motion_key_event(
+                buffer,
+                mode,
+                unnamed_register,
+                last_change,
+                operator_count,
+                motion_count,
+                operator,
+                motion,
+                suppress_text,
+            );
+        }
         if let Some(next_pending) =
             vim_pending_key_next_operator_go(Some(pending_key), key, modifiers)
         {
@@ -118,6 +134,7 @@ pub(super) fn handle_vim_pending_or_direct_normal_key_event(
                     key,
                     modifiers,
                     pending,
+                    last_change,
                     suppress_text,
                 );
             }

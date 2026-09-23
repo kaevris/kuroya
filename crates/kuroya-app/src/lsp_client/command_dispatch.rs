@@ -1,19 +1,20 @@
+use crate::lsp_client::pending::PendingLspRequests;
 mod direct_response;
-mod document_sync;
+pub(super) mod document_sync;
 mod family;
 mod lifecycle;
 
 use super::{
-    commands::LspClientCommand,
-    pending::{PendingLspRequest, lsp_request_target_is_valid},
+    commands::LspClientCommand, pending::lsp_request_target_is_valid,
     request_dispatch::handle_lsp_request_command,
 };
 use crate::ui_event_channel::Sender;
 use crate::ui_events::UiEvent;
+use document_sync::DocumentSyncState;
 use family::{ClientCommandFamily, client_command_family};
 use kuroya_core::BufferId;
-use std::{collections::HashMap, path::Path};
-use tokio::process::{Child, ChildStdin};
+use std::path::Path;
+use tokio::process::ChildStdin;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LspClientCommandOutcome {
@@ -30,9 +31,9 @@ pub(super) enum LspClientStopReason {
 pub(super) async fn handle_lsp_client_command(
     command: Option<LspClientCommand>,
     writer: &mut ChildStdin,
-    child: &mut Child,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
+    sync_state: &mut DocumentSyncState,
     ui_tx: &Sender<UiEvent>,
 ) -> LspClientCommandOutcome {
     if command
@@ -47,7 +48,9 @@ pub(super) async fn handle_lsp_client_command(
 
     match command_family {
         ClientCommandFamily::DocumentSync(command) => {
-            if !document_sync::handle_document_sync_command(command, writer, ui_tx).await {
+            if !document_sync::handle_document_sync_command(command, writer, sync_state, ui_tx)
+                .await
+            {
                 return LspClientCommandOutcome::Stop(LspClientStopReason::Unexpected);
             }
         }
@@ -57,7 +60,10 @@ pub(super) async fn handle_lsp_client_command(
             }
         }
         ClientCommandFamily::Shutdown => {
-            lifecycle::handle_shutdown_command(writer, child).await;
+            // Writes `shutdown` + `exit`; the child watchdog waits out the
+            // grace period (killing the child afterwards) once the runtime
+            // loop observes the intentional stop.
+            lifecycle::handle_shutdown_messages(writer).await;
             return LspClientCommandOutcome::Stop(
                 stop_reason.unwrap_or(LspClientStopReason::Intentional),
             );
@@ -85,6 +91,7 @@ fn lsp_client_command_target_is_valid(command: &LspClientCommand) -> bool {
         | LspClientCommand::Hover { id, path, .. }
         | LspClientCommand::DocumentHighlights { id, path, .. }
         | LspClientCommand::Definition { id, path, .. }
+        | LspClientCommand::PrepareRename { id, path, .. }
         | LspClientCommand::PrepareCallHierarchy { id, path, .. }
         | LspClientCommand::CallHierarchyIncoming { id, path, .. }
         | LspClientCommand::CallHierarchyOutgoing { id, path, .. }
@@ -112,7 +119,9 @@ fn lsp_client_command_target_is_valid(command: &LspClientCommand) -> bool {
         LspClientCommand::DidSave { path } | LspClientCommand::DidClose { path } => {
             command_path_is_valid(path)
         }
-        LspClientCommand::ApplyWorkspaceEditResponse { .. } | LspClientCommand::Shutdown => true,
+        LspClientCommand::ApplyWorkspaceEditResponse { .. }
+        | LspClientCommand::DidChangeWatchedFiles { .. }
+        | LspClientCommand::Shutdown => true,
     }
 }
 
@@ -127,16 +136,21 @@ fn command_path_is_valid(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        LspClientCommandOutcome, LspClientStopReason, handle_lsp_client_command,
+        DocumentSyncState, LspClientCommandOutcome, LspClientStopReason, handle_lsp_client_command,
         lsp_client_command_target_is_valid,
     };
+    use crate::lsp_client::pending::PendingLspRequests;
     use crate::{
         lsp_client::{commands::LspClientCommand, pending::PendingLspRequest},
         ui_event_channel::ui_event_channel,
     };
-    use kuroya_core::{LspRequestId, TextBuffer};
-    use std::{collections::HashMap, path::PathBuf, process::Stdio};
+    use kuroya_core::{LspRequestId, TextBuffer, TextDocumentSyncKindSetting};
+    use std::{path::PathBuf, process::Stdio};
     use tokio::process::{Child, ChildStdin, Command};
+
+    fn full_document_sync_state() -> DocumentSyncState {
+        DocumentSyncState::new(TextDocumentSyncKindSetting::Full)
+    }
 
     async fn exited_child_with_stdin() -> (Child, ChildStdin) {
         #[cfg(windows)]
@@ -193,7 +207,7 @@ mod tests {
     async fn request_write_failure_stops_as_unexpected() {
         let (mut child, mut writer) = exited_child_with_stdin().await;
         let mut next_request_id = 2;
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
         let (ui_tx, _ui_rx) = ui_event_channel();
 
         let outcome = handle_lsp_client_command(
@@ -205,12 +219,13 @@ mod tests {
                 character: 0,
             }),
             &mut writer,
-            &mut child,
             &mut next_request_id,
             &mut pending_requests,
+            &mut full_document_sync_state(),
             &ui_tx,
         )
         .await;
+        let _ = child.kill().await;
 
         assert_eq!(
             outcome,
@@ -225,7 +240,7 @@ mod tests {
         let (mut child, mut writer) = stdin_sink_child().await;
         let mut next_request_id = 31;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([(
+        let mut pending_requests = PendingLspRequests::from([(
             7,
             PendingLspRequest::Hover {
                 id: 1,
@@ -244,9 +259,9 @@ mod tests {
                 failure_reason: Some("buffer changed".to_owned()),
             }),
             &mut writer,
-            &mut child,
             &mut next_request_id,
             &mut pending_requests,
+            &mut full_document_sync_state(),
             &ui_tx,
         )
         .await;
@@ -314,7 +329,7 @@ mod tests {
     async fn invalid_document_sync_command_is_ignored_without_write_or_synced_event() {
         let (mut child, mut writer) = exited_child_with_stdin().await;
         let mut next_request_id = 31;
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
         let (ui_tx, ui_rx) = ui_event_channel();
 
         let outcome = handle_lsp_client_command(
@@ -326,12 +341,13 @@ mod tests {
                 text: text_snapshot("open"),
             }),
             &mut writer,
-            &mut child,
             &mut next_request_id,
             &mut pending_requests,
+            &mut full_document_sync_state(),
             &ui_tx,
         )
         .await;
+        let _ = child.kill().await;
 
         assert_eq!(outcome, LspClientCommandOutcome::Continue);
         assert_eq!(next_request_id, 31);
@@ -344,7 +360,7 @@ mod tests {
         let (mut child, mut writer) = exited_child_with_stdin().await;
         let mut next_request_id = 31;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([(
+        let mut pending_requests = PendingLspRequests::from([(
             7,
             PendingLspRequest::Hover {
                 id: 1,
@@ -365,12 +381,13 @@ mod tests {
                 character: 5,
             }),
             &mut writer,
-            &mut child,
             &mut next_request_id,
             &mut pending_requests,
+            &mut full_document_sync_state(),
             &ui_tx,
         )
         .await;
+        let _ = child.kill().await;
 
         assert_eq!(outcome, LspClientCommandOutcome::Continue);
         assert_eq!(next_request_id, 31);
@@ -390,7 +407,7 @@ mod tests {
         let (mut child, mut writer) = stdin_sink_child().await;
         let mut next_request_id = 31;
         let path = PathBuf::from("src/main.rs");
-        let mut pending_requests = HashMap::from([(
+        let mut pending_requests = PendingLspRequests::from([(
             7,
             PendingLspRequest::Hover {
                 id: 1,
@@ -405,12 +422,14 @@ mod tests {
         let outcome = handle_lsp_client_command(
             Some(LspClientCommand::Shutdown),
             &mut writer,
-            &mut child,
             &mut next_request_id,
             &mut pending_requests,
+            &mut full_document_sync_state(),
             &ui_tx,
         )
         .await;
+        drop(writer);
+        let _ = child.kill().await;
 
         assert_eq!(
             outcome,

@@ -2,13 +2,21 @@ use crate::{
     editor_text_geometry::visual_column_for_char_offset,
     lsp_edits::document_highlight_char_range,
     lsp_labels::{diagnostic_message_summary, diagnostic_priority},
-    lsp_text_positions::lsp_one_based_utf16_span_to_buffer_char_range,
+    lsp_text_positions::{
+        lsp_line_content_utf16_len, lsp_one_based_utf16_span_to_buffer_char_range,
+    },
 };
 use eframe::egui::{self, Color32, pos2, vec2};
 use kuroya_core::{
-    Diagnostic, DiagnosticSeverity, LspDocumentHighlight, LspSemanticToken, TextBuffer,
+    Diagnostic, DiagnosticSeverity, GitBlameLine, LspCodeLens, LspDocumentHighlight, LspInlayHint,
+    LspSemanticToken, TextBuffer,
 };
-use std::{collections::HashMap, ops::Range, path::Path};
+use std::{
+    collections::HashMap,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::{Arc, LazyLock, Mutex, MutexGuard},
+};
 
 pub(crate) type DocumentHighlightSpan = (Range<usize>, Option<u8>);
 pub(crate) type SemanticTokenSpan = (Range<usize>, String, Vec<String>);
@@ -18,6 +26,19 @@ pub(crate) type DiagnosticTagSpan = (Range<usize>, DiagnosticTagKind);
 pub(crate) enum DiagnosticTagKind {
     Unused,
     Deprecated,
+}
+
+/// Folds one value into a cache fingerprint. Fingerprints stand in for
+/// revision counters on LSP/git payloads whose storage sites cannot bump one,
+/// so a replaced payload always produces a different key.
+pub(crate) fn fingerprint_fold_u64(hash: &mut u64, value: u64) {
+    *hash = (*hash ^ value).wrapping_mul(0x100_0000_01b3);
+}
+
+pub(crate) fn fingerprint_fold_str(hash: &mut u64, value: &str) {
+    for byte in value.as_bytes() {
+        fingerprint_fold_u64(hash, u64::from(*byte));
+    }
 }
 
 pub(crate) fn document_highlight_spans_for_buffer(
@@ -121,6 +142,14 @@ fn diagnostic_tag_char_range(buffer: &TextBuffer, diagnostic: &Diagnostic) -> Op
         return None;
     }
 
+    // Multi-line LSP ranges are stored with a `usize::MAX` sentinel end (see
+    // kuroya-core `lsp_diagnostic_char_range`); the saturating width plus the
+    // `.min(line_chars)` below clamp such ranges to the line content length.
+    //
+    // Payloads stored while a file was closed keep raw UTF-16 columns until
+    // the flush sweep in `runtime_ticks` converts them (see
+    // `LspDiagnosticUnits` in kuroya-core); this consumer still clamps
+    // defensively so out-of-range columns can never widen a span.
     let width = diagnostic
         .char_range
         .end
@@ -144,6 +173,243 @@ pub(crate) fn semantic_token_spans_for_buffer(
     spans
 }
 
+const MAX_SEMANTIC_TOKEN_SPAN_CACHE_ENTRIES: usize = 16;
+
+/// Cache key for projected semantic token spans. The token payload has no
+/// revision counter at its storage site, so `tokens_fingerprint` detects
+/// replacement and `buffer_version` detects buffer edits.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SemanticTokenSpanCacheKey {
+    buffer_id: u64,
+    path: Option<PathBuf>,
+    buffer_version: u64,
+    buffer_len_lines: usize,
+    buffer_len_chars: usize,
+    tokens_len: usize,
+    tokens_fingerprint: u64,
+}
+
+#[derive(Default)]
+struct SemanticTokenSpanCache {
+    entries: HashMap<SemanticTokenSpanCacheKey, Arc<Vec<SemanticTokenSpan>>>,
+}
+
+impl SemanticTokenSpanCache {
+    fn get(&self, key: &SemanticTokenSpanCacheKey) -> Option<Arc<Vec<SemanticTokenSpan>>> {
+        self.entries.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: SemanticTokenSpanCacheKey, spans: Arc<Vec<SemanticTokenSpan>>) {
+        if self.entries.len() >= MAX_SEMANTIC_TOKEN_SPAN_CACHE_ENTRIES {
+            self.entries.clear();
+        }
+        self.entries.insert(key, spans);
+    }
+}
+
+fn semantic_token_span_cache() -> MutexGuard<'static, SemanticTokenSpanCache> {
+    static SEMANTIC_TOKEN_SPAN_CACHE: LazyLock<Mutex<SemanticTokenSpanCache>> =
+        LazyLock::new(|| Mutex::new(SemanticTokenSpanCache::default()));
+    SEMANTIC_TOKEN_SPAN_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Projected token spans cached per (path, buffer version, token payload), so
+/// unchanged frames skip the per-token rope conversions and String clones and
+/// share one `Arc` allocation instead. Output matches
+/// [`semantic_token_spans_for_buffer`] exactly.
+pub(crate) fn cached_semantic_token_spans_for_buffer(
+    buffer: &TextBuffer,
+    path: Option<&Path>,
+    tokens: Option<&[LspSemanticToken]>,
+) -> Arc<Vec<SemanticTokenSpan>> {
+    let Some(tokens) = tokens else {
+        return Arc::default();
+    };
+    let mut hash = tokens.len() as u64;
+    for token in tokens {
+        fingerprint_fold_u64(&mut hash, token.line as u64);
+        fingerprint_fold_u64(&mut hash, token.column as u64);
+        fingerprint_fold_u64(&mut hash, token.length as u64);
+        fingerprint_fold_str(&mut hash, &token.token_type);
+        fingerprint_fold_u64(&mut hash, token.modifiers.len() as u64);
+        for modifier in &token.modifiers {
+            fingerprint_fold_str(&mut hash, modifier);
+        }
+    }
+    let key = SemanticTokenSpanCacheKey {
+        buffer_id: buffer.id(),
+        path: path.map(Path::to_path_buf),
+        buffer_version: buffer.version(),
+        buffer_len_lines: buffer.len_lines(),
+        buffer_len_chars: buffer.len_chars(),
+        tokens_len: tokens.len(),
+        tokens_fingerprint: hash,
+    };
+    let mut cache = semantic_token_span_cache();
+    if let Some(spans) = cache.get(&key) {
+        return spans;
+    }
+    let spans = Arc::new(semantic_token_spans_for_buffer(buffer, tokens));
+    cache.insert(key, Arc::clone(&spans));
+    spans
+}
+
+const MAX_RENDERABLE_ANNOTATION_CACHE_ENTRIES: usize = 16;
+
+/// Cache identity for filtered blame/hint/lens projections: the source path,
+/// the buffer line count the filter is bounded by, and a fingerprint of the
+/// source payload (its storage sites cannot bump revision counters).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RenderableAnnotationKey {
+    path: Option<PathBuf>,
+    line_count: usize,
+    source_len: usize,
+    source_fingerprint: u64,
+}
+
+/// Returns the cached filtered projection for `source`, rebuilding via
+/// `render` only when path, line count or payload changed. Output matches
+/// calling `render` directly.
+fn cached_renderable_annotations<T>(
+    entries: &mut HashMap<RenderableAnnotationKey, Arc<Vec<T>>>,
+    path: Option<&Path>,
+    source: &[T],
+    line_count: usize,
+    source_fingerprint: u64,
+    render: fn(&[T], usize) -> Vec<T>,
+) -> Arc<Vec<T>> {
+    let key = RenderableAnnotationKey {
+        path: path.map(Path::to_path_buf),
+        line_count,
+        source_len: source.len(),
+        source_fingerprint,
+    };
+    if let Some(cached) = entries.get(&key) {
+        return Arc::clone(cached);
+    }
+    let renderable = Arc::new(render(source, line_count));
+    if entries.len() >= MAX_RENDERABLE_ANNOTATION_CACHE_ENTRIES {
+        entries.clear();
+    }
+    entries.insert(key, Arc::clone(&renderable));
+    renderable
+}
+
+fn renderable_git_blame_lines_cache()
+-> MutexGuard<'static, HashMap<RenderableAnnotationKey, Arc<Vec<GitBlameLine>>>> {
+    static CACHE: LazyLock<Mutex<HashMap<RenderableAnnotationKey, Arc<Vec<GitBlameLine>>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn renderable_inlay_hints_cache()
+-> MutexGuard<'static, HashMap<RenderableAnnotationKey, Arc<Vec<LspInlayHint>>>> {
+    static CACHE: LazyLock<Mutex<HashMap<RenderableAnnotationKey, Arc<Vec<LspInlayHint>>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn renderable_code_lenses_cache()
+-> MutexGuard<'static, HashMap<RenderableAnnotationKey, Arc<Vec<LspCodeLens>>>> {
+    static CACHE: LazyLock<Mutex<HashMap<RenderableAnnotationKey, Arc<Vec<LspCodeLens>>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub(crate) fn git_blame_lines_fingerprint(lines: &[GitBlameLine]) -> u64 {
+    let mut hash = lines.len() as u64;
+    for line in lines {
+        fingerprint_fold_u64(&mut hash, line.line_number as u64);
+        fingerprint_fold_u64(&mut hash, line.author_time_seconds as u64);
+        fingerprint_fold_str(&mut hash, &line.short_oid);
+        fingerprint_fold_str(&mut hash, &line.author);
+        fingerprint_fold_str(&mut hash, &line.summary);
+    }
+    hash
+}
+
+fn inlay_hints_fingerprint(hints: &[LspInlayHint]) -> u64 {
+    let mut hash = hints.len() as u64;
+    for hint in hints {
+        fingerprint_fold_u64(&mut hash, hint.line as u64);
+        fingerprint_fold_u64(&mut hash, hint.column as u64);
+        fingerprint_fold_u64(&mut hash, hint.kind.map(u64::from).unwrap_or(u64::MAX));
+        fingerprint_fold_str(&mut hash, &hint.label);
+    }
+    hash
+}
+
+fn code_lenses_fingerprint(lenses: &[LspCodeLens]) -> u64 {
+    let mut hash = lenses.len() as u64;
+    for lens in lenses {
+        fingerprint_fold_u64(&mut hash, lens.line as u64);
+        fingerprint_fold_u64(&mut hash, lens.column as u64);
+        fingerprint_fold_str(&mut hash, &lens.title);
+        fingerprint_fold_str(&mut hash, lens.command.as_deref().unwrap_or_default());
+    }
+    hash
+}
+
+/// Cached `renderable_git_blame_lines`; repeated frames with unchanged blame
+/// share one `Arc` instead of cloning every line.
+pub(crate) fn cached_renderable_git_blame_lines(
+    path: Option<&Path>,
+    lines: &[GitBlameLine],
+    line_count: usize,
+) -> Arc<Vec<GitBlameLine>> {
+    let mut entries = renderable_git_blame_lines_cache();
+    cached_renderable_annotations(
+        &mut entries,
+        path,
+        lines,
+        line_count,
+        git_blame_lines_fingerprint(lines),
+        crate::editor_pane_data::renderable_git_blame_lines,
+    )
+}
+
+/// Cached `renderable_inlay_hints`.
+pub(crate) fn cached_renderable_inlay_hints(
+    path: Option<&Path>,
+    hints: &[LspInlayHint],
+    line_count: usize,
+) -> Arc<Vec<LspInlayHint>> {
+    let mut entries = renderable_inlay_hints_cache();
+    cached_renderable_annotations(
+        &mut entries,
+        path,
+        hints,
+        line_count,
+        inlay_hints_fingerprint(hints),
+        crate::editor_pane_data::renderable_inlay_hints,
+    )
+}
+
+/// Cached `renderable_code_lenses`.
+pub(crate) fn cached_renderable_code_lenses(
+    path: Option<&Path>,
+    lenses: &[LspCodeLens],
+    line_count: usize,
+) -> Arc<Vec<LspCodeLens>> {
+    let mut entries = renderable_code_lenses_cache();
+    cached_renderable_annotations(
+        &mut entries,
+        path,
+        lenses,
+        line_count,
+        code_lenses_fingerprint(lenses),
+        crate::editor_pane_data::renderable_code_lenses,
+    )
+}
+
 fn semantic_token_char_range(
     buffer: &TextBuffer,
     token: &LspSemanticToken,
@@ -152,11 +418,17 @@ fn semantic_token_char_range(
         return None;
     }
 
+    // Semantic tokens may span multiple lines (e.g. block comments), so the
+    // UTF-16 length is capped to the token's first line at consumption time;
+    // the single-line range conversion would otherwise reject the whole token.
+    let start_utf16 = token.column.saturating_sub(1);
+    let line_utf16_len = lsp_line_content_utf16_len(buffer, token.line - 1)?;
+    let clamped_length = token.length.min(line_utf16_len.saturating_sub(start_utf16));
     let range = lsp_one_based_utf16_span_to_buffer_char_range(
         buffer,
         token.line,
         token.column,
-        token.length,
+        clamped_length,
     )?;
     Some((range, token.token_type.clone(), token.modifiers.clone()))
 }
@@ -273,13 +545,16 @@ pub(crate) fn paint_char_range_highlight_with_corner_radius(
 #[cfg(test)]
 mod tests {
     use super::{
-        DiagnosticTagKind, diagnostic_line_maps, diagnostic_tag_spans_for_buffer,
-        document_highlight_spans_for_buffer, semantic_token_spans_for_buffer,
+        DiagnosticTagKind, cached_renderable_code_lenses, cached_renderable_git_blame_lines,
+        cached_renderable_inlay_hints, cached_semantic_token_spans_for_buffer,
+        diagnostic_line_maps, diagnostic_tag_spans_for_buffer, document_highlight_spans_for_buffer,
+        semantic_token_spans_for_buffer,
     };
     use kuroya_core::{
-        Diagnostic, DiagnosticSeverity, LspDocumentHighlight, LspSemanticToken, TextBuffer,
+        Diagnostic, DiagnosticSeverity, GitBlameLine, LspCodeLens, LspDocumentHighlight,
+        LspInlayHint, LspSemanticToken, TextBuffer,
     };
-    use std::path::PathBuf;
+    use std::{path::PathBuf, sync::Arc};
 
     #[test]
     fn semantic_token_spans_convert_lsp_positions_to_buffer_ranges() {
@@ -397,6 +672,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(0..3, "keyword"), (4..7, "function"), (8..13, "variable")]
         );
+    }
+
+    #[test]
+    fn semantic_token_spans_clamp_multi_line_tokens_to_the_first_line() {
+        let buffer = TextBuffer::from_text(1, None, "/* d\nend */".to_owned());
+
+        let spans =
+            semantic_token_spans_for_buffer(&buffer, &[semantic_token(1, 1, 11, "comment")]);
+
+        // The token covers both lines; consumption caps the highlight to the
+        // first line's content instead of dropping the token.
+        assert_eq!(spans, vec![(0..4, "comment".to_owned(), Vec::new())]);
     }
 
     #[test]
@@ -576,6 +863,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn diagnostic_tag_spans_clamp_multi_line_sentinel_ranges_to_line_end() {
+        let path = PathBuf::from("src/main.rs");
+        let buffer = TextBuffer::from_text(1, Some(path.clone()), "alpha beta\n".to_owned());
+        let diagnostics = vec![Diagnostic {
+            path,
+            line: 1,
+            column: 7,
+            // Multi-line LSP range sentinel end (see kuroya-core
+            // `lsp_diagnostic_char_range`): clamps to the line content length.
+            char_range: 6..usize::MAX,
+            severity: DiagnosticSeverity::Hint,
+            source: "rust-analyzer".to_owned(),
+            message: "multi line".to_owned(),
+            unused: true,
+            deprecated: false,
+        }];
+
+        assert_eq!(
+            diagnostic_tag_spans_for_buffer(&buffer, &diagnostics, true, false),
+            vec![(6..10, DiagnosticTagKind::Unused)]
+        );
+    }
+
     fn semantic_token(
         line: usize,
         column: usize,
@@ -588,6 +899,160 @@ mod tests {
             length,
             token_type: token_type.to_owned(),
             modifiers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn cached_semantic_token_spans_match_uncached_projection() {
+        let path = PathBuf::from("cache-test/projection.rs");
+        let buffer = TextBuffer::from_text(
+            1,
+            Some(path.clone()),
+            "fn main() {\n    value\n}".to_owned(),
+        );
+        let tokens = [
+            LspSemanticToken {
+                line: 1,
+                column: 4,
+                length: 4,
+                token_type: "function".to_owned(),
+                modifiers: vec!["declaration".to_owned()],
+            },
+            semantic_token(2, 5, 5, "variable"),
+        ];
+
+        let cached = cached_semantic_token_spans_for_buffer(&buffer, Some(&path), Some(&tokens));
+        let repeated = cached_semantic_token_spans_for_buffer(&buffer, Some(&path), Some(&tokens));
+
+        // Identical output to the uncached projection for a fixed input.
+        assert_eq!(
+            cached.as_slice(),
+            vec![
+                (3..7, "function".to_owned(), vec!["declaration".to_owned()]),
+                (16..21, "variable".to_owned(), Vec::new())
+            ]
+        );
+        assert_eq!(
+            cached.as_slice(),
+            semantic_token_spans_for_buffer(&buffer, &tokens)
+        );
+        // An unchanged frame reuses the cached allocation.
+        assert!(Arc::ptr_eq(&cached, &repeated));
+        // Missing token payloads still project to an empty list.
+        assert!(cached_semantic_token_spans_for_buffer(&buffer, Some(&path), None).is_empty());
+    }
+
+    #[test]
+    fn semantic_token_span_cache_invalidates_on_buffer_version_change() {
+        let path = PathBuf::from("cache-test/version-change.rs");
+        let mut buffer = TextBuffer::from_text(1, Some(path.clone()), "fn main() {}".to_owned());
+        let tokens = [
+            semantic_token(1, 1, 2, "keyword"),
+            semantic_token(1, 4, 4, "function"),
+        ];
+
+        let before = cached_semantic_token_spans_for_buffer(&buffer, Some(&path), Some(&tokens));
+        assert!(buffer.replace_range(0..0, "// "));
+        let after = cached_semantic_token_spans_for_buffer(&buffer, Some(&path), Some(&tokens));
+
+        assert!(!Arc::ptr_eq(&before, &after));
+        assert_eq!(
+            after.as_slice(),
+            semantic_token_spans_for_buffer(&buffer, &tokens)
+        );
+    }
+
+    #[test]
+    fn semantic_token_span_cache_invalidates_on_token_list_replacement() {
+        let path = PathBuf::from("cache-test/token-replacement.rs");
+        let buffer = TextBuffer::from_text(1, Some(path.clone()), "fn main() {}".to_owned());
+        let original = [semantic_token(1, 1, 2, "keyword")];
+        let replaced = [
+            semantic_token(1, 1, 4, "function"),
+            semantic_token(1, 5, 4, "variable"),
+        ];
+
+        let before = cached_semantic_token_spans_for_buffer(&buffer, Some(&path), Some(&original));
+        let after = cached_semantic_token_spans_for_buffer(&buffer, Some(&path), Some(&replaced));
+
+        assert!(!Arc::ptr_eq(&before, &after));
+        assert_eq!(
+            after.as_slice(),
+            semantic_token_spans_for_buffer(&buffer, &replaced)
+        );
+        assert_eq!(
+            after.as_slice(),
+            vec![
+                (0..4, "function".to_owned(), Vec::new()),
+                (4..8, "variable".to_owned(), Vec::new())
+            ]
+        );
+    }
+
+    #[test]
+    fn cached_renderable_annotations_reuse_and_invalidate() {
+        let path = PathBuf::from("cache-test/annotations.rs");
+        let blame = [
+            blame_line(1, "first"),
+            blame_line(3, "past"),
+            blame_line(0, "zero"),
+        ];
+
+        let cached = cached_renderable_git_blame_lines(Some(&path), &blame, 2);
+        let repeated = cached_renderable_git_blame_lines(Some(&path), &blame, 2);
+        assert_eq!(cached.as_slice(), vec![blame_line(1, "first")]);
+        assert!(Arc::ptr_eq(&cached, &repeated));
+
+        // A replaced blame payload rebuilds instead of serving stale lines.
+        let replaced = [blame_line(1, "first"), blame_line(2, "second")];
+        let invalidated = cached_renderable_git_blame_lines(Some(&path), &replaced, 2);
+        assert!(!Arc::ptr_eq(&cached, &invalidated));
+        assert_eq!(
+            invalidated.as_slice(),
+            vec![blame_line(1, "first"), blame_line(2, "second")]
+        );
+
+        // A different path never shares a cached entry.
+        let other = PathBuf::from("cache-test/annotations-other.rs");
+        let other_cached = cached_renderable_git_blame_lines(Some(&other), &blame, 2);
+        assert!(!Arc::ptr_eq(&cached, &other_cached));
+
+        let hints = [inlay_hint(1, "ok"), inlay_hint(3, "past")];
+        let hints_cached = cached_renderable_inlay_hints(Some(&path), &hints, 2);
+        assert_eq!(hints_cached.as_slice(), vec![inlay_hint(1, "ok")]);
+
+        let lenses = [code_lens(1, "Run"), code_lens(3, "past")];
+        let lenses_cached = cached_renderable_code_lenses(Some(&path), &lenses, 2);
+        assert_eq!(lenses_cached.as_slice(), vec![code_lens(1, "Run")]);
+    }
+
+    fn blame_line(line_number: usize, author: &str) -> GitBlameLine {
+        GitBlameLine {
+            line_number,
+            short_oid: "abc1234".to_owned(),
+            author: author.to_owned(),
+            author_time_seconds: 0,
+            summary: "summary".to_owned(),
+        }
+    }
+
+    fn inlay_hint(line: usize, label: &str) -> LspInlayHint {
+        LspInlayHint {
+            line,
+            column: 1,
+            label: label.to_owned(),
+            kind: None,
+        }
+    }
+
+    fn code_lens(line: usize, title: &str) -> LspCodeLens {
+        LspCodeLens {
+            line,
+            column: 1,
+            title: title.to_owned(),
+            command: None,
+            command_arguments: None,
+            resolve_payload: None,
         }
     }
 

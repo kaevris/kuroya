@@ -145,6 +145,14 @@ fn word_wrap_accepts_kuroya_modes_and_diff_inherits_editor_mode() {
 }
 
 #[test]
+fn word_wrap_defaults_to_off() {
+    assert_eq!(EditorWordWrap::default(), EditorWordWrap::Off);
+    let settings: EditorSettings =
+        toml::from_str("font_size = 15.0\n").expect("partial settings should load");
+    assert_eq!(settings.word_wrap, EditorWordWrap::Off);
+}
+
+#[test]
 fn word_segmenter_locales_accept_vs_code_string_or_list() {
     let single: EditorSettings = toml::from_str("word_segmenter_locales = \"ja\"\n")
         .expect("single word segmenter locale should load");
@@ -265,15 +273,67 @@ fn editor_vim_settings_sanitize_empty_duplicate_and_long_entries() {
 fn lsp_servers_default_to_builtin_configs() {
     let settings: EditorSettings = toml::from_str("").expect("empty settings should load");
 
-    assert!(settings.lsp_servers.is_empty());
-    assert_eq!(
-        settings.lsp_server_configs(),
-        crate::lsp::default_server_configs()
-    );
+    assert_eq!(settings.lsp_servers, crate::lsp::default_server_configs());
+    // Only the core languages ship enabled; the runtime sees just those.
+    let enabled_defaults: Vec<_> = crate::lsp::default_server_configs()
+        .into_iter()
+        .filter(|server| server.enabled)
+        .collect();
+    assert!(!enabled_defaults.is_empty());
+    assert!(enabled_defaults.len() < crate::lsp::default_server_configs().len());
+    assert_eq!(settings.lsp_server_configs(), enabled_defaults);
 }
 
 #[test]
-fn lsp_servers_override_builtins_and_append_custom_servers() {
+fn lsp_servers_without_enabled_field_default_to_enabled() {
+    let settings: EditorSettings = toml::from_str(
+        r#"
+        [[lsp_servers]]
+        language = "rust"
+        command = "rust-analyzer"
+        "#,
+    )
+    .expect("settings should load");
+
+    assert_eq!(settings.lsp_servers.len(), 1);
+    assert!(settings.lsp_servers[0].enabled);
+    assert_eq!(settings.lsp_server_configs().len(), 1);
+}
+
+#[test]
+fn lsp_server_configs_exclude_disabled_servers() {
+    let settings = EditorSettings {
+        lsp_servers: vec![
+            crate::lsp::LspServerConfig {
+                language: "rust".to_owned(),
+                command: "rust-analyzer".to_owned(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+                enabled: true,
+            },
+            crate::lsp::LspServerConfig {
+                language: "python".to_owned(),
+                command: "pyright-langserver".to_owned(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+                enabled: false,
+            },
+        ],
+        ..EditorSettings::default()
+    };
+
+    let servers = settings.lsp_server_configs();
+    assert_eq!(servers.len(), 1);
+    assert_eq!(servers[0].language, "rust");
+    // The disabled entry is kept in settings so its configuration survives.
+    assert_eq!(settings.lsp_servers.len(), 2);
+    assert!(!settings.lsp_servers[1].enabled);
+}
+
+#[test]
+fn lsp_servers_stay_as_configured_without_implicit_defaults() {
     let settings: EditorSettings = toml::from_str(
         r#"
         [[lsp_servers]]
@@ -297,15 +357,10 @@ fn lsp_servers_override_builtins_and_append_custom_servers() {
     .expect("lsp server settings should load");
 
     let servers = settings.lsp_server_configs();
-    let default_count = crate::lsp::default_server_configs().len();
     let rust = servers
         .iter()
         .find(|server| server.language == "rust")
         .expect("rust config should be present");
-    let python = servers
-        .iter()
-        .find(|server| server.language == "python")
-        .expect("python config should be present");
     let go = servers
         .iter()
         .find(|server| server.language == "go")
@@ -315,11 +370,13 @@ fn lsp_servers_override_builtins_and_append_custom_servers() {
         .find(|server| server.language == "kuroya-test")
         .expect("custom config should be present");
 
-    assert_eq!(servers.len(), default_count + 1);
+    // The configured list is authoritative: no implicit built-in defaults
+    // are merged into it.
+    assert_eq!(servers.len(), 3);
     assert_eq!(rust.command, "rust-analyzer-custom");
     assert_eq!(rust.args, ["--stdio"]);
     assert_eq!(rust.root_markers, ["Cargo.toml", ".git"]);
-    assert_eq!(python.command, "pyright-langserver");
+    assert!(!servers.iter().any(|server| server.language == "python"));
     assert_eq!(go.command, "gopls-custom");
     assert!(go.args.is_empty());
     assert_eq!(go.root_markers, ["go.mod", "go.work", ".git"]);
@@ -330,49 +387,66 @@ fn lsp_servers_override_builtins_and_append_custom_servers() {
 
 #[test]
 fn lsp_server_configs_normalize_in_memory_custom_servers() {
-    let mut settings = EditorSettings::default();
-    settings.lsp_servers = vec![
-        crate::lsp::LspServerConfig {
-            language: " Rust ".to_owned(),
-            command: " rust-analyzer-custom ".to_owned(),
-            args: vec![" --stdio ".to_owned()],
-            extensions: vec![".rs".to_owned(), "rs".to_owned(), ".".to_owned()],
-            root_markers: vec![" Cargo.toml ".to_owned()],
-        },
-        crate::lsp::LspServerConfig {
-            language: "kuroya-empty".to_owned(),
-            command: String::new(),
-            args: Vec::new(),
-            extensions: Vec::new(),
-            root_markers: Vec::new(),
-        },
-        crate::lsp::LspServerConfig {
-            language: " kuroya-test ".to_owned(),
-            command: " kuroya-lsp ".to_owned(),
-            args: vec![" --stdio ".to_owned()],
-            extensions: vec![".kuroya".to_owned(), "kuroya".to_owned(), ".".to_owned()],
-            root_markers: vec![" .kuroya-root ".to_owned()],
-        },
-        crate::lsp::LspServerConfig {
-            language: "RUST".to_owned(),
-            command: "rust-analyzer-final".to_owned(),
-            args: Vec::new(),
-            extensions: Vec::new(),
-            root_markers: Vec::new(),
-        },
-    ];
+    let settings = EditorSettings {
+        lsp_servers: vec![
+            crate::lsp::LspServerConfig {
+                language: " Rust ".to_owned(),
+                command: " rust-analyzer-custom ".to_owned(),
+                args: vec![" --stdio ".to_owned()],
+                extensions: vec![".rs".to_owned(), "rs".to_owned(), ".".to_owned()],
+                root_markers: vec![" Cargo.toml ".to_owned()],
+                enabled: true,
+            },
+            crate::lsp::LspServerConfig {
+                language: "kuroya-empty".to_owned(),
+                command: String::new(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+                enabled: true,
+            },
+            crate::lsp::LspServerConfig {
+                language: " kuroya-test ".to_owned(),
+                command: " kuroya-lsp ".to_owned(),
+                args: vec![" --stdio ".to_owned()],
+                extensions: vec![".kuroya".to_owned(), "kuroya".to_owned(), ".".to_owned()],
+                root_markers: vec![" .kuroya-root ".to_owned()],
+                enabled: true,
+            },
+            crate::lsp::LspServerConfig {
+                language: "RUST".to_owned(),
+                command: "rust-analyzer-final".to_owned(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+                enabled: true,
+            },
+        ],
+        ..EditorSettings::default()
+    };
 
     let servers = settings.lsp_server_configs();
-    let rust = servers
+    let rust_servers = servers
         .iter()
-        .find(|server| server.language == "rust")
-        .expect("rust config should be present");
+        .filter(|server| server.language == "rust")
+        .collect::<Vec<_>>();
+    let rust = *rust_servers.first().expect("rust config should be present");
     let custom = servers
         .iter()
         .find(|server| server.language == "kuroya-test")
         .expect("custom config should be present");
 
-    assert_eq!(rust.command, "rust-analyzer-final");
+    // Both distinct rust servers survive; each keeps its own normalized
+    // fields (the first one also replaces the built-in default in place).
+    assert_eq!(rust_servers.len(), 2);
+    assert_eq!(rust.command, "rust-analyzer-custom");
+    assert_eq!(rust.args, ["--stdio"]);
+    assert_eq!(rust.extensions, ["rs"]);
+    assert_eq!(rust.root_markers, ["Cargo.toml"]);
+    assert_eq!(
+        rust_servers[1].command, "rust-analyzer-final",
+        "distinct same-language servers are appended, not collapsed"
+    );
     assert_eq!(custom.command, "kuroya-lsp");
     assert_eq!(custom.args, ["--stdio"]);
     assert_eq!(custom.extensions, ["kuroya"]);
@@ -387,48 +461,57 @@ fn lsp_server_configs_normalize_in_memory_custom_servers() {
 
 #[test]
 fn lsp_server_configs_sanitize_custom_servers() {
-    let mut settings = EditorSettings::default();
-    settings.lsp_servers = vec![
-        crate::lsp::LspServerConfig {
-            language: " Rust ".to_owned(),
-            command: " rust-analyzer-custom ".to_owned(),
-            args: vec![" --stdio ".to_owned()],
-            extensions: vec![".rs".to_owned(), "rs".to_owned(), ".".to_owned()],
-            root_markers: vec![" Cargo.toml ".to_owned()],
-        },
-        crate::lsp::LspServerConfig {
-            language: "kuroya-empty".to_owned(),
-            command: String::new(),
-            args: Vec::new(),
-            extensions: Vec::new(),
-            root_markers: Vec::new(),
-        },
-        crate::lsp::LspServerConfig {
-            language: " kuroya-test ".to_owned(),
-            command: " kuroya-lsp ".to_owned(),
-            args: vec![" --stdio ".to_owned()],
-            extensions: vec![".kuroya".to_owned(), "kuroya".to_owned(), ".".to_owned()],
-            root_markers: vec![" .kuroya-root ".to_owned()],
-        },
-        crate::lsp::LspServerConfig {
-            language: "RUST".to_owned(),
-            command: "rust-analyzer-final".to_owned(),
-            args: Vec::new(),
-            extensions: Vec::new(),
-            root_markers: Vec::new(),
-        },
-    ];
+    let mut settings = EditorSettings {
+        lsp_servers: vec![
+            crate::lsp::LspServerConfig {
+                language: " Rust ".to_owned(),
+                command: " rust-analyzer-custom ".to_owned(),
+                args: vec![" --stdio ".to_owned()],
+                extensions: vec![".rs".to_owned(), "rs".to_owned(), ".".to_owned()],
+                root_markers: vec![" Cargo.toml ".to_owned()],
+                enabled: true,
+            },
+            crate::lsp::LspServerConfig {
+                language: "kuroya-empty".to_owned(),
+                command: String::new(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+                enabled: true,
+            },
+            crate::lsp::LspServerConfig {
+                language: " kuroya-test ".to_owned(),
+                command: " kuroya-lsp ".to_owned(),
+                args: vec![" --stdio ".to_owned()],
+                extensions: vec![".kuroya".to_owned(), "kuroya".to_owned(), ".".to_owned()],
+                root_markers: vec![" .kuroya-root ".to_owned()],
+                enabled: true,
+            },
+            crate::lsp::LspServerConfig {
+                language: "RUST".to_owned(),
+                command: "rust-analyzer-final".to_owned(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+                enabled: true,
+            },
+        ],
+        ..EditorSettings::default()
+    };
 
     assert!(settings.sanitize());
+    // Both distinct rust servers survive sanitization; only the invalid
+    // entry (empty command) is dropped.
     assert_eq!(
         settings.lsp_servers,
         vec![
             crate::lsp::LspServerConfig {
                 language: "rust".to_owned(),
-                command: "rust-analyzer-final".to_owned(),
-                args: Vec::new(),
-                extensions: Vec::new(),
-                root_markers: Vec::new(),
+                command: "rust-analyzer-custom".to_owned(),
+                args: vec!["--stdio".to_owned()],
+                extensions: vec!["rs".to_owned()],
+                root_markers: vec!["Cargo.toml".to_owned()],
+                enabled: true,
             },
             crate::lsp::LspServerConfig {
                 language: "kuroya-test".to_owned(),
@@ -436,10 +519,55 @@ fn lsp_server_configs_sanitize_custom_servers() {
                 args: vec!["--stdio".to_owned()],
                 extensions: vec!["kuroya".to_owned()],
                 root_markers: vec![".kuroya-root".to_owned()],
+                enabled: true,
+            },
+            crate::lsp::LspServerConfig {
+                language: "rust".to_owned(),
+                command: "rust-analyzer-final".to_owned(),
+                args: Vec::new(),
+                extensions: Vec::new(),
+                root_markers: Vec::new(),
+                enabled: true,
             },
         ]
     );
     assert!(!settings.sanitize());
+}
+
+#[test]
+fn lsp_servers_support_multiple_servers_per_language_and_collapse_duplicates() {
+    let settings: EditorSettings = toml::from_str(
+        r#"
+        [[lsp_servers]]
+        language = "rust"
+        command = "rust-analyzer"
+        root_markers = ["Cargo.toml"]
+
+        [[lsp_servers]]
+        language = "rust"
+        command = "rust-analyzer-obsidian"
+        args = ["--stdio"]
+
+        [[lsp_servers]]
+        language = "rust"
+        command = "rust-analyzer-obsidian"
+        args = ["--stdio"]
+        "#,
+    )
+    .expect("lsp server settings should load");
+
+    let servers = settings.lsp_server_configs();
+    let rust_servers = servers
+        .iter()
+        .filter(|server| server.language == "rust")
+        .collect::<Vec<_>>();
+
+    // The exact duplicate collapses and no implicit defaults are merged in.
+    assert_eq!(rust_servers.len(), 2);
+    assert_eq!(rust_servers[0].command, "rust-analyzer");
+    assert_eq!(rust_servers[1].command, "rust-analyzer-obsidian");
+    assert_eq!(rust_servers[1].args, ["--stdio"]);
+    assert_eq!(servers.len(), 2);
 }
 
 #[test]
@@ -479,15 +607,17 @@ fn autosave_mode_supports_legacy_bool_and_named_modes() {
         EditorAutoSaveMode::Off
     );
 
-    let focus_change: EditorSettings = toml::from_str("autosave_mode = \"onFocusChange\"\n")
-        .expect("focus-change autosave mode should load");
+    let focus_change: EditorSettings =
+        toml::from_str("autosave = true\nautosave_mode = \"onFocusChange\"\n")
+            .expect("focus-change autosave mode should load");
     assert_eq!(
         focus_change.effective_autosave_mode(),
         EditorAutoSaveMode::OnFocusChange
     );
 
-    let window_change: EditorSettings = toml::from_str("autosave_mode = \"onWindowChange\"\n")
-        .expect("window-change autosave mode should load");
+    let window_change: EditorSettings =
+        toml::from_str("autosave = true\nautosave_mode = \"onWindowChange\"\n")
+            .expect("window-change autosave mode should load");
     assert_eq!(
         window_change.effective_autosave_mode(),
         EditorAutoSaveMode::OnWindowChange
@@ -780,4 +910,45 @@ fn editor_numeric_settings_are_clamped_to_reasonable_ranges() {
     assert_eq!(clamp_window_zoom_level(f32::NAN), DEFAULT_WINDOW_ZOOM_LEVEL);
     assert_eq!(clamp_window_zoom_level(100.0), MAX_WINDOW_ZOOM_LEVEL);
     assert!((window_zoom_factor(1.0) - 1.2).abs() < f32::EPSILON);
+}
+
+#[test]
+fn editor_background_image_settings_have_expected_defaults_and_clamp_dim_amount() {
+    let settings = EditorSettings::default();
+    assert!(!settings.background_image_enabled);
+    assert_eq!(settings.background_image_path, None);
+    assert_eq!(
+        settings.background_image_scope,
+        EditorBackgroundImageScope::Editor
+    );
+    assert_eq!(
+        settings.background_image_dim,
+        DEFAULT_EDITOR_BACKGROUND_IMAGE_DIM
+    );
+    assert_eq!(
+        settings.background_image_fit,
+        EditorBackgroundImageFit::Cover
+    );
+    assert_eq!(
+        settings.background_image_position,
+        EditorBackgroundImagePosition::Center
+    );
+
+    assert_eq!(
+        clamp_editor_background_image_dim(-1.0),
+        MIN_EDITOR_BACKGROUND_IMAGE_DIM
+    );
+    assert_eq!(clamp_editor_background_image_dim(0.75), 0.75);
+    assert_eq!(
+        clamp_editor_background_image_dim(2.0),
+        MAX_EDITOR_BACKGROUND_IMAGE_DIM
+    );
+    assert_eq!(
+        clamp_editor_background_image_dim(f32::NAN),
+        DEFAULT_EDITOR_BACKGROUND_IMAGE_DIM
+    );
+    assert_eq!(
+        clamp_editor_background_image_dim(f32::INFINITY),
+        DEFAULT_EDITOR_BACKGROUND_IMAGE_DIM
+    );
 }

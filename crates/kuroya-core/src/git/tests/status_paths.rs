@@ -344,25 +344,30 @@ fn git_snapshot_entries_are_sorted_by_stage_then_path() {
         first.clone(),
         super::super::GitStatusLookup::new(GitFileStatus::Modified, GitChangeStage::Unstaged),
     );
+    // Entries are maintained sorted by (stage, path) at every mutation, so
+    // the display order below is (staged z.rs, unstaged a.rs) and both
+    // entry accessors hand it back unchanged.
     let snapshot = GitSnapshot {
         root: Some(PathBuf::from(".")),
         branch: Some("main".to_owned()),
         entries: vec![
             super::super::GitStatusEntry {
-                path: first.clone(),
-                status: GitFileStatus::Modified,
-                stage: GitChangeStage::Unstaged,
-            },
-            super::super::GitStatusEntry {
                 path: second.clone(),
                 status: GitFileStatus::Deleted,
                 stage: GitChangeStage::Staged,
+            },
+            super::super::GitStatusEntry {
+                path: first.clone(),
+                status: GitFileStatus::Modified,
+                stage: GitChangeStage::Unstaged,
             },
         ],
         statuses,
         counts: GitStatusCounts::default(),
         status_limited: false,
         remote_divergence: None,
+        scan_error: None,
+        revision: 1,
     };
 
     let entries = snapshot.entries();
@@ -374,6 +379,7 @@ fn git_snapshot_entries_are_sorted_by_stage_then_path() {
     assert_eq!(entries[1].path, first);
     assert_eq!(entries[1].status, GitFileStatus::Modified);
     assert_eq!(entries[1].stage, GitChangeStage::Unstaged);
+    assert_eq!(snapshot.entries_slice_sorted(), entries.as_slice());
 }
 
 #[test]
@@ -408,6 +414,8 @@ fn git_snapshot_reports_stage_membership_for_paths() {
         counts: GitStatusCounts::default(),
         status_limited: false,
         remote_divergence: None,
+        scan_error: None,
+        revision: 1,
     };
 
     assert!(snapshot.has_stage_for(&staged, GitChangeStage::Staged));
@@ -443,6 +451,8 @@ fn git_snapshot_status_lookup_tracks_both_stages_for_one_path() {
         counts: GitStatusCounts::default(),
         status_limited: false,
         remote_divergence: None,
+        scan_error: None,
+        revision: 1,
     };
 
     assert_eq!(snapshot.status_for(&path), Some(GitFileStatus::Deleted));
@@ -513,6 +523,101 @@ fn git_snapshot_parent_repository_policy_can_require_workspace_root() {
 
     assert_eq!(parent_allowed.root(), Some(root.as_path()));
     assert!(parent_blocked.root().is_none());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn scan_failure_mapping_treats_missing_repository_as_no_error() {
+    let missing = std::env::temp_dir().join(format!(
+        "kuroya-scan-missing-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+
+    let error = Repository::discover(&missing)
+        .map(|_| ())
+        .expect_err("discovery of a missing path should fail");
+    assert_eq!(error.code(), git2::ErrorCode::NotFound);
+
+    let snapshot = super::super::snapshot_from_scan_failure(Some(missing), &error);
+    assert_eq!(snapshot.root(), None);
+    assert!(snapshot.scan_error().is_none());
+}
+
+#[test]
+fn scan_failure_mapping_reports_errors_with_bounded_messages() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-scan-broken-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    drop(repo);
+    fs::write(
+        root.join(".git").join("HEAD"),
+        [0xff, 0x00, 0x0a, 0x01, 0x02],
+    )
+    .unwrap();
+
+    let reopened = Repository::open(&root).unwrap();
+    let mut options = git2::StatusOptions::new();
+    options.include_untracked(true);
+    let error = match reopened.statuses(Some(&mut options)) {
+        Ok(_) => panic!("statuses over a corrupt repository should fail"),
+        Err(error) => error,
+    };
+    assert_ne!(error.code(), git2::ErrorCode::NotFound);
+
+    let snapshot = super::super::snapshot_from_scan_failure(Some(root.clone()), &error);
+    assert_eq!(snapshot.root(), Some(root.as_path()));
+    let message = snapshot.scan_error().expect("scan error should be set");
+    assert!(!message.is_empty());
+    assert!(!message.chars().any(char::is_control));
+    assert!(message.chars().count() <= super::super::MAX_GIT_SCAN_ERROR_CHARS);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn git_snapshot_scan_surfaces_corrupt_repository_error_without_losing_root() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-corrupt-repo-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    Repository::init(&root).unwrap();
+    fs::write(
+        root.join(".git").join("HEAD"),
+        [0xff, 0x00, 0x0a, 0x01, 0x02],
+    )
+    .unwrap();
+
+    let snapshot = GitSnapshot::scan(&root);
+
+    assert!(snapshot.scan_error().is_some());
+    assert_eq!(snapshot.root(), Some(root.as_path()));
+    assert!(snapshot.entries().is_empty());
+    assert!(snapshot.branch().is_none());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn git_snapshot_scan_of_plain_folder_has_no_scan_error() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-no-repo-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+
+    let snapshot = GitSnapshot::scan(&root);
+
+    assert_eq!(snapshot.root(), None);
+    assert!(snapshot.scan_error().is_none());
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -927,6 +1032,199 @@ fn stage_path_can_resolve_merge_conflict_by_deleting_file() {
     assert_eq!(head.parent_id(0).unwrap(), old_head);
     assert_eq!(head.parent_id(1).unwrap(), merged);
     assert!(head.tree().unwrap().get_name("delete-me.txt").is_none());
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn stage_paths_stages_both_sides_of_an_unstaged_rename() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-git-stage-rename-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    configure_identity(&repo);
+    let old = root.join("r1.txt");
+    fs::write(&old, "same content\n").unwrap();
+    commit_all(&repo, "initial");
+
+    let new = root.join("r2.txt");
+    fs::rename(&old, &new).unwrap();
+
+    // The source control panel names an unstaged rename by its new path only.
+    stage_paths(&root, [new.as_path()]).unwrap();
+
+    let staged = GitSnapshot::scan(&root).entries();
+    assert_eq!(staged.len(), 1, "a staged rename is a single entry");
+    assert_eq!(staged[0].status, GitFileStatus::Renamed);
+    assert_eq!(staged[0].stage, GitChangeStage::Staged);
+    assert_eq!(file_text_at_index(&root, &old).unwrap(), None);
+    assert_eq!(
+        file_text_at_index(&root, &new).unwrap(),
+        Some("same content\n".to_owned())
+    );
+
+    super::super::commit_staged_changes(&root, "rename r1 to r2").unwrap();
+    let commit = repo.head().unwrap().peel_to_commit().unwrap();
+    let parent_tree = commit.parent(0).unwrap().tree().unwrap();
+    let commit_tree = commit.tree().unwrap();
+    assert!(commit_tree.get_path(Path::new("r2.txt")).is_ok());
+    assert!(commit_tree.get_path(Path::new("r1.txt")).is_err());
+
+    let mut find_options = git2::DiffFindOptions::new();
+    find_options.renames(true);
+    let mut diff = repo
+        .diff_tree_to_tree(
+            Some(&parent_tree),
+            Some(&commit_tree),
+            Some(&mut git2::DiffOptions::new()),
+        )
+        .unwrap();
+    diff.find_similar(Some(&mut find_options)).unwrap();
+    let deltas = diff.deltas().collect::<Vec<_>>();
+    assert_eq!(deltas.len(), 1, "the commit is a rename, not add + delete");
+    assert_eq!(deltas[0].status(), git2::Delta::Renamed);
+    assert_eq!(deltas[0].old_file().path(), Some(Path::new("r1.txt")));
+    assert_eq!(deltas[0].new_file().path(), Some(Path::new("r2.txt")));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unstage_paths_restores_both_sides_of_a_staged_rename() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-git-unstage-rename-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    configure_identity(&repo);
+    let old = root.join("r1.txt");
+    fs::write(&old, "same content\n").unwrap();
+    commit_all(&repo, "initial");
+
+    let new = root.join("r2.txt");
+    fs::rename(&old, &new).unwrap();
+    stage_paths(&root, [old.as_path(), new.as_path()]).unwrap();
+    let staged = GitSnapshot::scan(&root).entries();
+    assert_eq!(staged.len(), 1, "precondition: a staged rename");
+    assert_eq!(staged[0].status, GitFileStatus::Renamed);
+    assert_eq!(staged[0].stage, GitChangeStage::Staged);
+
+    // The source control panel names a staged rename by its new path only.
+    unstage_paths(&root, [new.as_path()]).unwrap();
+
+    // The index is clean again: the old path is restored and the new path is
+    // gone, while the worktree keeps the renamed file.
+    assert_eq!(
+        file_text_at_index(&root, &old).unwrap(),
+        Some("same content\n".to_owned())
+    );
+    assert_eq!(file_text_at_index(&root, &new).unwrap(), None);
+    assert!(!old.exists());
+    assert!(new.exists());
+
+    let entries = GitSnapshot::scan(&root).entries();
+    assert_eq!(entries.len(), 1, "the rename is unstaged again");
+    assert_eq!(entries[0].status, GitFileStatus::Renamed);
+    assert_eq!(entries[0].stage, GitChangeStage::Unstaged);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unstage_all_paths_unstages_a_rename_and_a_modify_together() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-git-unstage-all-rename-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    configure_identity(&repo);
+    let modified = root.join("base.txt");
+    fs::write(&modified, "one\n").unwrap();
+    let old = root.join("r1.txt");
+    fs::write(&old, "same content\n").unwrap();
+    commit_all(&repo, "initial");
+
+    fs::write(&modified, "two\n").unwrap();
+    stage_path(&root, &modified).unwrap();
+    let new = root.join("r2.txt");
+    fs::rename(&old, &new).unwrap();
+    stage_paths(&root, [old.as_path(), new.as_path()]).unwrap();
+    let staged = GitSnapshot::scan(&root).entries();
+    assert_eq!(staged.len(), 2, "precondition: staged modify plus rename");
+
+    // "Unstage All" feeds the staged entry paths: the modified path plus the
+    // rename's new path only.
+    unstage_paths(&root, [modified.as_path(), new.as_path()]).unwrap();
+
+    assert_eq!(
+        file_text_at_index(&root, &modified).unwrap(),
+        Some("one\n".to_owned())
+    );
+    assert_eq!(
+        file_text_at_index(&root, &old).unwrap(),
+        Some("same content\n".to_owned())
+    );
+    assert_eq!(file_text_at_index(&root, &new).unwrap(), None);
+
+    let mut entries = GitSnapshot::scan(&root).entries();
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    assert_eq!(entries.len(), 2, "everything is unstaged again");
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry.stage == GitChangeStage::Unstaged)
+    );
+    assert_eq!(entries[0].status, GitFileStatus::Modified);
+    assert_eq!(entries[1].status, GitFileStatus::Renamed);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn stage_and_unstage_paths_keep_a_normal_modify_single_sided() {
+    let root = std::env::temp_dir().join(format!(
+        "kuroya-git-stage-normal-modify-{}-{}",
+        std::process::id(),
+        unique_suffix()
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    configure_identity(&repo);
+    let tracked = root.join("tracked.txt");
+    fs::write(&tracked, "one\n").unwrap();
+    commit_all(&repo, "initial");
+
+    fs::write(&tracked, "two\n").unwrap();
+    stage_path(&root, &tracked).unwrap();
+    let staged = GitSnapshot::scan(&root).entries();
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0].status, GitFileStatus::Modified);
+    assert_eq!(staged[0].stage, GitChangeStage::Staged);
+    assert_eq!(
+        file_text_at_index(&root, &tracked).unwrap(),
+        Some("two\n".to_owned())
+    );
+
+    unstage_path(&root, &tracked).unwrap();
+    assert_eq!(
+        file_text_at_index(&root, &tracked).unwrap(),
+        Some("one\n".to_owned())
+    );
+    let unstaged = GitSnapshot::scan(&root).entries();
+    assert_eq!(unstaged.len(), 1);
+    assert_eq!(unstaged[0].status, GitFileStatus::Modified);
+    assert_eq!(unstaged[0].stage, GitChangeStage::Unstaged);
+    assert_eq!(
+        fs::read_to_string(&tracked).unwrap().replace("\r\n", "\n"),
+        "two\n"
+    );
 
     fs::remove_dir_all(root).unwrap();
 }

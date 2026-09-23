@@ -1,5 +1,6 @@
 use super::text::rope_slice_text;
 use super::{TextBuffer, TextEdit};
+use std::cmp::Ordering;
 
 impl TextBuffer {
     pub fn apply_save_cleanup(
@@ -63,24 +64,53 @@ impl TextBuffer {
             cleaned = trim_extra_final_newlines(&cleaned, line_ending);
         }
 
-        if insert_final_newline && !cleaned.is_empty() && !cleaned.ends_with('\n') {
+        if insert_final_newline
+            && !cleaned.is_empty()
+            && !cleaned.ends_with('\n')
+            && !cleaned.ends_with('\r')
+        {
             cleaned.push_str(line_ending);
         }
 
         cleaned
     }
 
-    fn preferred_line_ending(&self) -> &'static str {
+    pub(super) fn preferred_line_ending(&self) -> &'static str {
+        let mut crlf_count = 0usize;
+        let mut lf_count = 0usize;
         let mut previous_was_cr = false;
+        let mut first_line_ending = None;
         for chunk in self.rope.chunks() {
             for ch in chunk.chars() {
-                if previous_was_cr && ch == '\n' {
-                    return "\r\n";
+                if ch == '\n' {
+                    if previous_was_cr {
+                        crlf_count += 1;
+                        if first_line_ending.is_none() {
+                            first_line_ending = Some("\r\n");
+                        }
+                    } else {
+                        lf_count += 1;
+                        if first_line_ending.is_none() {
+                            first_line_ending = Some("\n");
+                        }
+                    }
                 }
                 previous_was_cr = ch == '\r';
             }
         }
-        "\n"
+        dominant_line_ending(crlf_count, lf_count, first_line_ending)
+    }
+}
+
+fn dominant_line_ending(
+    crlf_count: usize,
+    lf_count: usize,
+    first_line_ending: Option<&'static str>,
+) -> &'static str {
+    match crlf_count.cmp(&lf_count) {
+        Ordering::Greater => "\r\n",
+        Ordering::Equal => first_line_ending.unwrap_or("\n"),
+        Ordering::Less => "\n",
     }
 }
 
@@ -101,7 +131,11 @@ pub fn clean_text_for_save(
         cleaned = trim_extra_final_newlines(&cleaned, line_ending);
     }
 
-    if insert_final_newline && !cleaned.is_empty() && !cleaned.ends_with('\n') {
+    if insert_final_newline
+        && !cleaned.is_empty()
+        && !cleaned.ends_with('\n')
+        && !cleaned.ends_with('\r')
+    {
         cleaned.push_str(line_ending);
     }
 
@@ -109,7 +143,27 @@ pub fn clean_text_for_save(
 }
 
 fn preferred_line_ending(text: &str) -> &'static str {
-    if text.contains("\r\n") { "\r\n" } else { "\n" }
+    let mut crlf_count = 0usize;
+    let mut lf_count = 0usize;
+    let mut previous_was_cr = false;
+    let mut first_line_ending = None;
+    for ch in text.chars() {
+        if ch == '\n' {
+            if previous_was_cr {
+                crlf_count += 1;
+                if first_line_ending.is_none() {
+                    first_line_ending = Some("\r\n");
+                }
+            } else {
+                lf_count += 1;
+                if first_line_ending.is_none() {
+                    first_line_ending = Some("\n");
+                }
+            }
+        }
+        previous_was_cr = ch == '\r';
+    }
+    dominant_line_ending(crlf_count, lf_count, first_line_ending)
 }
 
 fn trim_line_trailing_whitespace(text: &str) -> String {
@@ -129,14 +183,20 @@ fn trim_line_trailing_whitespace(text: &str) -> String {
 }
 
 pub(super) fn trim_extra_final_newlines(text: &str, line_ending: &str) -> String {
-    let mut trimmed = text.to_owned();
+    let mut trimmed = text;
     let mut ending_count = 0usize;
-    while trimmed.ends_with(line_ending) {
-        let new_len = trimmed.len().saturating_sub(line_ending.len());
-        trimmed.truncate(new_len);
+    loop {
+        if let Some(rest) = trimmed.strip_suffix("\r\n") {
+            trimmed = rest;
+        } else if let Some(rest) = trimmed.strip_suffix('\n') {
+            trimmed = rest;
+        } else {
+            break;
+        }
         ending_count += 1;
     }
 
+    let mut trimmed = trimmed.to_owned();
     if ending_count > 0 {
         trimmed.push_str(line_ending);
     }

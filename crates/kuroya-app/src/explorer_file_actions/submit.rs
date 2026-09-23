@@ -835,6 +835,7 @@ mod tests {
             relative_path: PathBuf::new(),
             is_dir,
             depth: 0,
+            ..Default::default()
         }
     }
 

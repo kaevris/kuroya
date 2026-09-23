@@ -22,6 +22,17 @@ pub(super) fn handle_reference_rename_response(
                 id, path, version, line, character, &value, ui_tx,
             );
         }
+        PendingLspRequest::PrepareRename {
+            id,
+            path,
+            version,
+            line,
+            character,
+        } => {
+            rename::handle_prepare_rename_response(
+                id, path, version, line, character, &value, ui_tx,
+            );
+        }
         PendingLspRequest::Rename {
             id,
             path,

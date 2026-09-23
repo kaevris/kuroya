@@ -1,5 +1,6 @@
 use crate::{
     KuroyaApp,
+    fs_watcher::note_app_write,
     path_display::display_error_label_cow,
     source_control_panel::{
         source_control_sort_mode_from_setting, source_control_view_mode_from_setting,
@@ -81,6 +82,7 @@ impl KuroyaApp {
         );
         let previous_read_only = self.settings.read_only;
         let previous_vim_settings = (self.settings.vim_keybindings, self.settings.vim.clone());
+        let previous_discord_settings = self.settings.discord.clone();
         let previous_inline_annotations = (self.settings.code_lens, self.settings.inlay_hints);
         let previous_navigation_annotations = (
             self.settings.hover_enabled,
@@ -98,16 +100,30 @@ impl KuroyaApp {
         let previous_blame_ignore_whitespace = self.settings.git_blame_ignore_whitespace;
         let previous_git_enabled = self.settings.git_enabled;
         let previous_git_autorefresh = self.settings.git_autorefresh;
+        let previous_plugin_settings = self.settings.plugins.clone();
         let previous_git_ignored_repositories_key =
             git_string_list_setting_key(&self.settings.git_ignored_repositories);
         let previous_git_repository_scan_settings =
             GitRepositoryScanSettings::from_settings(&self.settings);
         let previous_diff_max_file_size_mb = self.settings.diff_max_file_size_mb;
+        let previous_project_index_settings = (
+            self.settings.project_index_max_files,
+            self.settings.project_index_exclude_globs.clone(),
+        );
+        let previous_project_search_settings = (
+            self.settings.project_search_exclude_globs.clone(),
+            self.settings.project_search_max_file_size_mb,
+            self.settings.project_search_max_results,
+        );
         let path = settings_path(&self.workspace.root);
         if let Err(error) = next_settings.save(&path) {
             self.status = settings_save_failed_status(error);
             return;
         }
+        // Mark the settings write as our own so the file watcher does not
+        // classify it as an external change and immediately reload (and
+        // overwrite the "Saved settings;…" status).
+        note_app_write(&path);
 
         let lsp_server_configs_changed =
             previous_settings.lsp_server_configs() != next_settings.lsp_server_configs();
@@ -151,11 +167,10 @@ impl KuroyaApp {
             self.sync_global_read_only_buffers();
         }
         if previous_vim_settings != (self.settings.vim_keybindings, self.settings.vim.clone()) {
-            self.editor_vim_mode = crate::editor_vim_key_events::EditorVimMode::Normal;
-            self.editor_vim_pending_key = None;
-            self.editor_vim_last_char_find = None;
-            self.editor_vim_unnamed_register = None;
-            self.editor_vim_last_change = None;
+            self.vim_reset_session_state();
+        }
+        if previous_discord_settings != self.settings.discord {
+            self.sync_discord_presence_runtime();
         }
         if previous_inline_annotations.0 && !self.settings.code_lens {
             self.code_lenses.clear();
@@ -202,6 +217,25 @@ impl KuroyaApp {
             previous_git_ignored_repositories_key != git_ignored_repositories_key;
         let git_repository_scan_settings_changed = previous_git_repository_scan_settings
             != GitRepositoryScanSettings::from_settings(&self.settings);
+        let project_index_settings_changed = previous_project_index_settings
+            != (
+                self.settings.project_index_max_files,
+                self.settings.project_index_exclude_globs.clone(),
+            );
+        let project_search_settings_changed = previous_project_search_settings
+            != (
+                self.settings.project_search_exclude_globs.clone(),
+                self.settings.project_search_max_file_size_mb,
+                self.settings.project_search_max_results,
+            );
+        if project_search_settings_changed {
+            self.invalidate_project_search_requests();
+            self.project_search_metadata_cache.clear();
+            self.sync_project_search_after_settings_change();
+        }
+        if project_index_settings_changed {
+            self.spawn_index();
+        }
         if previous_diff_max_file_size_mb != self.settings.diff_max_file_size_mb
             || previous_git_enabled != self.settings.git_enabled
             || git_ignored_repositories_changed
@@ -217,6 +251,9 @@ impl KuroyaApp {
             self.sync_git_repository_filters_state();
         } else if git_repository_scan_settings_changed {
             self.spawn_git_scan();
+        }
+        if previous_plugin_settings != self.settings.plugins {
+            self.sync_plugin_settings_state();
         }
 
         let app_state_vim_changed =
@@ -246,6 +283,7 @@ impl KuroyaApp {
         if let Some(error) = app_state_save_error {
             push_app_preference_save_failed_status(&mut self.status, error);
         }
+        self.sync_background_image(false);
     }
 }
 
@@ -260,7 +298,6 @@ struct GitRepositoryScanSettings {
     repository_scan_max_depth: usize,
     detect_worktrees: bool,
     detect_worktrees_limit: usize,
-    scan_repositories: Vec<String>,
     worktree_include_files: Vec<String>,
     similarity_threshold: usize,
 }
@@ -279,7 +316,6 @@ impl GitRepositoryScanSettings {
             repository_scan_max_depth: settings.git_repository_scan_max_depth,
             detect_worktrees: settings.git_detect_worktrees,
             detect_worktrees_limit: settings.git_detect_worktrees_limit,
-            scan_repositories: git_string_list_setting_key(&settings.git_scan_repositories),
             worktree_include_files: git_string_list_setting_key(
                 &settings.git_worktree_include_files,
             ),
@@ -365,14 +401,17 @@ mod tests {
         path_display::DISPLAY_ERROR_LABEL_MAX_CHARS, terminal::TerminalPane,
         transient_state::LspSignatureHelpPopup, workspace_state::settings_path,
     };
+    use image::{Rgba, RgbaImage};
     use kuroya_core::{
-        EditorScrollbarVisibility, EditorSettings, LspServerConfig, LspSignatureHelp, TextBuffer,
+        EditorBackgroundImageFit, EditorBackgroundImagePosition, EditorBackgroundImageScope,
+        EditorScrollbarVisibility, EditorSettings, LspServerConfig, LspSignatureHelp,
+        PluginCapabilities, PluginContributions, PluginDescriptor, PluginManifest, TextBuffer,
         ThemeSettings, Workspace,
     };
     use std::{
         fs,
         path::PathBuf,
-        time::{Instant, SystemTime, UNIX_EPOCH},
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
     use tokio::runtime::Runtime;
 
@@ -455,6 +494,21 @@ mod tests {
         assert_eq!(app.settings.font_size, EditorSettings::default().font_size);
         assert_eq!(app.status, "Open settings before applying changes");
         assert!(!settings_path(&root).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_records_settings_save_as_recent_app_write() {
+        let root = temp_root("apply-notes-settings-write");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        app.settings_panel_draft.font_size = 22.0;
+
+        app.apply_settings_panel();
+
+        assert!(app.status.starts_with("Saved settings"));
+        assert!(crate::fs_watcher::is_recent_app_write(&settings_path(
+            &root
+        )));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -622,6 +676,101 @@ mod tests {
     }
 
     #[test]
+    fn apply_general_settings_survive_untrusted_workspace_reload() {
+        let root = temp_root("general-settings-untrusted-reload");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        app.trusted_workspaces.clear();
+        app.workspace_trusted = false;
+        app.settings_panel_draft.window_zoom_level = 1.5;
+        app.settings_panel_draft.ui_font_size = 16.0;
+        app.settings_panel_draft.minimap = true;
+        app.settings_panel_draft.smooth_scrolling = false;
+        app.settings_panel_draft.scroll_beyond_last_line = false;
+        app.settings_panel_draft.status_bar_visible = false;
+
+        app.apply_settings_panel();
+
+        assert!(app.status.starts_with("Saved settings"));
+        app.reload_settings();
+
+        assert!(!app.workspace_trusted);
+        assert_eq!(app.settings.window_zoom_level, 1.5);
+        assert_eq!(app.settings.ui_font_size, 16.0);
+        assert!(app.settings.minimap);
+        assert!(!app.settings.smooth_scrolling);
+        assert!(!app.settings.scroll_beyond_last_line);
+        assert!(!app.settings.status_bar_visible);
+        assert_eq!(app.settings_panel_draft, app.settings);
+
+        let saved = EditorSettings::load_or_create_with_recovery(&settings_path(&root))
+            .unwrap()
+            .settings;
+        assert_eq!(saved.window_zoom_level, 1.5);
+        assert_eq!(saved.ui_font_size, 16.0);
+        assert!(saved.minimap);
+        assert!(!saved.smooth_scrolling);
+        assert!(!saved.scroll_beyond_last_line);
+        assert!(!saved.status_bar_visible);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_and_reload_manage_persisted_editor_background_image() {
+        let root = temp_root("editor-background-image");
+        fs::create_dir_all(&root).unwrap();
+        let image_path = root.join("background.png");
+        RgbaImage::from_pixel(4, 3, Rgba([20, 80, 160, 255]))
+            .save(&image_path)
+            .unwrap();
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        app.settings_panel_draft.background_image_enabled = true;
+        app.settings_panel_draft.background_image_path = Some(image_path.display().to_string());
+        app.settings_panel_draft.background_image_dim = 0.72;
+        app.settings_panel_draft.background_image_fit = EditorBackgroundImageFit::Contain;
+        app.settings_panel_draft.background_image_position = EditorBackgroundImagePosition::Bottom;
+        app.settings_panel_draft.background_image_scope = EditorBackgroundImageScope::FullApp;
+
+        app.apply_settings_panel();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !app.background_image_is_ready() && Instant::now() < deadline {
+            app.handle_events();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.handle_events();
+
+        assert!(app.background_image_is_ready());
+        assert_eq!(app.settings.background_image_dim, 0.72);
+        assert_eq!(
+            app.settings.background_image_fit,
+            EditorBackgroundImageFit::Contain
+        );
+        assert_eq!(
+            app.settings.background_image_position,
+            EditorBackgroundImagePosition::Bottom
+        );
+        assert_eq!(
+            app.settings.background_image_scope,
+            EditorBackgroundImageScope::FullApp
+        );
+        let mut saved = EditorSettings::load_or_create_with_recovery(&settings_path(&root))
+            .unwrap()
+            .settings;
+        assert!(saved.background_image_enabled);
+        assert_eq!(
+            saved.background_image_path.as_deref(),
+            Some(image_path.to_string_lossy().as_ref())
+        );
+
+        saved.background_image_enabled = false;
+        saved.save(&settings_path(&root)).unwrap();
+        app.reload_settings();
+
+        assert!(!app.settings.background_image_enabled);
+        assert!(!app.background_image_is_ready());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn apply_settings_panel_restarts_lsp_clients_when_server_config_changes() {
         let root = temp_root("lsp-config-change");
         let mut app = app_for_test(root.clone(), EditorSettings::default());
@@ -637,6 +786,7 @@ mod tests {
             args: Vec::new(),
             extensions: Vec::new(),
             root_markers: vec!["Cargo.toml".to_owned()],
+            enabled: true,
         }];
 
         app.apply_settings_panel();
@@ -686,7 +836,6 @@ mod tests {
         let settings = EditorSettings {
             git_enabled: true,
             git_repository_scan_ignored_folders: vec!["node_modules".to_owned()],
-            git_scan_repositories: vec!["../repo".to_owned()],
             git_worktree_include_files: vec!["packages/app".to_owned()],
             ..EditorSettings::default()
         };
@@ -695,7 +844,6 @@ mod tests {
         app.settings_panel_draft.status_bar_visible = !app.settings.status_bar_visible;
         app.settings_panel_draft.git_repository_scan_ignored_folders =
             vec![" node_modules ".to_owned()];
-        app.settings_panel_draft.git_scan_repositories = vec![" ../repo ".to_owned()];
         app.settings_panel_draft.git_worktree_include_files = vec![" packages/app ".to_owned()];
 
         app.apply_settings_panel();
@@ -704,7 +852,6 @@ mod tests {
             app.settings.git_repository_scan_ignored_folders,
             [" node_modules ".to_owned()]
         );
-        assert_eq!(app.settings.git_scan_repositories, [" ../repo ".to_owned()]);
         assert_eq!(
             app.settings.git_worktree_include_files,
             [" packages/app ".to_owned()]
@@ -754,6 +901,89 @@ mod tests {
             status.chars().count()
                 <= "Could not save settings: ".chars().count() + DISPLAY_ERROR_LABEL_MAX_CHARS
         );
+    }
+
+    #[test]
+    fn apply_settings_panel_persists_plugin_settings_and_resyncs_discovery_state() {
+        let root = temp_root("plugin-settings-persist");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        let app_state_path = root.join("app-state.json");
+        app.app_state_path_override = Some(app_state_path.clone());
+        app.plugins.push(test_plugin_descriptor("loaded.plugin"));
+
+        app.settings_panel_draft.plugins.enabled = false;
+        app.apply_settings_panel();
+
+        assert!(!app.settings.plugins.enabled);
+        assert!(app.plugins.is_empty());
+        assert_eq!(app.workspace_plugins_in_flight_request_id, None);
+        let saved = EditorSettings::load_or_create_with_recovery(&settings_path(&root))
+            .unwrap()
+            .settings;
+        assert!(!saved.plugins.enabled);
+        assert!(app.status.starts_with("Saved settings"));
+
+        let next_request_id = app.workspace_plugins_next_request_id;
+        app.settings_panel_draft.plugins.enabled = true;
+        app.apply_settings_panel();
+
+        assert!(app.settings.plugins.enabled);
+        assert_eq!(
+            app.workspace_plugins_in_flight_request_id,
+            Some(next_request_id + 1)
+        );
+        let saved = EditorSettings::load_or_create_with_recovery(&settings_path(&root))
+            .unwrap()
+            .settings;
+        assert!(saved.plugins.enabled);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_updates_plugin_disabled_ids_from_draft() {
+        let root = temp_root("plugin-disabled-ids");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+
+        app.settings_panel_draft.plugins.disabled_ids = vec!["alpha.plugin".to_owned()];
+        app.apply_settings_panel();
+
+        assert_eq!(
+            app.settings.plugins.disabled_ids,
+            ["alpha.plugin".to_owned()]
+        );
+        assert_eq!(
+            EditorSettings::load_or_create_with_recovery(&settings_path(&root))
+                .unwrap()
+                .settings
+                .plugins
+                .disabled_ids,
+            ["alpha.plugin".to_owned()]
+        );
+        assert_eq!(app.settings_panel_draft, app.settings);
+
+        app.sync_settings_panel_inputs();
+        app.settings_panel_draft.plugins.disabled_ids.clear();
+        app.apply_settings_panel();
+
+        assert!(app.settings.plugins.disabled_ids.is_empty());
+        assert_eq!(app.settings_panel_draft, app.settings);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn test_plugin_descriptor(id: &str) -> PluginDescriptor {
+        PluginDescriptor {
+            root: PathBuf::from(format!(".kuroya/plugins/{id}")),
+            manifest: PluginManifest {
+                api_version: "1".to_owned(),
+                id: id.to_owned(),
+                name: id.to_owned(),
+                version: "0.1.0".to_owned(),
+                entry: None,
+                activation_events: Vec::new(),
+                capabilities: PluginCapabilities::default(),
+                contributes: PluginContributions::default(),
+            },
+        }
     }
 
     fn assert_due_refresh_ids(app: &KuroyaApp, expected: &[u64]) {

@@ -2,12 +2,11 @@ use crate::{
     layout::{
         DIAGNOSTICS_PANEL_DEFAULT_WIDTH, DIAGNOSTICS_PANEL_MAX_WIDTH, DIAGNOSTICS_PANEL_MIN_WIDTH,
         EXPLORER_DEFAULT_WIDTH, EXPLORER_MAX_WIDTH, EXPLORER_MIN_WIDTH, MIN_EDITOR_PANE_WIDTH,
-        PROJECT_SEARCH_DEFAULT_WIDTH, PROJECT_SEARCH_MAX_WIDTH, PROJECT_SEARCH_MIN_WIDTH,
         SOURCE_CONTROL_DEFAULT_WIDTH, SOURCE_CONTROL_MAX_WIDTH, SOURCE_CONTROL_MIN_WIDTH,
         SYMBOLS_PANEL_DEFAULT_WIDTH, SYMBOLS_PANEL_MAX_WIDTH, SYMBOLS_PANEL_MIN_WIDTH,
         TERMINAL_DEFAULT_HEIGHT, TERMINAL_MAX_HEIGHT, TERMINAL_MIN_HEIGHT, adjust_split_weights,
-        clamp_diagnostics_panel_width, clamp_explorer_width, clamp_project_search_width,
-        clamp_source_control_width, clamp_symbols_panel_width, clamp_terminal_height,
+        clamp_diagnostics_panel_width, clamp_explorer_width, clamp_source_control_width,
+        clamp_symbols_panel_width, clamp_terminal_height,
         clamp_terminal_height_for_available_height, normalize_weights,
         responsive_side_panel_max_width, responsive_terminal_max_height, terminal_open_height,
     },
@@ -203,13 +202,6 @@ fn panel_widths_are_clamped_for_session_restore() {
     assert_eq!(clamp_explorer_width(1.0), EXPLORER_MIN_WIDTH);
     assert_eq!(clamp_explorer_width(900.0), EXPLORER_MAX_WIDTH);
     assert_eq!(clamp_explorer_width(f32::NAN), EXPLORER_DEFAULT_WIDTH);
-
-    assert_eq!(clamp_project_search_width(1.0), PROJECT_SEARCH_MIN_WIDTH);
-    assert_eq!(clamp_project_search_width(900.0), PROJECT_SEARCH_MAX_WIDTH);
-    assert_eq!(
-        clamp_project_search_width(f32::NAN),
-        PROJECT_SEARCH_DEFAULT_WIDTH
-    );
 
     assert_eq!(clamp_symbols_panel_width(1.0), SYMBOLS_PANEL_MIN_WIDTH);
     assert_eq!(clamp_symbols_panel_width(900.0), SYMBOLS_PANEL_MAX_WIDTH);

@@ -1,16 +1,19 @@
-use super::super::super::{pending::PendingLspRequest, response::handle_lsp_response_for_server};
+use super::super::super::{
+    pending::{PendingLspRequest, PendingLspRequests},
+    response::handle_lsp_response_for_server,
+};
 use crate::lsp_ui_events::LspServerResultTarget;
 use crate::ui_event_channel::Sender;
 use crate::ui_events::UiEvent;
 use serde_json::Value;
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 
 pub(super) fn handle_response_message(
     value: Value,
     language: &str,
     root: &Path,
     generation: u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
     ui_tx: &Sender<UiEvent>,
 ) {
     let Some(pending) = take_pending_response(&value, pending_requests) else {
@@ -31,7 +34,7 @@ pub(super) fn handle_response_message(
 
 fn take_pending_response(
     value: &Value,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> Option<PendingLspRequest> {
     let object = value.as_object()?;
     if object.contains_key("method") || !has_response_payload(object) {
@@ -49,6 +52,7 @@ fn has_response_payload(object: &serde_json::Map<String, Value>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lsp_client::pending::PendingLspRequests;
     use crate::lsp_ui_events::LspUiEvent;
     use crossbeam_channel::TryRecvError;
     use serde_json::json;
@@ -67,7 +71,7 @@ mod tests {
     #[test]
     fn response_message_wraps_result_with_current_server_identity() {
         let (tx, rx) = crate::ui_event_channel::ui_event_channel();
-        let mut pending_requests = HashMap::from([(7, hover_pending())]);
+        let mut pending_requests = PendingLspRequests::from([(7, hover_pending())]);
         let root = PathBuf::from("workspace");
 
         handle_response_message(
@@ -117,7 +121,7 @@ mod tests {
     #[test]
     fn canceled_response_without_pending_request_emits_no_ui_event() {
         let (tx, rx) = crate::ui_event_channel::ui_event_channel();
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
 
         handle_response_message(
             json!({
@@ -141,7 +145,7 @@ mod tests {
     #[test]
     fn id_only_message_does_not_consume_pending_request() {
         let (tx, rx) = crate::ui_event_channel::ui_event_channel();
-        let mut pending_requests = HashMap::from([(7, hover_pending())]);
+        let mut pending_requests = PendingLspRequests::from([(7, hover_pending())]);
 
         handle_response_message(
             json!({
@@ -162,7 +166,7 @@ mod tests {
     #[test]
     fn ambiguous_response_payload_does_not_consume_pending_request() {
         let (tx, rx) = crate::ui_event_channel::ui_event_channel();
-        let mut pending_requests = HashMap::from([(7, hover_pending())]);
+        let mut pending_requests = PendingLspRequests::from([(7, hover_pending())]);
 
         handle_response_message(
             json!({

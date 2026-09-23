@@ -2,6 +2,7 @@ use kuroya_core::TextBuffer;
 use std::ops::Range;
 
 use super::super::VIM_MAX_COUNT;
+use super::super::state::vim_set_visual_bounds_marks;
 pub(in crate::editor_vim_key_events) fn vim_visual_character_clamped_cursor(
     buffer: &TextBuffer,
     cursor: usize,
@@ -13,14 +14,14 @@ pub(in crate::editor_vim_key_events) fn vim_visual_character_clamped_cursor(
 
     let cursor = cursor.min(len);
     if cursor == len {
-        return len - 1;
+        return buffer.snap_back_to_grapheme_boundary(len - 1);
     }
 
     let position = buffer.char_position(cursor);
     let line_start = buffer.line_column_to_char(position.line, 0);
     let line_content_end = buffer.line_content_end_char(position.line);
     if cursor == line_content_end && cursor > line_start {
-        cursor - 1
+        buffer.snap_back_to_grapheme_boundary(cursor - 1)
     } else {
         cursor
     }
@@ -46,6 +47,27 @@ pub(in crate::editor_vim_key_events) fn vim_set_visual_character_selection(
     }
 }
 
+pub(in crate::editor_vim_key_events) fn vim_exit_visual_selection(
+    buffer: &mut TextBuffer,
+    anchor: usize,
+    cursor: usize,
+) {
+    let start = vim_visual_character_clamped_cursor(buffer, anchor.min(cursor));
+    let end = vim_visual_character_clamped_cursor(buffer, anchor.max(cursor));
+    vim_set_visual_bounds_marks(buffer, start, end);
+    buffer.set_single_cursor(start);
+}
+
+pub(in crate::editor_vim_key_events) fn vim_record_visual_bounds_marks(
+    buffer: &TextBuffer,
+    anchor: usize,
+    cursor: usize,
+) {
+    let start = vim_visual_character_clamped_cursor(buffer, anchor.min(cursor));
+    let end = vim_visual_character_clamped_cursor(buffer, anchor.max(cursor));
+    vim_set_visual_bounds_marks(buffer, start, end);
+}
+
 pub(in crate::editor_vim_key_events) fn vim_visual_character_range(
     buffer: &TextBuffer,
     anchor: usize,
@@ -57,9 +79,29 @@ pub(in crate::editor_vim_key_events) fn vim_visual_character_range(
     }
     let anchor = anchor.min(len);
     let cursor = cursor.min(len);
-    let start = anchor.min(cursor);
-    let end = anchor.max(cursor).saturating_add(1).min(len);
-    (start < end).then_some(start..end)
+    let start = buffer.snap_back_to_grapheme_boundary(anchor.min(cursor));
+    let end_side = anchor.max(cursor);
+    let end = if cursor == end_side && cursor_is_on_empty_line(buffer, cursor) {
+        cursor
+    } else {
+        buffer
+            .snap_forward_to_grapheme_boundary(end_side.saturating_add(1))
+            .min(len)
+    };
+
+    (start < end).then_some(start..end).or_else(|| {
+        (cursor < len && cursor == end_side && cursor_is_on_empty_line(buffer, cursor))
+            .then_some(cursor..cursor + 1)
+    })
+}
+
+fn cursor_is_on_empty_line(buffer: &TextBuffer, cursor: usize) -> bool {
+    if cursor >= buffer.len_chars() {
+        return false;
+    }
+    let line = buffer.char_position(cursor).line;
+    let line_start = buffer.line_column_to_char(line, 0);
+    cursor == line_start && cursor == buffer.line_content_end_char(line)
 }
 
 pub(in crate::editor_vim_key_events) fn vim_visual_character_repeat_count(

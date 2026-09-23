@@ -1,10 +1,8 @@
 use crate::{
     KuroyaApp,
     devtools::{FrameTimingSample, frame_timing_summary},
-    path_display::display_error_label_cow,
-    workspace_state::settings_path,
 };
-use eframe::egui::{self, Align2, Context, RichText};
+use eframe::egui::{self, Align2, Context, Rect, RichText, Stroke};
 use kuroya_core::{EditorExperimentalGpuAcceleration, EditorSettings};
 use std::collections::VecDeque;
 
@@ -43,67 +41,143 @@ impl KuroyaApp {
             return;
         };
 
-        let mut open = true;
         let mut action = GpuAccelerationPromptAction::None;
-        egui::Window::new("Performance")
+        let visuals = ctx.style().visuals.clone();
+        egui::Area::new(egui::Id::new("gpu-acceleration-prompt-card"))
+            .order(egui::Order::Foreground)
             .anchor(Align2::RIGHT_BOTTOM, [-18.0, -42.0])
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
+            .interactable(true)
             .show(ctx, |ui| {
-                ui.set_min_width(320.0);
-                ui.label(RichText::new("Kuroya detected UI lag.").strong());
-                ui.label("Native wgpu rendering is active. Enable editor GPU acceleration?");
-                ui.label(
-                    RichText::new(format!(
-                        "Latest {:.1} ms  Avg {:.1} ms  P95 {:.1} ms  Slow frames {}",
-                        prompt.latest_ms, prompt.average_ms, prompt.p95_ms, prompt.slow_frame_count
+                ui.set_width(344.0);
+                egui::Frame::new()
+                    .fill(visuals.window_fill)
+                    .stroke(Stroke::new(
+                        1.0,
+                        visuals.widgets.noninteractive.bg_stroke.color,
                     ))
-                    .small(),
-                );
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Enable GPU acceleration").clicked() {
-                        action = GpuAccelerationPromptAction::Enable;
-                    }
-                    if ui.button("Later").clicked() {
-                        action = GpuAccelerationPromptAction::Later;
-                    }
-                });
-            });
+                    .corner_radius(egui::CornerRadius::same(10))
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        let warn_color = visuals.warn_fg_color;
 
-        if !open && matches!(action, GpuAccelerationPromptAction::None) {
-            action = GpuAccelerationPromptAction::Later;
-        }
+                        ui.horizontal(|ui| {
+                            let icon_rect = Rect::from_center_size(
+                                ui.cursor().left_center() + egui::vec2(11.0, 0.0),
+                                egui::vec2(22.0, 22.0),
+                            );
+                            crate::ui_icon_shapes::draw_icon(
+                                ui,
+                                icon_rect,
+                                crate::ui_icons::IconKind::Diagnostics,
+                                warn_color,
+                            );
+                            ui.advance_cursor_after_rect(icon_rect);
+                            ui.label(RichText::new("Slow frames detected").heading().strong());
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let close_rect = ui
+                                        .allocate_exact_size(
+                                            egui::vec2(22.0, 22.0),
+                                            egui::Sense::click(),
+                                        )
+                                        .0;
+                                    crate::ui_icon_shapes::draw_icon(
+                                        ui,
+                                        close_rect.shrink(4.0),
+                                        crate::ui_icons::IconKind::Close,
+                                        text_color_or(ui),
+                                    );
+                                    if ui
+                                        .interact(
+                                            close_rect,
+                                            egui::Id::new("gpu-prompt-close"),
+                                            egui::Sense::click(),
+                                        )
+                                        .clicked()
+                                    {
+                                        action = GpuAccelerationPromptAction::Later;
+                                    }
+                                },
+                            );
+                        });
+
+                        ui.label(
+                            RichText::new("Editor frames are taking longer than they should.")
+                                .weak(),
+                        );
+
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            prompt_metric(ui, "NOW", &format!("{:.1} ms", prompt.latest_ms));
+                            prompt_metric(ui, "AVG", &format!("{:.1} ms", prompt.average_ms));
+                            prompt_metric(ui, "P95", &format!("{:.1} ms", prompt.p95_ms));
+                            prompt_metric(ui, "SLOW", &prompt.slow_frame_count.to_string());
+                        });
+
+                        ui.add_space(2.0);
+                        ui.label("Enables the editor row render cache.");
+
+                        ui.add_space(8.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new("Enable").strong())
+                                        .fill(ui.visuals().selection.bg_fill),
+                                )
+                                .clicked()
+                            {
+                                action = GpuAccelerationPromptAction::Enable;
+                            }
+                            if ui
+                                .add(egui::Button::new(
+                                    RichText::new("Open Editor settings").strong(),
+                                ))
+                                .clicked()
+                            {
+                                action = GpuAccelerationPromptAction::OpenEditorSettings;
+                            }
+                            if ui.button("Dismiss").clicked() {
+                                action = GpuAccelerationPromptAction::Later;
+                            }
+                        });
+                    });
+            });
 
         match action {
             GpuAccelerationPromptAction::Enable => self.enable_gpu_acceleration_from_prompt(),
+            GpuAccelerationPromptAction::OpenEditorSettings => {
+                self.open_editor_settings_from_gpu_prompt()
+            }
             GpuAccelerationPromptAction::Later => self.dismiss_gpu_acceleration_prompt(),
             GpuAccelerationPromptAction::None => {}
         }
     }
 
     fn enable_gpu_acceleration_from_prompt(&mut self) {
-        self.settings.experimental_gpu_acceleration = EditorExperimentalGpuAcceleration::On;
-        self.settings_panel_draft.experimental_gpu_acceleration =
-            EditorExperimentalGpuAcceleration::On;
-        self.gpu_acceleration_prompt = None;
-        self.gpu_acceleration_prompt_dismissed = true;
-
-        let path = settings_path(&self.workspace.root);
-        match self.settings.save(&path) {
-            Ok(()) => {
-                self.status = "GPU acceleration enabled; native wgpu renderer is active".to_owned();
-            }
+        let enabled = EditorExperimentalGpuAcceleration::On;
+        self.settings.experimental_gpu_acceleration = enabled;
+        self.settings_panel_draft.experimental_gpu_acceleration = enabled;
+        match self
+            .settings
+            .save(&crate::workspace_state::settings_path(&self.workspace.root))
+        {
+            Ok(()) => self.status = "Editor GPU acceleration enabled".to_owned(),
             Err(error) => {
-                let error = error.to_string();
-                let error = display_error_label_cow(&error);
                 self.status = format!(
-                    "GPU acceleration enabled for this session, but save failed: {}",
-                    error.as_ref()
+                    "Editor GPU acceleration enabled, but settings were not saved: {error}"
                 );
             }
         }
+        self.gpu_acceleration_prompt = None;
+        self.gpu_acceleration_prompt_dismissed = true;
+    }
+
+    fn open_editor_settings_from_gpu_prompt(&mut self) {
+        self.settings_panel_open = true;
+        self.settings_panel_section = SETTINGS_EDITOR_SECTION_INDEX;
+        self.sync_settings_panel_inputs();
+        self.dismiss_gpu_acceleration_prompt();
     }
 
     fn dismiss_gpu_acceleration_prompt(&mut self) {
@@ -117,7 +191,22 @@ impl KuroyaApp {
 enum GpuAccelerationPromptAction {
     None,
     Enable,
+    OpenEditorSettings,
     Later,
+}
+
+const SETTINGS_EDITOR_SECTION_INDEX: usize = 1;
+
+fn text_color_or(ui: &egui::Ui) -> egui::Color32 {
+    ui.visuals().text_color()
+}
+
+fn prompt_metric(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.vertical(|ui| {
+        ui.set_min_width(64.0);
+        ui.label(RichText::new(label).small().weak());
+        ui.label(RichText::new(value).strong());
+    });
 }
 
 pub(crate) fn gpu_acceleration_prompt_should_open(
@@ -159,12 +248,20 @@ pub(crate) fn gpu_acceleration_prompt_from_frame_timings(
 #[cfg(test)]
 mod tests {
     use super::{
-        LAG_DETECTION_MIN_SAMPLES, gpu_acceleration_prompt_from_frame_timings,
-        gpu_acceleration_prompt_should_open,
+        GpuAccelerationPrompt, LAG_DETECTION_MIN_SAMPLES,
+        gpu_acceleration_prompt_from_frame_timings, gpu_acceleration_prompt_should_open,
     };
-    use crate::devtools::FrameTimingSample;
-    use kuroya_core::{EditorExperimentalGpuAcceleration, EditorSettings};
-    use std::collections::VecDeque;
+    use crate::{
+        KuroyaApp, app_startup_context::AppStartupContext, devtools::FrameTimingSample,
+        terminal::TerminalPane, workspace_state::settings_path,
+    };
+    use kuroya_core::{EditorExperimentalGpuAcceleration, EditorSettings, Workspace};
+    use std::{
+        collections::VecDeque,
+        path::PathBuf,
+        time::{Instant, SystemTime, UNIX_EPOCH},
+    };
+    use tokio::runtime::Runtime;
 
     #[test]
     fn lag_prompt_waits_for_enough_frame_samples() {
@@ -216,5 +313,70 @@ mod tests {
             .copied()
             .map(|frame_ms| FrameTimingSample { frame_ms })
             .collect()
+    }
+
+    #[test]
+    fn enable_gpu_acceleration_prompt_action_flips_settings_and_saves() {
+        let root = unique_temp_dir("gpu-acceleration-prompt-enable");
+        let mut app = app_for_test(root.clone());
+        app.gpu_acceleration_prompt = Some(GpuAccelerationPrompt {
+            latest_ms: 60.0,
+            average_ms: 40.0,
+            p95_ms: 55.0,
+            slow_frame_count: 8,
+        });
+        app.gpu_acceleration_prompt_dismissed = false;
+
+        app.enable_gpu_acceleration_from_prompt();
+
+        assert_eq!(
+            app.settings.experimental_gpu_acceleration,
+            EditorExperimentalGpuAcceleration::On
+        );
+        assert_eq!(
+            app.settings_panel_draft.experimental_gpu_acceleration,
+            EditorExperimentalGpuAcceleration::On
+        );
+        assert_eq!(app.gpu_acceleration_prompt, None);
+        assert!(app.gpu_acceleration_prompt_dismissed);
+        assert_eq!(app.status, "Editor GPU acceleration enabled");
+
+        let saved = EditorSettings::load_or_create(&settings_path(&root))
+            .expect("saved settings should load");
+        assert_eq!(
+            saved.experimental_gpu_acceleration,
+            EditorExperimentalGpuAcceleration::On
+        );
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!("kuroya-{name}-{}-{nanos}", std::process::id()))
+    }
+
+    fn app_for_test(root: PathBuf) -> KuroyaApp {
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let settings = EditorSettings::default();
+        KuroyaApp::from_startup_context(AppStartupContext {
+            runtime: Runtime::new().expect("test runtime"),
+            tx,
+            rx,
+            workspace: Workspace::new(root.clone()),
+            settings: settings.clone(),
+            settings_panel_draft: settings,
+            settings_editor_font_path: String::new(),
+            settings_ui_font_path: String::new(),
+            theme_picker_selected: 0,
+            saved_session: None,
+            terminal: TerminalPane::new(root.clone(), 100, 12.0, 1.2),
+            watcher: None,
+            recent_projects: Vec::new(),
+            trusted_workspaces: vec![root],
+            now: Instant::now(),
+            startup_timings: Vec::new(),
+        })
     }
 }

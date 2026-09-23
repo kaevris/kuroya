@@ -2,13 +2,18 @@ use crate::ui_events::UiEvent;
 pub(crate) use crossbeam_channel::{Receiver, Sender};
 use crossbeam_channel::{SendTimeoutError, TrySendError, bounded};
 use std::{
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc, OnceLock, RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
 pub(crate) const UI_EVENT_CHANNEL_BOUND: usize = 4096;
 const CRITICAL_UI_EVENT_SEND_TIMEOUT_MS: u64 = 100;
 static DROPPED_UI_EVENTS: AtomicUsize = AtomicUsize::new(0);
+type UiWakeHook = Arc<dyn Fn() + Send + Sync>;
+static UI_WAKE_HOOK: OnceLock<RwLock<Option<UiWakeHook>>> = OnceLock::new();
 
 pub(crate) fn ui_event_channel() -> (Sender<UiEvent>, Receiver<UiEvent>) {
     bounded(UI_EVENT_CHANNEL_BOUND)
@@ -16,11 +21,36 @@ pub(crate) fn ui_event_channel() -> (Sender<UiEvent>, Receiver<UiEvent>) {
 
 pub(crate) fn send_ui_event(tx: &Sender<UiEvent>, event: UiEvent) -> bool {
     match tx.try_send(event) {
-        Ok(()) => true,
+        Ok(()) => {
+            invoke_ui_wake_hook();
+            true
+        }
         Err(_) => {
             track_dropped_ui_event();
             false
         }
+    }
+}
+
+pub(crate) fn set_ui_wake_hook(hook: UiWakeHook) {
+    if let Ok(mut slot) = ui_wake_hook_slot().write() {
+        *slot = Some(hook);
+    }
+}
+
+pub(crate) fn notify_background_activity() {
+    invoke_ui_wake_hook();
+}
+
+fn ui_wake_hook_slot() -> &'static RwLock<Option<UiWakeHook>> {
+    UI_WAKE_HOOK.get_or_init(|| RwLock::new(None))
+}
+
+fn invoke_ui_wake_hook() {
+    if let Ok(slot) = ui_wake_hook_slot().read()
+        && let Some(hook) = slot.as_ref()
+    {
+        hook();
     }
 }
 
@@ -39,7 +69,10 @@ pub(crate) fn send_critical_ui_event_with_timeout(
 ) -> bool {
     if timeout.is_zero() {
         return match tx.try_send(event) {
-            Ok(()) => true,
+            Ok(()) => {
+                invoke_ui_wake_hook();
+                true
+            }
             Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
                 track_dropped_ui_event();
                 false
@@ -48,7 +81,10 @@ pub(crate) fn send_critical_ui_event_with_timeout(
     }
 
     match tx.send_timeout(event, timeout) {
-        Ok(()) => true,
+        Ok(()) => {
+            invoke_ui_wake_hook();
+            true
+        }
         Err(SendTimeoutError::Timeout(_)) | Err(SendTimeoutError::Disconnected(_)) => {
             track_dropped_ui_event();
             false
@@ -74,8 +110,25 @@ mod tests {
     use super::*;
     use crate::lsp_ui_events::LspUiEvent;
     use crossbeam_channel::TrySendError;
-    use kuroya_core::{GitSnapshot, SearchResult, TextBuffer};
-    use std::{path::PathBuf, thread, time::Duration};
+    use kuroya_core::{GitSnapshot, SearchOptions, SearchResult, TextBuffer};
+    use std::{
+        path::PathBuf,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        thread,
+        time::Duration,
+    };
+
+    static WAKE_HOOK_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn install_wake_counting_hook() -> usize {
+        set_ui_wake_hook(Arc::new(|| {
+            WAKE_HOOK_CALLS.fetch_add(1, Ordering::Relaxed);
+        }));
+        WAKE_HOOK_CALLS.load(Ordering::Relaxed)
+    }
 
     #[test]
     fn ui_event_channel_is_bounded() {
@@ -374,6 +427,8 @@ mod tests {
                 whole_word: false,
                 include_globs: Vec::new(),
                 exclude_globs: Vec::new(),
+                max_file_bytes: SearchOptions::default().max_file_bytes,
+                max_results: SearchOptions::default().max_results,
                 result: SearchResult::default(),
             },
             |event| matches!(event, UiEvent::SearchFinished { request_id: 31, .. }),
@@ -405,6 +460,70 @@ mod tests {
                     UiEvent::WorkspacePluginsFailed { request_id: 43, .. }
                 )
             },
+        );
+    }
+
+    #[test]
+    fn wake_hook_fires_on_successful_normal_send() {
+        let before = install_wake_counting_hook();
+        let (tx, _rx) = ui_event_channel();
+
+        assert!(send_ui_event(
+            &tx,
+            UiEvent::Lsp(LspUiEvent::WorkDoneProgressCreated {
+                token: "wake-hook-normal".to_owned(),
+            })
+        ));
+
+        assert!(WAKE_HOOK_CALLS.load(Ordering::Relaxed) > before);
+    }
+
+    #[test]
+    fn wake_hook_fires_on_successful_critical_send() {
+        let before = install_wake_counting_hook();
+        let (tx, rx) = ui_event_channel();
+
+        assert!(send_critical_ui_event(
+            &tx,
+            UiEvent::SessionSaved {
+                root: PathBuf::from("workspace")
+            }
+        ));
+
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(1)),
+            Ok(UiEvent::SessionSaved { .. })
+        ));
+        assert!(WAKE_HOOK_CALLS.load(Ordering::Relaxed) > before);
+    }
+
+    #[test]
+    fn notify_background_activity_invokes_wake_hook() {
+        let before = install_wake_counting_hook();
+
+        notify_background_activity();
+
+        assert!(WAKE_HOOK_CALLS.load(Ordering::Relaxed) > before);
+    }
+
+    #[test]
+    fn session_save_completion_uses_critical_delivery_under_backpressure() {
+        assert_critical_event_delivered_when_full(
+            UiEvent::SessionSaved {
+                root: PathBuf::from("workspace"),
+            },
+            |event| matches!(event, UiEvent::SessionSaved { .. }),
+        );
+    }
+
+    #[test]
+    fn session_save_failure_completion_uses_critical_delivery_under_backpressure() {
+        assert_critical_event_delivered_when_full(
+            UiEvent::SessionSaveFailed {
+                root: PathBuf::from("workspace"),
+                error: "disk full".to_owned(),
+            },
+            |event| matches!(event, UiEvent::SessionSaveFailed { error, .. } if error == "disk full"),
         );
     }
 

@@ -47,6 +47,7 @@ fn normal_mode_yank_lines_and_put_use_linewise_register() {
     assert!(put_after.changed);
     assert_eq!(put_after.suppress_text, Some('p'));
     assert_eq!(buffer.text(), "alpha\nbeta\ngamma\ndelta\nbeta\ngamma\n");
+
     assert_eq!(buffer.cursor_position().line, 4);
     assert_eq!(buffer.cursor_position().column, 0);
 

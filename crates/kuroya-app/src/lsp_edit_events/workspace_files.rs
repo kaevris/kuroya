@@ -165,8 +165,8 @@ impl KuroyaApp {
         applied: bool,
         failure_reason: Option<String>,
     ) {
-        if let Some(client) = self.lsp_clients.get(&target.language)
-            && client.generation() == target.generation
+        if let Some((_, client)) =
+            self.lsp_client_entry_for_event(&target.language, target.generation)
         {
             if client.apply_workspace_edit_response(
                 target.request_id,

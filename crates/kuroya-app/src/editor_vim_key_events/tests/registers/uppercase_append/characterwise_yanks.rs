@@ -27,8 +27,8 @@ fn normal_mode_uppercase_named_register_appends_characterwise_yanks() {
         assert!(result.handled);
     }
 
-    assert_eq!(buffer.text(), " beta gamma");
-    buffer.set_single_cursor(1);
+    assert_eq!(buffer.text(), "beta gamma");
+    buffer.set_single_cursor(0);
     for (key, modifiers) in [
         (Key::Quote, Modifiers::SHIFT),
         (Key::A, Modifiers::SHIFT),
@@ -52,7 +52,7 @@ fn normal_mode_uppercase_named_register_appends_characterwise_yanks() {
         unnamed_register
             .as_ref()
             .map(|register| (register.text.as_str(), register.kind)),
-        Some(("beta", EditorVimRegisterKind::Characterwise))
+        Some(("beta ", EditorVimRegisterKind::Characterwise))
     );
 
     buffer.set_single_cursor(0);
@@ -73,6 +73,6 @@ fn normal_mode_uppercase_named_register_appends_characterwise_yanks() {
         assert!(result.handled);
     }
 
-    assert_eq!(buffer.text(), "alphabeta beta gamma");
+    assert_eq!(buffer.text(), "alpha beta beta gamma");
     assert!(pending.is_none());
 }

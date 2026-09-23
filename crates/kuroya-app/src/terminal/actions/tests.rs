@@ -634,6 +634,127 @@ fn terminal_response_flush_preserves_blocked_response_when_command_queue_is_full
 }
 
 #[test]
+fn terminal_response_flush_preserves_scrollback_position() {
+    let mut pane = pane_for_cache_tests();
+    let rx = pane.add_process_session_for_test(1);
+    let before = scroll_process_session_back(&mut pane, 0);
+    assert!(before > 0);
+
+    // A cursor-position report synthesized while the user reads scrollback.
+    pane.sessions[0]
+        .parser
+        .callbacks_mut()
+        .pending_inputs
+        .push("\x1b[1;1R".to_owned());
+
+    pane.sessions[0].flush_terminal_responses();
+
+    assert_eq!(pane.sessions[0].scrollback(), before);
+    match rx
+        .try_recv()
+        .expect("synthesized response should reach the pty")
+    {
+        TerminalCommand::Input(input) => assert_eq!(input, "\x1b[1;1R"),
+        TerminalCommand::Resize(_) | TerminalCommand::Close => panic!("expected input"),
+    }
+}
+
+#[test]
+fn user_input_still_jumps_scrollback_to_bottom() {
+    let mut pane = pane_for_cache_tests();
+    let _rx = pane.add_process_session_for_test(1);
+    let before = scroll_process_session_back(&mut pane, 0);
+    assert!(before > 0);
+
+    pane.send_input("x");
+
+    assert_eq!(pane.sessions[0].scrollback(), 0);
+}
+
+#[test]
+fn paste_text_surfaces_truncation_notice_for_oversized_paste() {
+    let mut pane = pane_for_cache_tests();
+    let rx = pane.add_process_session_for_test(1);
+    let oversized = format!("{}\u{e9}", "a".repeat(TERMINAL_INPUT_MAX_BYTES));
+
+    pane.paste_text(0, oversized);
+
+    match rx
+        .try_recv()
+        .expect("bounded paste should still be delivered")
+    {
+        TerminalCommand::Input(input) => assert_eq!(input.len(), TERMINAL_INPUT_MAX_BYTES),
+        TerminalCommand::Resize(_) | TerminalCommand::Close => panic!("expected paste input"),
+    }
+    assert_eq!(
+        pane.active_paste_notice()
+            .map(|(message, _)| message.to_owned()),
+        Some(super::super::TERMINAL_PASTE_TRUNCATED_NOTICE.to_owned())
+    );
+}
+
+#[test]
+fn paste_text_surfaces_busy_notice_when_command_queue_is_full() {
+    let mut pane = pane_for_cache_tests();
+    let _rx = pane.add_process_session_for_test(1);
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    tx.try_send(TerminalCommand::Input("occupied".to_owned()))
+        .unwrap();
+    pane.sessions[0].tx_command = Some(tx);
+
+    pane.paste_text(0, "late paste".to_owned());
+
+    assert_eq!(
+        pane.active_paste_notice()
+            .map(|(message, _)| message.to_owned()),
+        Some(super::super::TERMINAL_PASTE_BUSY_NOTICE.to_owned())
+    );
+    match rx.try_recv().expect("existing queue item should remain") {
+        TerminalCommand::Input(input) => assert_eq!(input, "occupied"),
+        TerminalCommand::Resize(_) | TerminalCommand::Close => panic!("expected input"),
+    }
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn paste_text_surfaces_notice_when_session_cannot_receive_input() {
+    let mut pane = pane_for_cache_tests();
+    let rx = pane.add_process_session_for_test(1);
+    pane.sessions[0].started = false;
+    pane.sessions[0].auto_start_shell = false;
+
+    pane.paste_text(0, "ignored".to_owned());
+
+    assert!(rx.try_recv().is_err());
+    assert_eq!(
+        pane.active_paste_notice()
+            .map(|(message, _)| message.to_owned()),
+        Some(super::super::TERMINAL_PASTE_UNDELIVERED_NOTICE.to_owned())
+    );
+}
+
+#[test]
+fn paste_notice_expires_after_ttl() {
+    let mut pane = pane_for_cache_tests();
+    pane.show_paste_notice(super::super::TERMINAL_PASTE_UNDELIVERED_NOTICE);
+    assert!(pane.active_paste_notice().is_some());
+
+    let created = std::time::Instant::now();
+    pane.paste_notice = Some(super::super::TerminalPasteNotice {
+        message: super::super::TERMINAL_PASTE_UNDELIVERED_NOTICE.to_owned(),
+        created,
+    });
+
+    assert!(pane.active_paste_notice_at(created).is_some());
+    assert!(
+        pane.active_paste_notice_at(created + 2 * super::super::TERMINAL_PASTE_NOTICE_TTL)
+            .is_none()
+    );
+    pane.expire_paste_notice_at(created + 2 * super::super::TERMINAL_PASTE_NOTICE_TTL);
+    assert!(pane.paste_notice.is_none());
+}
+
+#[test]
 fn raw_session_input_uses_clamped_active_session_and_preserves_bytes() {
     let mut pane = pane_for_cache_tests();
     let first_rx = pane.add_process_session_for_test(1);

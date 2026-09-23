@@ -339,6 +339,164 @@ fn project_search_progress_reports_chunked_deltas() {
 }
 
 #[test]
+fn project_search_progress_emits_first_match_before_remaining_files() {
+    let mut files = Vec::new();
+    for index in 0..10 {
+        files.push((
+            format!("src/{index:03}_before.rs"),
+            format!("haystack before {index}\n"),
+        ));
+    }
+    files.push(("src/010_match.rs".to_owned(), "needle\n".to_owned()));
+    for index in 11..80 {
+        files.push((
+            format!("src/{index:03}_after.rs"),
+            format!("haystack after {index}\n"),
+        ));
+    }
+    let borrowed_files = files
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect::<Vec<_>>();
+    let root = search_fixture("progress-first-match-before-tail", &borrowed_files);
+    let index = ProjectIndex::rebuild(&root, 40_000);
+    let mut progress_events = Vec::new();
+
+    let result = search_project_with_cancel_and_progress(
+        &index,
+        &SearchOptions {
+            query: "needle".to_owned(),
+            ..SearchOptions::default()
+        },
+        || false,
+        |progress| progress_events.push(progress),
+    )
+    .expect("search should finish");
+
+    assert_eq!(result.matches.len(), 1);
+    assert_eq!(result.stats.searched_files, 80);
+    assert!(progress_events.len() >= 2);
+    let first_match_event = progress_events
+        .iter()
+        .find(|progress| !progress.matches.is_empty())
+        .expect("first match should be emitted");
+    assert_eq!(first_match_event.matches.len(), 1);
+    assert_eq!(first_match_event.stats.searched_files, 11);
+    assert_eq!(
+        progress_events
+            .iter()
+            .map(|progress| progress.stats.searched_files)
+            .sum::<usize>(),
+        result.stats.searched_files
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_search_progress_reports_binary_skip_stats_without_matches() {
+    let root = search_fixture("progress-binary-skips", &[]);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/binary.dat"), b"needle\0").unwrap();
+    fs::write(root.join("src/invalid.txt"), vec![b'n', b'e', b'e', 0xff]).unwrap();
+    let index = ProjectIndex::rebuild(&root, 40_000);
+    let mut progress_events = Vec::new();
+
+    let result = search_project_with_cancel_and_progress(
+        &index,
+        &SearchOptions {
+            query: "needle".to_owned(),
+            ..SearchOptions::default()
+        },
+        || false,
+        |progress| progress_events.push(progress),
+    )
+    .expect("search should finish");
+
+    assert!(result.matches.is_empty());
+    assert_eq!(result.stats.searched_files, 0);
+    assert_eq!(result.stats.skipped_binary_files, 2);
+    assert_eq!(progress_events.len(), 1);
+    assert!(progress_events[0].matches.is_empty());
+    assert_eq!(progress_events[0].stats.skipped_binary_files, 2);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_search_metadata_cache_records_binary_skip_state() {
+    let root = search_fixture("metadata-cache-binary", &[]);
+    fs::create_dir_all(root.join("src")).unwrap();
+    let path = root.join("src/binary.dat");
+    fs::write(&path, b"needle\0").unwrap();
+    let index = ProjectIndex::rebuild(&root, 40_000);
+    let cache = ProjectSearchMetadataCache::default();
+
+    let result = search_project_with_metadata_cache_and_progress(
+        &index,
+        &SearchOptions {
+            query: "needle".to_owned(),
+            ..SearchOptions::default()
+        },
+        &cache,
+        || false,
+        |_| {},
+    )
+    .expect("search should finish");
+
+    assert!(result.matches.is_empty());
+    assert_eq!(result.stats.skipped_binary_files, 1);
+    assert_eq!(cache.len(), 1);
+    let entries = cache
+        .entries
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cached = entries.get(&path).expect("binary file metadata is cached");
+    assert_eq!(cached.signature.len, 7);
+    assert_eq!(
+        cached.state,
+        ProjectSearchFileMetadataState::BinaryOrInvalid
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_search_metadata_cache_does_not_reuse_different_size_limits() {
+    let root = search_fixture("metadata-cache-size-limit", &[("src/lib.rs", "needle\n")]);
+    let index = ProjectIndex::rebuild(&root, 40_000);
+    let cache = ProjectSearchMetadataCache::default();
+
+    let small_limit = search_project_with_metadata_cache_and_progress(
+        &index,
+        &SearchOptions {
+            query: "needle".to_owned(),
+            max_file_bytes: 3,
+            ..SearchOptions::default()
+        },
+        &cache,
+        || false,
+        |_| {},
+    )
+    .expect("search should finish");
+    let larger_limit = search_project_with_metadata_cache_and_progress(
+        &index,
+        &SearchOptions {
+            query: "needle".to_owned(),
+            max_file_bytes: 64,
+            ..SearchOptions::default()
+        },
+        &cache,
+        || false,
+        |_| {},
+    )
+    .expect("search should finish");
+
+    assert!(small_limit.matches.is_empty());
+    assert_eq!(small_limit.stats.skipped_large_files, 1);
+    assert_eq!(larger_limit.matches.len(), 1);
+    assert_eq!(larger_limit.stats.searched_files, 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn cancellable_project_search_checks_inside_streamed_files() {
     let text = (0..512)
         .map(|line| format!("haystack {line}\n"))
@@ -364,6 +522,38 @@ fn cancellable_project_search_checks_inside_streamed_files() {
     assert!(result.is_none());
     assert!(cancellation_checks.get() > 8);
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cancellable_project_search_checks_inside_dense_same_line_matches() {
+    let text = "needle ".repeat(SEARCH_CANCEL_MATCH_INTERVAL + 1);
+    let options = SearchOptions {
+        query: "needle".to_owned(),
+        max_results: 10_000,
+        ..SearchOptions::default()
+    };
+    let line_needle = LineSearchNeedle::new(&options.query, options.case_sensitive);
+    let cancellation_checks = Cell::new(0usize);
+    let mut result_budget = SearchResultBudget::new(options.max_results);
+    let mut matches = Vec::new();
+
+    let result = search_text_file(
+        Path::new("src/lib.rs"),
+        &text,
+        &line_needle,
+        &options,
+        &mut result_budget,
+        &mut matches,
+        &|| {
+            let next = cancellation_checks.get().saturating_add(1);
+            cancellation_checks.set(next);
+            next >= 2
+        },
+    );
+
+    assert!(result.is_none());
+    assert_eq!(cancellation_checks.get(), 2);
+    assert_eq!(matches.len(), SEARCH_CANCEL_MATCH_INTERVAL - 1);
 }
 
 #[test]
@@ -1292,6 +1482,32 @@ fn project_search_skips_binary_invalid_utf8_and_oversized_files() {
 }
 
 #[test]
+fn project_search_discards_streamed_matches_when_later_chunk_is_binary() {
+    let root = search_fixture("streamed-late-binary", &[]);
+    fs::create_dir_all(root.join("src")).unwrap();
+    let content = format!(
+        "needle\n{}\0\n",
+        "a".repeat(SEARCH_STREAM_BUFFER_BYTES.saturating_add(16))
+    );
+    fs::write(root.join("src/lib.rs"), content).unwrap();
+    let index = ProjectIndex::rebuild(&root, 40_000);
+
+    let result = search_project(
+        &index,
+        &SearchOptions {
+            query: "needle".to_owned(),
+            ..SearchOptions::default()
+        },
+    );
+
+    assert!(result.matches.is_empty());
+    assert_eq!(result.stats.searched_files, 0);
+    assert_eq!(result.stats.matched_files, 0);
+    assert_eq!(result.stats.skipped_binary_files, 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn project_search_reports_files_removed_after_indexing() {
     let root = search_fixture(
         "deleted-after-index",
@@ -1649,6 +1865,182 @@ fn project_search_previews_are_bounded_around_match() {
     assert!(preview.starts_with("..."));
     assert!(preview.ends_with("..."));
     assert!(preview.chars().count() <= MAX_SEARCH_PREVIEW_CHARS + 6);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_search_regex_matches_like_literal_for_plain_patterns() {
+    let root = search_fixture("regex-literal", &[("src/lib.rs", "needle x needle\n")]);
+    let index = ProjectIndex::rebuild(&root, 40_000);
+
+    let literal = search_project(
+        &index,
+        &SearchOptions {
+            query: "needle".to_owned(),
+            ..SearchOptions::default()
+        },
+    );
+    let regex = search_project(
+        &index,
+        &SearchOptions {
+            query: "needle".to_owned(),
+            regex: true,
+            ..SearchOptions::default()
+        },
+    );
+
+    assert_eq!(literal.matches, regex.matches);
+    assert_eq!(regex.matches.len(), 2);
+    assert_eq!(regex.matches[0].line, 1);
+    assert_eq!(regex.matches[0].column, 1);
+    assert_eq!(regex.matches[1].column, 10);
+    assert!(regex.error.is_none());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_search_regex_supports_pattern_syntax() {
+    let root = search_fixture("regex-pattern", &[("src/lib.rs", "needle x nada\n")]);
+    let index = ProjectIndex::rebuild(&root, 40_000);
+
+    let result = search_project(
+        &index,
+        &SearchOptions {
+            query: "n(ee|a)dle".to_owned(),
+            regex: true,
+            ..SearchOptions::default()
+        },
+    );
+
+    assert!(result.error.is_none());
+    assert_eq!(result.matches.len(), 1);
+    assert_eq!(result.matches[0].line, 1);
+    assert_eq!(result.matches[0].column, 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_search_regex_is_case_insensitive_by_default() {
+    let root = search_fixture("regex-case", &[("src/lib.rs", "Alpha\nbeta\n")]);
+    let index = ProjectIndex::rebuild(&root, 40_000);
+
+    let insensitive = search_project(
+        &index,
+        &SearchOptions {
+            query: "alpha".to_owned(),
+            regex: true,
+            ..SearchOptions::default()
+        },
+    );
+    let sensitive = search_project(
+        &index,
+        &SearchOptions {
+            query: "alpha".to_owned(),
+            regex: true,
+            case_sensitive: true,
+            ..SearchOptions::default()
+        },
+    );
+
+    assert!(insensitive.error.is_none());
+    assert_eq!(insensitive.matches.len(), 1);
+    assert_eq!(insensitive.matches[0].line, 1);
+    assert_eq!(insensitive.matches[0].column, 1);
+    assert!(sensitive.matches.is_empty());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_search_reports_invalid_regex_query() {
+    let root = search_fixture("invalid-regex", &[("src/lib.rs", "needle\n")]);
+    let index = ProjectIndex::rebuild(&root, 40_000);
+
+    let result = search_project(
+        &index,
+        &SearchOptions {
+            query: "n(eedle".to_owned(),
+            regex: true,
+            ..SearchOptions::default()
+        },
+    );
+
+    let error = result.error.expect("invalid regex should fail");
+    assert!(result.matches.is_empty());
+    assert!(error.contains("Invalid regular expression"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_search_regex_rejects_multiline_constructs() {
+    let root = search_fixture("multiline-regex", &[("src/lib.rs", "needle\n")]);
+    let index = ProjectIndex::rebuild(&root, 40_000);
+
+    for query in ["needle\\n", "(?s)needle", "n[^\\n]eedle"] {
+        let result = search_project(
+            &index,
+            &SearchOptions {
+                query: query.to_owned(),
+                regex: true,
+                ..SearchOptions::default()
+            },
+        );
+
+        let error = result.error.expect("multiline regex should fail");
+        assert!(result.matches.is_empty());
+        assert_eq!(error, REGEX_MULTILINE_QUERY_ERROR);
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_search_regex_whole_word_respects_boundaries() {
+    let root = search_fixture(
+        "regex-whole-word",
+        &[("src/lib.rs", "alpha alphabet alpha_1\n")],
+    );
+    let index = ProjectIndex::rebuild(&root, 40_000);
+
+    let result = search_project(
+        &index,
+        &SearchOptions {
+            query: "alpha".to_owned(),
+            regex: true,
+            whole_word: true,
+            ..SearchOptions::default()
+        },
+    );
+
+    assert!(result.error.is_none());
+    let columns = result
+        .matches
+        .iter()
+        .map(|matched| matched.column)
+        .collect::<Vec<_>>();
+    assert_eq!(columns, vec![1]);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_search_regex_reports_multiple_matches_per_line() {
+    let root = search_fixture("regex-multi-line", &[("src/lib.rs", "ab xaab\n")]);
+    let index = ProjectIndex::rebuild(&root, 40_000);
+
+    let result = search_project(
+        &index,
+        &SearchOptions {
+            query: "a+b".to_owned(),
+            regex: true,
+            ..SearchOptions::default()
+        },
+    );
+
+    assert!(result.error.is_none());
+    let columns = result
+        .matches
+        .iter()
+        .map(|matched| matched.column)
+        .collect::<Vec<_>>();
+    assert_eq!(columns, vec![1, 5]);
     fs::remove_dir_all(root).unwrap();
 }
 

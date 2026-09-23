@@ -16,7 +16,10 @@ pub(super) fn handle_vim_register_pending_key_event(
 ) -> Option<VimKeyResult> {
     match pending_key {
         EditorVimPendingKey::RegisterPrefix(count) => {
-            let register = vim_named_register_for_key(key, modifiers)?;
+            let Some(register) = vim_named_register_for_key(key, modifiers) else {
+                *pending = None;
+                return Some(VimKeyResult::handled(suppress_text));
+            };
             *pending = Some(EditorVimPendingKey::RegisterCommand {
                 prefix_count: count,
                 command_count: None,

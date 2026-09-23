@@ -10,7 +10,8 @@ pub(super) use self::counts::{
 };
 pub(super) use self::motions::{
     vim_operator_char_find_motion_for_key, vim_operator_go_motion_for_key,
-    vim_operator_motion_for_key,
+    vim_operator_last_find_motion_for_key, vim_operator_motion_for_key,
+    vim_pending_key_last_find_operator_go,
 };
 pub(super) use self::normal_keys::{
     vim_normal_key_can_mutate, vim_normal_key_next_pending, vim_normal_key_next_pending_after_count,

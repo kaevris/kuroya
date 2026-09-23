@@ -617,7 +617,7 @@ fn plugin_command_registry_uses_declared_capability_and_dedupes_plugin_commands(
 }
 
 #[test]
-fn plugin_command_registry_skips_commands_with_unsupported_runtime_capabilities() {
+fn plugin_command_registry_registers_workspace_read_commands() {
     let plugin = PluginDescriptor {
         root: PathBuf::from("plugins/workspace-read"),
         manifest: PluginManifest {
@@ -645,12 +645,124 @@ fn plugin_command_registry_skips_commands_with_unsupported_runtime_capabilities(
 
     let registry = PluginCommandRegistry::from_plugins(&[plugin]);
 
-    assert!(registry.is_empty());
+    assert!(!registry.is_empty());
     assert!(
         registry
             .command("workspace-read.plugin", "workspace-read.run")
-            .is_none()
+            .is_some()
     );
+}
+
+#[test]
+fn plugin_manifest_accepts_workspace_write_capability() {
+    let root = temp_root("workspace-write-manifest");
+    let manifest = parse_plugin_manifest_toml(
+        &root,
+        r#"
+                id = "example.plugin"
+                name = "Example"
+                version = "0.1.0"
+                entry = "bin/plugin.wasm"
+
+                [capabilities]
+                commands = true
+                workspace_write = true
+
+                [[contributes.commands]]
+                id = "example.run"
+                title = "Run"
+            "#,
+    )
+    .unwrap();
+
+    assert!(manifest.manifest.capabilities.workspace_write);
+}
+
+#[test]
+fn plugin_command_registry_registers_workspace_write_commands() {
+    let plugin = PluginDescriptor {
+        root: PathBuf::from("plugins/workspace-write"),
+        manifest: PluginManifest {
+            api_version: PLUGIN_API_VERSION.to_owned(),
+            id: "workspace-write.plugin".to_owned(),
+            name: "Workspace Write".to_owned(),
+            version: "0.1.0".to_owned(),
+            entry: Some(PathBuf::from("plugins/workspace-write/plugin.wasm")),
+            activation_events: Vec::new(),
+            capabilities: PluginCapabilities {
+                commands: true,
+                workspace_write: true,
+                ..PluginCapabilities::default()
+            },
+            contributes: PluginContributions {
+                commands: vec![PluginCommandContribution {
+                    id: "workspace-write.run".to_owned(),
+                    title: "Run".to_owned(),
+                    category: None,
+                }],
+                ..PluginContributions::default()
+            },
+        },
+    };
+
+    let registry = PluginCommandRegistry::from_plugins(&[plugin]);
+
+    assert!(!registry.is_empty());
+    assert!(
+        registry
+            .command("workspace-write.plugin", "workspace-write.run")
+            .is_some()
+    );
+}
+
+#[test]
+fn plugin_command_registry_skips_commands_with_unsupported_runtime_capabilities() {
+    for (id, command_id, capabilities) in [
+        (
+            "process-spawn.plugin",
+            "process-spawn.run",
+            PluginCapabilities {
+                commands: true,
+                process_spawn: true,
+                ..PluginCapabilities::default()
+            },
+        ),
+        (
+            "network.plugin",
+            "network.run",
+            PluginCapabilities {
+                commands: true,
+                network: true,
+                ..PluginCapabilities::default()
+            },
+        ),
+    ] {
+        let plugin = PluginDescriptor {
+            root: PathBuf::from(format!("plugins/{id}")),
+            manifest: PluginManifest {
+                api_version: PLUGIN_API_VERSION.to_owned(),
+                id: id.to_owned(),
+                name: "Unsupported".to_owned(),
+                version: "0.1.0".to_owned(),
+                entry: Some(PathBuf::from(format!("plugins/{id}/plugin.wasm"))),
+                activation_events: Vec::new(),
+                capabilities,
+                contributes: PluginContributions {
+                    commands: vec![PluginCommandContribution {
+                        id: command_id.to_owned(),
+                        title: "Run".to_owned(),
+                        category: None,
+                    }],
+                    ..PluginContributions::default()
+                },
+            },
+        };
+
+        let registry = PluginCommandRegistry::from_plugins(&[plugin]);
+
+        assert!(registry.is_empty(), "{id}");
+        assert!(registry.command(id, command_id).is_none(), "{id}");
+    }
 }
 
 #[test]
@@ -898,6 +1010,96 @@ fn workspace_plugin_discovery_reports_duplicate_plugin_ids() {
     assert_eq!(discovery.errors.len(), 1);
     assert_eq!(discovery.errors[0].root, duplicate);
     assert!(discovery.errors[0].error.contains("duplicated"));
+    // The error names the plugin that won, so the author can find the copy
+    // to remove or rename.
+    assert!(
+        discovery.errors[0].error.contains(&path_string(&first)),
+        "{}",
+        discovery.errors[0].error
+    );
+
+    fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn workspace_plugin_discovery_rejects_unknown_manifest_keys() {
+    let workspace = temp_root("unknown-manifest-key");
+    let plugins_dir = workspace_plugins_dir(&workspace);
+    let root = plugins_dir.join("typo");
+    fs::create_dir_all(&root).unwrap();
+    // A typo'd capability key must not parse into an invisible no-op plugin.
+    fs::write(
+        plugin_manifest_path(&root),
+        r#"
+                id = "typo.plugin"
+                name = "Typo"
+                version = "0.1.0"
+                capabilites = true
+            "#,
+    )
+    .unwrap();
+
+    let discovery = discover_workspace_plugins(&workspace).unwrap();
+
+    assert!(discovery.plugins.is_empty());
+    assert_eq!(discovery.errors.len(), 1);
+    assert_eq!(discovery.errors[0].root, root);
+    assert!(
+        discovery.errors[0]
+            .error
+            .contains("unknown field `capabilites`"),
+        "{}",
+        discovery.errors[0].error
+    );
+
+    fs::remove_dir_all(workspace).unwrap();
+}
+
+#[test]
+fn workspace_plugin_discovery_reports_missing_entry_file() {
+    let workspace = temp_root("missing-entry-discovery");
+    let plugins_dir = workspace_plugins_dir(&workspace);
+    let missing = plugins_dir.join("missing-entry");
+    let present = plugins_dir.join("present-entry");
+    fs::create_dir_all(&missing).unwrap();
+    fs::create_dir_all(&present).unwrap();
+    for (root, id) in [(&missing, "missing.plugin"), (&present, "present.plugin")] {
+        fs::write(
+            plugin_manifest_path(root),
+            format!(
+                r#"
+                    id = "{id}"
+                    name = "Entry"
+                    version = "0.1.0"
+                    entry = "bin/plugin.wasm"
+                "#
+            ),
+        )
+        .unwrap();
+    }
+    // Only the second plugin gets the wasm its manifest promises.
+    let entry = present.join("bin/plugin.wasm");
+    fs::create_dir_all(entry.parent().unwrap()).unwrap();
+    fs::write(&entry, b"wasm").unwrap();
+
+    let discovery = discover_workspace_plugins(&workspace).unwrap();
+
+    assert_eq!(
+        discovery
+            .plugins
+            .iter()
+            .map(|plugin| plugin.manifest.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["present.plugin"]
+    );
+    assert_eq!(discovery.errors.len(), 1);
+    assert_eq!(discovery.errors[0].root, missing);
+    assert!(
+        discovery.errors[0].error.contains("plugin entry")
+            && discovery.errors[0].error.contains("is missing"),
+        "{}",
+        discovery.errors[0].error
+    );
 
     fs::remove_dir_all(workspace).unwrap();
 }
@@ -1175,6 +1377,89 @@ fn load_theme_settings_from_path_accepts_colors_alias() {
     assert_eq!(theme.accent, [18, 52, 86]);
     assert_eq!(theme.error, [3, 2, 1]);
     assert_eq!(theme.panel, ThemeSettings::default().panel);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_theme_settings_from_path_caps_friendly_theme_name_length() {
+    let root = temp_root("friendly-theme-overlong-name");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("friendly.toml");
+    let overlong_name = "N".repeat(MAX_PLUGIN_DISPLAY_LABEL_CHARS + 80);
+    fs::write(
+        &path,
+        format!(
+            r##"
+                name = "{overlong_name}"
+
+                [palette]
+                background = "#010203"
+                accent = "#5B8DEF"
+            "##
+        ),
+    )
+    .unwrap();
+
+    let theme = load_theme_settings_from_path(&path).unwrap();
+
+    assert_eq!(theme.name.chars().count(), MAX_PLUGIN_DISPLAY_LABEL_CHARS);
+    assert!(theme.name.starts_with("NNN"));
+    assert!(theme.name.ends_with(DISPLAY_LABEL_OMISSION));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_theme_settings_from_path_strips_control_chars_from_friendly_theme_name() {
+    let root = temp_root("friendly-theme-hostile-name");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("friendly.toml");
+    // TOML escapes keep the invisible characters out of this source file:
+    // U+200B (zero-width space), a tab, and U+202E (right-to-left override).
+    fs::write(
+        &path,
+        r##"
+                name = "Night\u200B\tOwl\u202E"
+
+                [palette]
+                background = "#010203"
+                accent = "#5B8DEF"
+            "##,
+    )
+    .unwrap();
+
+    let theme = load_theme_settings_from_path(&path).unwrap();
+
+    assert_eq!(theme.name, "Night Owl");
+    assert!(!theme.name.contains('\u{200b}'));
+    assert!(!theme.name.contains('\u{202e}'));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn load_theme_settings_from_path_keeps_default_name_when_friendly_name_sanitizes_empty() {
+    let root = temp_root("friendly-theme-invisible-name");
+    fs::create_dir_all(&root).unwrap();
+    let path = root.join("friendly.toml");
+    fs::write(
+        &path,
+        r##"
+                name = "\u200B\t\u202E"
+
+                [palette]
+                background = "#010203"
+                accent = "#5B8DEF"
+            "##,
+    )
+    .unwrap();
+
+    let theme = load_theme_settings_from_path(&path).unwrap();
+
+    assert_eq!(theme.name, ThemeSettings::default().name);
+    assert_eq!(theme.background, [1, 2, 3]);
+    assert_eq!(theme.accent, [91, 141, 239]);
 
     fs::remove_dir_all(root).unwrap();
 }

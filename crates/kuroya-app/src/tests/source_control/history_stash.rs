@@ -35,7 +35,9 @@ fn source_control_history_filter_matches_commit_metadata_terms() {
     assert_eq!(oid_match.len(), 1);
     assert_eq!(oid_match[0].short_oid, "abcdef12");
 
-    let age_match = source_control_filtered_history(&commits, "28m", now_seconds);
+    // The second commit is 1700s (28m20s) old: within a 29 minute age range,
+    // while the first commit (3690s old) is outside it.
+    let age_match = source_control_filtered_history(&commits, "29m", now_seconds);
     assert_eq!(age_match.len(), 1);
     assert_eq!(age_match[0].short_oid, "abcdef12");
 }

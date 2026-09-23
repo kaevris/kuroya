@@ -1,8 +1,8 @@
+use crate::lsp_client::pending::PendingLspRequests;
 mod code_actions;
 mod formatting;
 
-use crate::lsp_client::{commands::LspClientCommand, pending::PendingLspRequest};
-use std::collections::HashMap;
+use crate::lsp_client::commands::LspClientCommand;
 use tokio::process::ChildStdin;
 
 enum ActionEditRequestKind {
@@ -24,7 +24,7 @@ pub(super) async fn handle_action_edit_request_command(
     command: LspClientCommand,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     let Some(kind) = action_edit_request_kind(&command) else {
         return true;

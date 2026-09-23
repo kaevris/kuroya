@@ -1,4 +1,5 @@
 use super::*;
+use crate::buffer::find::find_regex_memo_contains;
 
 #[test]
 fn find_matches_returns_char_ranges() {
@@ -208,6 +209,29 @@ fn regex_full_text_fallback_is_bounded_for_large_buffers() {
 fn validate_find_regex_checks_syntax_without_buffer_text() {
     assert!(validate_find_regex(r"item-\d+", false).is_ok());
     assert!(validate_find_regex("(", true).is_err());
+}
+
+#[test]
+fn find_regex_compilation_is_memoized_with_identical_match_ranges() {
+    let buffer = TextBuffer::from_text(1, None, "a1 b2 a1 a4".to_owned());
+    let query = r"a\d";
+
+    let first = buffer
+        .find_regex_matches_with_options(query, 8, true, false)
+        .expect("regex should compile");
+    assert_eq!(first, vec![0..2, 6..8, 9..11]);
+    assert!(find_regex_memo_contains(query, true));
+
+    let second = buffer
+        .find_regex_matches_with_options(query, 8, true, false)
+        .expect("regex should compile");
+    assert_eq!(first, second);
+
+    let case_insensitive = buffer
+        .find_regex_matches_with_options(r"A\d", 8, false, false)
+        .expect("regex should compile");
+    assert_eq!(case_insensitive, first);
+    assert!(find_regex_memo_contains(r"A\d", false));
 }
 
 #[test]

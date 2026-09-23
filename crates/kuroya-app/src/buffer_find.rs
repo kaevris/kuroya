@@ -1,6 +1,9 @@
-use crate::{KuroyaApp, large_file_mode::buffer_uses_large_file_mode};
+use crate::{KuroyaApp, large_file_mode::buffer_uses_large_file_mode, workspace_state::PaneId};
 use kuroya_core::{BufferId, EditorFindAutoFindInSelection, TextBuffer};
-use std::ops::Range;
+use std::{
+    ops::Range,
+    sync::{LazyLock, Mutex},
+};
 
 mod replace;
 
@@ -92,7 +95,7 @@ impl<'a> BufferFindCacheLookupKey<'a> {
                 buffer.word_separators(),
             ),
             len_chars,
-            query: normalize_buffer_find_query(query),
+            query,
             case_sensitive,
             whole_word,
             regex,
@@ -114,10 +117,15 @@ impl<'a> BufferFindCacheLookupKey<'a> {
     }
 }
 
+/// Bounded LRU of per-buffer find results. Split panes render different
+/// buffers on alternating frames, so entries are keyed per buffer state and
+/// the oldest entry is evicted on insert instead of the previous result being
+/// dropped on every other pane's lookup.
+pub(crate) const BUFFER_FIND_CACHE_CAPACITY: usize = 8;
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BufferFindCache {
-    key: Option<BufferFindCacheKey>,
-    matches: Vec<Range<usize>>,
+    entries: Vec<(BufferFindCacheKey, Vec<Range<usize>>)>,
 }
 
 impl BufferFindCache {
@@ -128,48 +136,148 @@ impl BufferFindCache {
 
     #[cfg(test)]
     fn matches_for_key(&self, key: &BufferFindCacheKey) -> Option<&[Range<usize>]> {
-        (self.key.as_ref() == Some(key)).then_some(self.matches.as_slice())
-    }
-
-    fn store(&mut self, key: BufferFindCacheKey, matches: Vec<Range<usize>>) {
-        self.key = Some(key);
-        self.matches = matches;
+        self.entries
+            .iter()
+            .find(|(stored, _)| stored == key)
+            .map(|(_, matches)| matches.as_slice())
     }
 
     #[cfg(test)]
     fn matches_key(&self, key: &BufferFindCacheKey) -> bool {
-        self.key.as_ref() == Some(key)
+        self.entries.iter().any(|(stored, _)| stored == key)
     }
 
-    fn matches_lookup_key(&self, key: &BufferFindCacheLookupKey<'_>) -> bool {
-        self.key.as_ref().is_some_and(|stored| stored.eq(key))
+    /// Returns the cached matches for `key` without mutating the cache.
+    fn matches_for_lookup_key(
+        &self,
+        key: &BufferFindCacheLookupKey<'_>,
+    ) -> Option<&[Range<usize>]> {
+        self.entries
+            .iter()
+            .find(|(stored, _)| stored.eq(key))
+            .map(|(_, matches)| matches.as_slice())
+    }
+
+    /// Moves the entry matching `key` to the most recently used position and
+    /// reports whether it was present. The boolean result keeps the mutable
+    /// borrow region-local so the caller can hand out an immutable slice of
+    /// the same entry afterwards.
+    fn touch_lookup_key(&mut self, key: &BufferFindCacheLookupKey<'_>) -> bool {
+        let Some(index) = self.entries.iter().position(|(stored, _)| stored.eq(key)) else {
+            return false;
+        };
+        let entry = self.entries.remove(index);
+        self.entries.push(entry);
+        true
+    }
+
+    fn store(&mut self, key: BufferFindCacheKey, matches: Vec<Range<usize>>) -> &[Range<usize>] {
+        if let Some(index) = self.entries.iter().position(|(stored, _)| stored == &key) {
+            self.entries.remove(index);
+        }
+        if self.entries.len() >= BUFFER_FIND_CACHE_CAPACITY {
+            self.entries.remove(0);
+        }
+        self.entries.push((key, matches));
+        let index = self.entries.len() - 1;
+        self.entries[index].1.as_slice()
     }
 
     pub(crate) fn clear(&mut self) {
-        self.key = None;
-        self.matches.clear();
+        self.entries.clear();
     }
 
     pub(crate) fn clear_for_buffer(&mut self, buffer_id: BufferId) {
-        if self
-            .key
-            .as_ref()
-            .is_some_and(|key| key.buffer_id == buffer_id)
-        {
-            self.clear();
-        }
+        self.entries.retain(|(key, _)| key.buffer_id != buffer_id);
     }
 
     #[cfg(test)]
-    pub(crate) fn cached_buffer_id_for_test(&self) -> Option<BufferId> {
-        self.key.as_ref().map(|key| key.buffer_id)
+    pub(crate) fn cached_buffer_ids_for_test(&self) -> Vec<BufferId> {
+        let mut buffer_ids: Vec<BufferId> =
+            self.entries.iter().map(|(key, _)| key.buffer_id).collect();
+        buffer_ids.sort_unstable();
+        buffer_ids.dedup();
+        buffer_ids
     }
+
+    #[cfg(test)]
+    fn len_for_test(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+const MAX_PANE_ACTIVE_FIND_MATCH_ENTRIES: usize = 128;
+
+type PaneActiveFindMatchEntries = Vec<((PaneId, BufferId), usize)>;
+
+fn pane_active_find_match_entries() -> &'static Mutex<PaneActiveFindMatchEntries> {
+    static PANE_ACTIVE_FIND_MATCHES: LazyLock<Mutex<PaneActiveFindMatchEntries>> =
+        LazyLock::new(|| Mutex::new(Vec::new()));
+    &PANE_ACTIVE_FIND_MATCHES
+}
+
+fn store_pane_active_find_match(
+    entries: &mut PaneActiveFindMatchEntries,
+    pane_id: PaneId,
+    buffer_id: BufferId,
+    ordinal: usize,
+) {
+    if let Some(entry) = entries.iter_mut().find(|((entry_pane, entry_buffer), _)| {
+        *entry_pane == pane_id && *entry_buffer == buffer_id
+    }) {
+        entry.1 = ordinal;
+        return;
+    }
+    if entries.len() >= MAX_PANE_ACTIVE_FIND_MATCH_ENTRIES {
+        entries.remove(0);
+    }
+    entries.push(((pane_id, buffer_id), ordinal));
+}
+
+fn pane_active_find_match_entry(
+    entries: &[((PaneId, BufferId), usize)],
+    pane_id: PaneId,
+    buffer_id: BufferId,
+) -> Option<usize> {
+    entries
+        .iter()
+        .find(|((entry_pane, entry_buffer), _)| {
+            *entry_pane == pane_id && *entry_buffer == buffer_id
+        })
+        .map(|(_, ordinal)| *ordinal)
 }
 
 impl KuroyaApp {
     fn active_find_buffer_index(&self) -> Option<usize> {
         let id = self.active?;
         self.buffers.iter().position(|buffer| buffer.id() == id)
+    }
+
+    pub(crate) fn visible_pane_active_find_match(
+        &mut self,
+        pane_id: PaneId,
+        buffer_id: BufferId,
+    ) -> usize {
+        if self.panes.len() <= 1 || self.active == Some(buffer_id) {
+            let ordinal = self.buffer_find_match;
+            store_pane_active_find_match(
+                &mut pane_active_find_match_entries()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                pane_id,
+                buffer_id,
+                ordinal,
+            );
+            return ordinal;
+        }
+        pane_active_find_match_entry(
+            &pane_active_find_match_entries()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            pane_id,
+            buffer_id,
+        )
+        .unwrap_or(self.buffer_find_match)
     }
 
     #[cfg(test)]
@@ -228,14 +336,21 @@ impl KuroyaApp {
             regex,
             scope,
         );
-        if self.buffer_find_cache.matches_lookup_key(&lookup_key) {
-            return Some(self.buffer_find_cache.matches.as_slice());
+        // Refresh recency first (region-local mutable borrow), then hand out
+        // an immutable slice: the function's return type is tied to `&mut
+        // self`, so a slice derived from a mutable borrow would pin that
+        // borrow for the whole function and collide with `store` below.
+        if self.buffer_find_cache.touch_lookup_key(&lookup_key) {
+            return Some(
+                self.buffer_find_cache
+                    .matches_for_lookup_key(&lookup_key)
+                    .expect("touched cache entry is present"),
+            );
         }
 
         let key = lookup_key.to_cache_key();
         let matches = find_matches_for_normalized_buffer_key(buffer, &key);
-        self.buffer_find_cache.store(key, matches);
-        Some(self.buffer_find_cache.matches.as_slice())
+        Some(self.buffer_find_cache.store(key, matches))
     }
 
     pub(crate) fn active_find_blocked_by_large_file_mode(&self) -> bool {
@@ -419,7 +534,7 @@ fn find_matches_for_buffer(buffer: &TextBuffer, key: &BufferFindCacheKey) -> Vec
         return Vec::new();
     }
 
-    let query = normalize_buffer_find_query(&key.query);
+    let query = key.query.as_str();
     if query.is_empty() {
         return Vec::new();
     }
@@ -510,12 +625,8 @@ fn find_matches_for_buffer_with_normalized_inputs(
     matches
 }
 
-fn normalize_buffer_find_query(query: &str) -> &str {
-    query.trim()
-}
-
 pub(crate) fn buffer_find_query_too_large(query: &str) -> bool {
-    normalize_buffer_find_query(query).len() > BUFFER_FIND_MAX_QUERY_BYTES
+    query.len() > BUFFER_FIND_MAX_QUERY_BYTES
 }
 
 fn buffer_find_cache_version(buffer_version: u64, whole_word: bool, word_separators: &str) -> u64 {
@@ -809,13 +920,22 @@ fn buffer_range_contains_line_break(buffer: &TextBuffer, range: &Range<usize>) -
 #[cfg(test)]
 mod tests {
     use super::{
-        BUFFER_FIND_MAX_MATCHES, BUFFER_FIND_MAX_QUERY_BYTES, BufferFindCache, BufferFindCacheKey,
-        BufferFindCacheLookupKey, buffer_find_enabled_for_buffer, buffer_find_query_too_large,
-        buffer_find_scope_from_selection, find_matches_for_buffer,
+        BUFFER_FIND_CACHE_CAPACITY, BUFFER_FIND_MAX_MATCHES, BUFFER_FIND_MAX_QUERY_BYTES,
+        BufferFindCache, BufferFindCacheKey, BufferFindCacheLookupKey,
+        MAX_PANE_ACTIVE_FIND_MATCH_ENTRIES, buffer_find_enabled_for_buffer,
+        buffer_find_query_too_large, buffer_find_scope_from_selection, find_matches_for_buffer,
+        pane_active_find_match_entries, pane_active_find_match_entry, store_pane_active_find_match,
     };
-    use crate::large_file_mode::LARGE_FILE_MODE_MAX_BYTES;
-    use kuroya_core::{EditorFindAutoFindInSelection, Selection, TextBuffer};
-    use std::ops::Range;
+    use crate::{
+        KuroyaApp, app_startup_context::AppStartupContext,
+        large_file_mode::LARGE_FILE_MODE_MAX_BYTES, session_state::EditorPane,
+        terminal::TerminalPane,
+    };
+    use kuroya_core::{
+        EditorFindAutoFindInSelection, EditorSettings, Selection, TextBuffer, Workspace,
+    };
+    use std::{ops::Range, path::PathBuf, time::Instant};
+    use tokio::runtime::Runtime;
 
     #[test]
     fn buffer_find_is_disabled_for_large_file_mode_buffers() {
@@ -852,6 +972,91 @@ mod tests {
     }
 
     #[test]
+    fn buffer_find_cache_keeps_alternating_keys_cached() {
+        let mut cache = BufferFindCache::default();
+        let alpha = find_key(7, 1, "alpha", false, None);
+        let beta = find_key(8, 1, "beta", false, None);
+
+        cache.store(alpha.clone(), std::iter::once(0..5).collect());
+        cache.store(beta.clone(), std::iter::once(0..4).collect());
+
+        for _ in 0..4 {
+            assert!(cache.matches_key(&alpha));
+            assert!(cache.matches_key(&beta));
+        }
+        assert_eq!(
+            cache.get(&alpha),
+            Some(std::iter::once(0..5).collect::<Vec<_>>())
+        );
+        assert_eq!(
+            cache.get(&beta),
+            Some(std::iter::once(0..4).collect::<Vec<_>>())
+        );
+        assert_eq!(cache.len_for_test(), 2);
+    }
+
+    #[test]
+    fn buffer_find_cache_evicts_oldest_entry_beyond_capacity() {
+        let mut cache = BufferFindCache::default();
+        let mut keys = Vec::new();
+        for index in 0..BUFFER_FIND_CACHE_CAPACITY {
+            let key = find_key(7, index as u64 + 1, "needle", false, None);
+            cache.store(key.clone(), std::iter::once(0..6).collect());
+            keys.push(key);
+        }
+        assert_eq!(cache.len_for_test(), BUFFER_FIND_CACHE_CAPACITY);
+
+        let newest = find_key(
+            7,
+            BUFFER_FIND_CACHE_CAPACITY as u64 + 1,
+            "needle",
+            false,
+            None,
+        );
+        cache.store(newest.clone(), std::iter::once(1..7).collect());
+
+        assert_eq!(cache.len_for_test(), BUFFER_FIND_CACHE_CAPACITY);
+        assert_eq!(cache.get(&keys[0]), None);
+        for key in keys.iter().skip(1) {
+            assert_eq!(
+                cache.get(key),
+                Some(std::iter::once(0..6).collect::<Vec<_>>())
+            );
+        }
+        assert_eq!(
+            cache.get(&newest),
+            Some(std::iter::once(1..7).collect::<Vec<_>>())
+        );
+    }
+
+    #[test]
+    fn buffer_find_cache_lookup_refreshes_recency_before_eviction() {
+        let hot_buffer = TextBuffer::from_text(1, None, "alpha beta".to_owned());
+        let mut cache = BufferFindCache::default();
+        let hot_lookup =
+            BufferFindCacheLookupKey::for_buffer(&hot_buffer, "alpha", true, false, false, None);
+        cache.store(hot_lookup.to_cache_key(), std::iter::once(0..5).collect());
+
+        for round in 0..BUFFER_FIND_CACHE_CAPACITY - 1 {
+            assert!(cache.touch_lookup_key(&hot_lookup));
+            let other = TextBuffer::from_text(round as u64 + 2, None, "alpha beta".to_owned());
+            let other_lookup =
+                BufferFindCacheLookupKey::for_buffer(&other, "alpha", true, false, false, None);
+            cache.store(other_lookup.to_cache_key(), std::iter::once(0..5).collect());
+        }
+        assert_eq!(cache.len_for_test(), BUFFER_FIND_CACHE_CAPACITY);
+
+        let cold = TextBuffer::from_text(999, None, "alpha beta".to_owned());
+        let cold_lookup =
+            BufferFindCacheLookupKey::for_buffer(&cold, "alpha", true, false, false, None);
+        cache.store(cold_lookup.to_cache_key(), std::iter::once(0..5).collect());
+
+        assert_eq!(cache.len_for_test(), BUFFER_FIND_CACHE_CAPACITY);
+        assert!(cache.matches_for_lookup_key(&hot_lookup).is_some());
+        assert!(cache.matches_for_lookup_key(&cold_lookup).is_some());
+    }
+
+    #[test]
     fn buffer_find_cache_matches_borrowed_lookup_key() {
         let buffer = TextBuffer::from_text(7, None, "alpha beta".to_owned());
         let key = BufferFindCacheKey::for_buffer(&buffer, "alpha", true, false, false, Some(6..99));
@@ -860,17 +1065,27 @@ mod tests {
 
         let lookup = BufferFindCacheLookupKey::for_buffer(
             &buffer,
-            "  alpha  ",
+            "alpha",
             true,
             false,
             false,
             Some(6..usize::MAX),
         );
-        assert!(cache.matches_lookup_key(&lookup));
+        assert!(cache.touch_lookup_key(&lookup));
+
+        let padded_query = BufferFindCacheLookupKey::for_buffer(
+            &buffer,
+            "  alpha  ",
+            true,
+            false,
+            false,
+            Some(6..99),
+        );
+        assert!(!cache.touch_lookup_key(&padded_query));
 
         let changed_query =
             BufferFindCacheLookupKey::for_buffer(&buffer, "beta", true, false, false, Some(6..99));
-        assert!(!cache.matches_lookup_key(&changed_query));
+        assert!(!cache.touch_lookup_key(&changed_query));
 
         let changed_case = BufferFindCacheLookupKey::for_buffer(
             &buffer,
@@ -880,21 +1095,21 @@ mod tests {
             false,
             Some(6..99),
         );
-        assert!(!cache.matches_lookup_key(&changed_case));
+        assert!(!cache.touch_lookup_key(&changed_case));
 
         let changed_scope =
             BufferFindCacheLookupKey::for_buffer(&buffer, "alpha", true, false, false, Some(0..5));
-        assert!(!cache.matches_lookup_key(&changed_scope));
+        assert!(!cache.touch_lookup_key(&changed_scope));
     }
 
     #[test]
-    fn buffer_find_cache_key_normalizes_query_scope_and_whole_word_version() {
+    fn buffer_find_cache_key_preserves_query_whitespace_and_normalizes_scope() {
         let mut buffer = TextBuffer::from_text(7, None, "alpha beta".to_owned());
         buffer.set_word_separators(".");
 
         let key =
             BufferFindCacheKey::for_buffer(&buffer, "  alpha  ", true, true, false, Some(6..99));
-        assert_eq!(key.query, "alpha");
+        assert_eq!(key.query, "  alpha  ");
         assert_eq!(key.scope, Some(6..10));
         assert_eq!(key.len_chars, "alpha beta".chars().count());
 
@@ -1138,5 +1353,191 @@ mod tests {
             regex,
             scope,
         }
+    }
+
+    #[test]
+    fn pane_active_find_match_entries_store_update_and_prune_oldest() {
+        let mut entries = Vec::new();
+        store_pane_active_find_match(&mut entries, 1, 11, 3);
+        store_pane_active_find_match(&mut entries, 2, 12, 7);
+
+        assert_eq!(pane_active_find_match_entry(&entries, 1, 11), Some(3));
+        assert_eq!(pane_active_find_match_entry(&entries, 2, 12), Some(7));
+        assert_eq!(pane_active_find_match_entry(&entries, 9, 11), None);
+        assert_eq!(pane_active_find_match_entry(&entries, 1, 12), None);
+
+        store_pane_active_find_match(&mut entries, 1, 11, 5);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(pane_active_find_match_entry(&entries, 1, 11), Some(5));
+
+        for index in 0..MAX_PANE_ACTIVE_FIND_MATCH_ENTRIES {
+            store_pane_active_find_match(
+                &mut entries,
+                100 + index as u64,
+                1000 + index as u64,
+                index,
+            );
+        }
+
+        assert_eq!(entries.len(), MAX_PANE_ACTIVE_FIND_MATCH_ENTRIES);
+        assert_eq!(pane_active_find_match_entry(&entries, 1, 11), None);
+        assert_eq!(
+            pane_active_find_match_entry(
+                &entries,
+                100 + MAX_PANE_ACTIVE_FIND_MATCH_ENTRIES as u64 - 1,
+                1000 + MAX_PANE_ACTIVE_FIND_MATCH_ENTRIES as u64 - 1
+            ),
+            Some(MAX_PANE_ACTIVE_FIND_MATCH_ENTRIES - 1)
+        );
+    }
+
+    #[test]
+    fn visible_pane_find_ordinals_stay_independent_across_split_panes() {
+        let mut app = app_for_buffer_find_test();
+        app.buffers
+            .push(TextBuffer::from_text(101, None, "needle needle".to_owned()));
+        app.buffers
+            .push(TextBuffer::from_text(102, None, "needle".to_owned()));
+        app.panes = vec![
+            EditorPane {
+                id: 21,
+                active: Some(101),
+                weight: 1.0,
+            },
+            EditorPane {
+                id: 22,
+                active: Some(102),
+                weight: 1.0,
+            },
+        ];
+        app.active_pane = 21;
+        app.active = Some(101);
+        app.buffer_find_open = true;
+        app.buffer_find_query = "needle".to_owned();
+
+        app.buffer_find_match = 1;
+        assert_eq!(app.visible_pane_active_find_match(21, 101), 1);
+
+        assert_eq!(app.visible_pane_active_find_match(22, 102), 1);
+
+        app.active = Some(102);
+        app.buffer_find_match = 0;
+        assert_eq!(app.visible_pane_active_find_match(22, 102), 0);
+
+        assert_eq!(app.visible_pane_active_find_match(21, 101), 1);
+    }
+
+    #[test]
+    fn split_pane_alternating_find_lookups_keep_both_buffers_cached() {
+        let mut app = app_for_buffer_find_test();
+        app.buffers
+            .push(TextBuffer::from_text(101, None, "needle needle".to_owned()));
+        app.buffers
+            .push(TextBuffer::from_text(102, None, "needle".to_owned()));
+        app.buffer_find_open = true;
+        app.buffer_find_query = "needle".to_owned();
+
+        let first = app.find_matches_for_buffer_index(0);
+        let second = app.find_matches_for_buffer_index(1);
+        assert_eq!(first, vec![0..6, 7..13]);
+        assert_eq!(second, vec![0..6]);
+
+        for _ in 0..4 {
+            assert_eq!(app.find_matches_for_buffer_index(0), first);
+            assert_eq!(app.find_matches_for_buffer_index(1), second);
+        }
+
+        assert_eq!(
+            app.buffer_find_cache.cached_buffer_ids_for_test(),
+            vec![101, 102]
+        );
+    }
+
+    #[test]
+    fn find_query_preserves_leading_and_trailing_whitespace() {
+        let mut app = app_for_buffer_find_test();
+        app.buffers.push(TextBuffer::from_text(
+            101,
+            None,
+            "alpha beta  gamma ".to_owned(),
+        ));
+        app.active = Some(101);
+        app.buffer_find_open = true;
+
+        app.buffer_find_query = " ".to_owned();
+        assert_eq!(
+            app.find_matches_for_buffer_index(0),
+            vec![5..6, 10..11, 11..12, 17..18]
+        );
+
+        app.buffer_find_query = " beta ".to_owned();
+        assert_eq!(app.find_matches_for_buffer_index(0), vec![5..11]);
+
+        app.buffer_find_query = "gamma ".to_owned();
+        assert_eq!(app.find_matches_for_buffer_index(0), vec![12..18]);
+    }
+
+    #[test]
+    fn find_regex_cache_miss_reuses_memoized_regex_with_identical_ranges() {
+        let mut app = app_for_buffer_find_test();
+        app.buffers
+            .push(TextBuffer::from_text(101, None, "a1 b2 a1".to_owned()));
+        app.active = Some(101);
+        app.buffer_find_open = true;
+        app.buffer_find_regex = true;
+        app.buffer_find_query = r"a\d".to_owned();
+
+        assert_eq!(app.find_matches_for_buffer_index(0), vec![0..2, 6..8]);
+
+        let len_chars = app.buffers[0].len_chars();
+        assert!(app.buffers[0].replace_range(len_chars..len_chars, " a4"));
+        assert_eq!(
+            app.find_matches_for_buffer_index(0),
+            vec![0..2, 6..8, 9..11]
+        );
+    }
+
+    #[test]
+    fn single_visible_pane_keeps_the_live_find_ordinal() {
+        let mut app = app_for_buffer_find_test();
+        app.buffer_find_open = true;
+        app.buffer_find_query = "needle".to_owned();
+        app.buffer_find_match = 4;
+
+        assert_eq!(app.panes.len(), 1);
+        store_pane_active_find_match(
+            &mut pane_active_find_match_entries()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            31,
+            41,
+            0,
+        );
+
+        assert_eq!(app.visible_pane_active_find_match(31, 41), 4);
+    }
+
+    fn app_for_buffer_find_test() -> KuroyaApp {
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let settings = EditorSettings::default();
+        let root = PathBuf::from("kuroya-buffer-find-tests");
+        KuroyaApp::from_startup_context(AppStartupContext {
+            runtime: Runtime::new().expect("test runtime"),
+            tx,
+            rx,
+            workspace: Workspace::new(root.clone()),
+            settings: settings.clone(),
+            settings_panel_draft: settings,
+            settings_editor_font_path: String::new(),
+            settings_ui_font_path: String::new(),
+            theme_picker_selected: 0,
+            saved_session: None,
+            terminal: TerminalPane::new(root.clone(), 100, 12.0, 1.2),
+            watcher: None,
+            recent_projects: Vec::new(),
+            trusted_workspaces: vec![root],
+            now: Instant::now(),
+            startup_timings: Vec::new(),
+        })
     }
 }

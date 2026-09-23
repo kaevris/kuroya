@@ -51,6 +51,7 @@ pub(super) fn render_workspace_switch_confirm_guard(
     .collapsible(false)
     .resizable(false)
     .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+    .max_size(crate::layout::popup_window_max_size(ctx))
     .fixed_size([520.0, 164.0])
     .show(ctx, |ui| {
         ui.label(RichText::new(format!("Open {}", workspace_guard_display_path(&target))).strong());

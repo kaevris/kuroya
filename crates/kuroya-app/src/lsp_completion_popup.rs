@@ -14,6 +14,9 @@ impl KuroyaApp {
         let mut action = None;
 
         egui::Window::new("Completions")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 140.0,
+            ))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 116.0])

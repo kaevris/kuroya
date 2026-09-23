@@ -23,18 +23,22 @@ use kuroya_core::{
     clamp_editor_word_wrap_column, editor_stop_rendering_line_after_limit,
     merge_conflict_line_kind,
 };
-use std::{ops::Range, time::Duration};
+use std::{ops::Range, sync::Arc, time::Duration};
 
 mod colors;
 mod highlights;
 
 const MAX_WHITESPACE_SELECTION_RANGES_PER_ROW: usize = 1024;
+const BACKGROUND_IMAGE_LINE_HIGHLIGHT_MAX_ALPHA: u8 = 56;
+const BACKGROUND_IMAGE_SELECTION_MAX_ALPHA: u8 = 112;
+const BACKGROUND_IMAGE_STICKY_SCROLL_MAX_ALPHA: u8 = 184;
 
 pub(crate) fn paint_editor_row(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     line_idx: usize,
     highlighted_job: Option<egui::text::LayoutJob>,
+    cached_galley: Option<Arc<egui::epaint::Galley>>,
     bracket_colors: &[BracketColor],
     row: &EditorRowContext<'_>,
     row_hovered: bool,
@@ -107,18 +111,23 @@ pub(crate) fn paint_editor_row(
         row_hovered,
     );
 
-    let Some(mut job) = highlighted_job else {
-        return;
+    let galley = match cached_galley {
+        Some(galley) => galley,
+        None => {
+            let Some(mut job) = highlighted_job else {
+                return;
+            };
+            limit_layout_job_line_rendering(&mut job, row.stop_rendering_line_after);
+            job.wrap.max_width = editor_row_wrap_width(
+                rect.width(),
+                row.gutter_width,
+                row.word_wrap,
+                row.word_wrap_column,
+                row.char_width,
+            );
+            ui.fonts_mut(|fonts| fonts.layout_job(job))
+        }
     };
-    limit_layout_job_line_rendering(&mut job, row.stop_rendering_line_after);
-    job.wrap.max_width = editor_row_wrap_width(
-        rect.width(),
-        row.gutter_width,
-        row.word_wrap,
-        row.word_wrap_column,
-        row.char_width,
-    );
-    let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
     let text_pos = pos2(rect.left() + row.gutter_width, rect.top() + 3.0);
     paint_bracket_pair_guides(painter, line_idx, text, text_pos, rect, row);
     painter.galley(text_pos, galley, ui.visuals().text_color());
@@ -616,7 +625,10 @@ fn paint_folded_region_highlight(painter: &egui::Painter, rect: egui::Rect, base
 }
 
 pub(crate) fn folded_region_highlight_fill(base: Color32) -> Color32 {
-    Color32::from_rgba_premultiplied(base.r(), base.g(), base.b(), 44)
+    // egui stores premultiplied channels; building the fill with the
+    // premultiplied constructor kept the full base channels under a tiny alpha
+    // and rendered the highlight roughly 255/44 times too strong.
+    Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 44)
 }
 
 fn paint_line_highlight(
@@ -625,7 +637,12 @@ fn paint_line_highlight(
     row: &EditorRowContext<'_>,
     visuals: &egui::Visuals,
 ) {
-    let color = line_highlight_fill(visuals);
+    let color = line_highlight_fill(visuals, row.background_image_active);
+    let corner_radius = if row.background_image_active {
+        2.0
+    } else {
+        0.0
+    };
     match row.render_line_highlight {
         EditorRenderLineHighlight::None => {}
         EditorRenderLineHighlight::Gutter => {
@@ -634,7 +651,7 @@ fn paint_line_highlight(
                     rect.min,
                     pos2(rect.left() + row.gutter_width, rect.bottom()),
                 ),
-                0.0,
+                corner_radius,
                 color,
             );
         }
@@ -644,18 +661,57 @@ fn paint_line_highlight(
                     pos2(rect.left() + row.gutter_width, rect.top()),
                     rect.max,
                 ),
-                0.0,
+                corner_radius,
                 color,
             );
         }
         EditorRenderLineHighlight::All => {
-            painter.rect_filled(rect, 0.0, color);
+            painter.rect_filled(rect, corner_radius, color);
         }
     }
 }
 
-fn line_highlight_fill(visuals: &egui::Visuals) -> Color32 {
-    visuals.widgets.active.weak_bg_fill
+fn line_highlight_fill(visuals: &egui::Visuals, background_image_active: bool) -> Color32 {
+    overlay_fill_for_background_image(
+        visuals.widgets.active.weak_bg_fill,
+        background_image_active,
+        BACKGROUND_IMAGE_LINE_HIGHLIGHT_MAX_ALPHA,
+    )
+}
+
+pub(crate) fn editor_selection_fill(color: Color32, background_image_active: bool) -> Color32 {
+    overlay_fill_for_background_image(
+        color,
+        background_image_active,
+        BACKGROUND_IMAGE_SELECTION_MAX_ALPHA,
+    )
+}
+
+pub(crate) fn editor_sticky_scroll_fill(color: Color32, background_image_active: bool) -> Color32 {
+    overlay_fill_for_background_image(
+        color,
+        background_image_active,
+        BACKGROUND_IMAGE_STICKY_SCROLL_MAX_ALPHA,
+    )
+}
+
+fn overlay_fill_for_background_image(
+    color: Color32,
+    background_image_active: bool,
+    max_alpha: u8,
+) -> Color32 {
+    if !background_image_active || color.a() <= max_alpha {
+        return color;
+    }
+
+    let scale = f32::from(max_alpha) / f32::from(color.a());
+    let scaled = |channel: u8| (f32::from(channel) * scale).round() as u8;
+    Color32::from_rgba_premultiplied(
+        scaled(color.r()),
+        scaled(color.g()),
+        scaled(color.b()),
+        max_alpha,
+    )
 }
 
 fn paint_column_ruler(

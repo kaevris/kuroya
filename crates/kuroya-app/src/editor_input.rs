@@ -6,6 +6,8 @@ use std::{borrow::Cow, collections::HashSet};
 pub(crate) enum EditorContextAction {
     Copy,
     Cut,
+    Undo,
+    Redo,
     SelectAll,
     SelectLines,
     SelectRectangularBlock,

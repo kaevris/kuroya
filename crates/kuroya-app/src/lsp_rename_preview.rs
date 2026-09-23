@@ -95,6 +95,9 @@ impl KuroyaApp {
         let edit_count = self.lsp_rename_preview_edits.len();
 
         egui::Window::new("Rename Preview")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 160.0,
+            ))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 136.0])

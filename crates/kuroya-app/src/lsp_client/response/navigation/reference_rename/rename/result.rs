@@ -1,11 +1,48 @@
 use super::super::super::super::response_error;
 use crate::ui_event_channel::Sender;
 use crate::{lsp_ui_events::LspUiEvent, ui_events::UiEvent};
-use kuroya_core::{BufferId, LspTextEdit, lsp::file_uri_to_path, parse_workspace_edit_response};
+use kuroya_core::{
+    BufferId, LspTextEdit, lsp::file_uri_to_path, parse_prepare_rename_response,
+    parse_workspace_edit_response,
+};
 use serde_json::{Map, Value};
 use std::path::PathBuf;
 
 const INVALID_RENAME_RESPONSE: &str = "invalid textDocument/rename response";
+
+/// Emits the `textDocument/prepareRename` result that gates the rename
+/// popup. A null/malformed success payload yields `range: None` (the server
+/// cannot rename at this position); transport errors surface through
+/// `error`. The raw zero-based request coordinates are echoed back so the
+/// app can match the result against the current cursor.
+pub(super) fn send_prepare_rename_result(
+    id: BufferId,
+    path: PathBuf,
+    version: u64,
+    line: usize,
+    character: usize,
+    value: &Value,
+    ui_tx: &Sender<UiEvent>,
+) {
+    let error = response_error(value);
+    let range = if error.is_none() {
+        parse_prepare_rename_response(value)
+    } else {
+        None
+    };
+    let _ = crate::lsp_client::response::emit_critical_lsp_response_event(
+        ui_tx,
+        LspUiEvent::PrepareRenameResult {
+            id,
+            path,
+            version,
+            line,
+            column: character,
+            range,
+            error,
+        },
+    );
+}
 
 pub(super) fn send_rename_result(
     id: BufferId,

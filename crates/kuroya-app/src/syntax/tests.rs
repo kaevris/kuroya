@@ -95,7 +95,7 @@ fn visible_highlighting_reuses_visible_layout_cache_for_same_viewport() {
         Some(PathBuf::from("src/main.rs")),
         "let value = 1;\nlet next = 2;\n".to_owned(),
     );
-    let key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4);
+    let key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, egui::Color32::WHITE);
     let mut highlighter = SyntaxHighlighter::new();
 
     let first = highlighter.layout_visible(&buffer, 13.0, 4, 0..2, true, egui::Color32::WHITE, -1);
@@ -130,7 +130,7 @@ fn visible_highlighting_prunes_stale_versions_for_same_buffer() {
     let mut highlighter = SyntaxHighlighter::new();
 
     highlighter.layout_visible(&buffer, 13.0, 4, 0..1, true, egui::Color32::WHITE, -1);
-    let old_key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4);
+    let old_key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, egui::Color32::WHITE);
     assert!(highlighter.caches.contains_key(&old_key));
 
     buffer.apply_edit(TextEdit {
@@ -138,7 +138,7 @@ fn visible_highlighting_prunes_stale_versions_for_same_buffer() {
         inserted: "// updated\n".to_owned(),
     });
     highlighter.layout_visible(&buffer, 13.0, 4, 0..1, true, egui::Color32::WHITE, -1);
-    let new_key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4);
+    let new_key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, egui::Color32::WHITE);
 
     assert_ne!(old_key, new_key);
     assert!(!highlighter.caches.contains_key(&old_key));
@@ -163,12 +163,19 @@ fn visible_highlighting_prunes_stale_syntax_identity_for_same_buffer() {
     let mut highlighter = SyntaxHighlighter::new();
 
     highlighter.layout_visible(&buffer, 13.0, 4, 0..1, true, egui::Color32::WHITE, -1);
-    let old_key = HighlightCacheKey::for_buffer_with_extension(&buffer, 13.0, 4, "rs", None);
+    let old_key = HighlightCacheKey::for_buffer_with_extension(
+        &buffer,
+        13.0,
+        4,
+        "rs",
+        None,
+        egui::Color32::WHITE,
+    );
     assert!(highlighter.caches.contains_key(&old_key));
 
     buffer.set_path(PathBuf::from("script.py"));
     highlighter.layout_visible(&buffer, 13.0, 4, 0..1, true, egui::Color32::WHITE, -1);
-    let new_key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4);
+    let new_key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, egui::Color32::WHITE);
 
     assert_ne!(old_key, new_key);
     assert!(!highlighter.caches.contains_key(&old_key));
@@ -226,7 +233,7 @@ fn visible_highlighting_reuses_cached_subrange_of_previous_viewport() {
         .collect::<Vec<_>>()
         .join("\n");
     let buffer = TextBuffer::from_text(1, Some(PathBuf::from("src/main.rs")), text);
-    let key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4);
+    let key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, egui::Color32::WHITE);
     let mut highlighter = SyntaxHighlighter::new();
 
     let first = highlighter.layout_visible(&buffer, 13.0, 4, 0..8, true, egui::Color32::WHITE, -1);
@@ -250,7 +257,7 @@ fn visible_highlighting_does_not_reuse_partial_overlap() {
         .collect::<Vec<_>>()
         .join("\n");
     let buffer = TextBuffer::from_text(1, Some(PathBuf::from("src/main.rs")), text);
-    let key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4);
+    let key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, egui::Color32::WHITE);
     let mut highlighter = SyntaxHighlighter::new();
 
     highlighter.layout_visible(&buffer, 13.0, 4, 2..6, true, egui::Color32::WHITE, -1);
@@ -271,7 +278,7 @@ fn visible_layout_cache_hit_refreshes_lru_order() {
         .collect::<Vec<_>>()
         .join("\n");
     let buffer = TextBuffer::from_text(1, Some(PathBuf::from("src/main.rs")), text);
-    let key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4);
+    let key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, egui::Color32::WHITE);
     let mut highlighter = SyntaxHighlighter::new();
 
     for start in (0..80).step_by(10) {
@@ -315,7 +322,7 @@ fn visible_layout_subrange_prefers_most_recent_containing_range() {
         .collect::<Vec<_>>()
         .join("\n");
     let buffer = TextBuffer::from_text(1, Some(PathBuf::from("src/main.rs")), text);
-    let key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4);
+    let key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, egui::Color32::WHITE);
     let mut highlighter = SyntaxHighlighter::new();
 
     highlighter.layout_visible(&buffer, 13.0, 4, 0..10, true, egui::Color32::WHITE, -1);
@@ -353,9 +360,15 @@ fn visible_highlighting_cache_distinguishes_line_render_limits() {
         Some(PathBuf::from("src/main.rs")),
         format!("{}tail\nshort", "x".repeat(64)),
     );
-    let limited_key =
-        HighlightCacheKey::for_buffer_with_extension(&buffer, 13.0, 4, "rs", Some(12));
-    let full_key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4);
+    let limited_key = HighlightCacheKey::for_buffer_with_extension(
+        &buffer,
+        13.0,
+        4,
+        "rs",
+        Some(12),
+        egui::Color32::WHITE,
+    );
+    let full_key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, egui::Color32::WHITE);
     let mut highlighter = SyntaxHighlighter::new();
 
     let limited =
@@ -416,8 +429,8 @@ fn disabled_syntax_highlighting_clears_only_target_buffer_cache() {
         Some(PathBuf::from("src/main.rs")),
         "let second = 2;\n".to_owned(),
     );
-    let first_key = HighlightCacheKey::for_buffer(&first, 13.0, 4);
-    let second_key = HighlightCacheKey::for_buffer(&second, 13.0, 4);
+    let first_key = HighlightCacheKey::for_buffer(&first, 13.0, 4, egui::Color32::WHITE);
+    let second_key = HighlightCacheKey::for_buffer(&second, 13.0, 4, egui::Color32::WHITE);
     let mut highlighter = SyntaxHighlighter::new();
 
     highlighter.layout_visible(&first, 13.0, 4, 0..1, true, egui::Color32::WHITE, -1);
@@ -443,7 +456,7 @@ fn disabled_syntax_highlighting_ignores_impossible_rows_without_cache_churn() {
         Some(PathBuf::from("src/main.rs")),
         "let value = 1;\n".to_owned(),
     );
-    let key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4);
+    let key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, egui::Color32::WHITE);
     let mut highlighter = SyntaxHighlighter::new();
 
     highlighter.layout_visible(&buffer, 13.0, 4, 0..1, true, egui::Color32::WHITE, -1);
@@ -496,7 +509,14 @@ fn deep_visible_highlighting_falls_back_to_plain_and_warms_bounded_checkpoints()
         .collect::<Vec<_>>()
         .join("\n");
     let buffer = TextBuffer::from_text(1, Some(PathBuf::from("src/main.rs")), text);
-    let key = HighlightCacheKey::for_buffer_with_extension(&buffer, 13.0, 4, "rs", None);
+    let key = HighlightCacheKey::for_buffer_with_extension(
+        &buffer,
+        13.0,
+        4,
+        "rs",
+        None,
+        egui::Color32::WHITE,
+    );
     let mut highlighter = SyntaxHighlighter::new();
 
     let jobs = highlighter.layout_visible(
@@ -530,7 +550,14 @@ fn repeated_deep_visible_highlighting_progresses_true_warmup() {
         .collect::<Vec<_>>()
         .join("\n");
     let buffer = TextBuffer::from_text(1, Some(PathBuf::from("src/main.rs")), text);
-    let key = HighlightCacheKey::for_buffer_with_extension(&buffer, 13.0, 4, "rs", None);
+    let key = HighlightCacheKey::for_buffer_with_extension(
+        &buffer,
+        13.0,
+        4,
+        "rs",
+        None,
+        egui::Color32::WHITE,
+    );
     let mut highlighter = SyntaxHighlighter::new();
 
     highlighter.layout_visible(
@@ -575,9 +602,10 @@ fn highlight_cache_evicts_oldest_key_without_clearing_warm_caches() {
             )
         })
         .collect::<Vec<_>>();
-    let first_key = HighlightCacheKey::for_buffer(&buffers[0], 13.0, 4);
-    let second_key = HighlightCacheKey::for_buffer(&buffers[1], 13.0, 4);
-    let newest_key = HighlightCacheKey::for_buffer(buffers.last().unwrap(), 13.0, 4);
+    let first_key = HighlightCacheKey::for_buffer(&buffers[0], 13.0, 4, egui::Color32::WHITE);
+    let second_key = HighlightCacheKey::for_buffer(&buffers[1], 13.0, 4, egui::Color32::WHITE);
+    let newest_key =
+        HighlightCacheKey::for_buffer(buffers.last().unwrap(), 13.0, 4, egui::Color32::WHITE);
     let mut highlighter = SyntaxHighlighter::new();
 
     for buffer in buffers.iter().take(MAX_HIGHLIGHT_CACHES) {
@@ -712,4 +740,29 @@ fn plugin_syntax_load_skips_oversized_syntax_file() {
     assert!(syntax_load.registry.is_empty());
 
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn visible_highlighting_rebuilds_theme_colors_on_theme_identity_change() {
+    let buffer = TextBuffer::from_text(
+        1,
+        Some(PathBuf::from("src/main.rs")),
+        "let value = 1;\n".to_owned(),
+    );
+    let mut highlighter = SyntaxHighlighter::new();
+
+    highlighter.layout_visible(&buffer, 13.0, 4, 0..1, true, egui::Color32::WHITE, -1);
+    let dark_theme_key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, egui::Color32::WHITE);
+    assert!(highlighter.caches.contains_key(&dark_theme_key));
+
+    let light_theme_text = egui::Color32::from_rgb(36, 41, 49);
+    highlighter.layout_visible(&buffer, 13.0, 4, 0..1, true, light_theme_text, -1);
+    let light_theme_key = HighlightCacheKey::for_buffer(&buffer, 13.0, 4, light_theme_text);
+
+    assert_ne!(dark_theme_key, light_theme_key);
+    assert!(highlighter.caches.contains_key(&light_theme_key));
+
+    // The rebuild must not serve stale colors from the old theme's cache.
+    let jobs = highlighter.layout_visible(&buffer, 13.0, 4, 0..1, true, light_theme_text, -1);
+    assert_eq!(jobs[0].sections[0].format.color, light_theme_text);
 }

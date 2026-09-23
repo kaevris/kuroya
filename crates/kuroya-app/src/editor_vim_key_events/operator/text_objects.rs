@@ -18,6 +18,7 @@ pub(in crate::editor_vim_key_events) fn vim_text_object_range(
     scope: EditorVimTextObjectScope,
     kind: EditorVimTextObjectKind,
 ) -> Option<Range<usize>> {
+    let original_cursor = buffer.cursor();
     let inner = match kind {
         EditorVimTextObjectKind::Word => vim_inner_word_range(buffer, count),
         EditorVimTextObjectKind::BigWord => vim_inner_big_word_range(buffer, count),
@@ -36,7 +37,9 @@ pub(in crate::editor_vim_key_events) fn vim_text_object_range(
     }?;
     match scope {
         EditorVimTextObjectScope::Inner => Some(inner),
-        EditorVimTextObjectScope::Outer => Some(vim_outer_word_range(buffer, inner)),
+        EditorVimTextObjectScope::Outer => {
+            Some(vim_outer_word_range(buffer, inner, original_cursor))
+        }
     }
 }
 

@@ -2,6 +2,7 @@ use crate::preference_panels::sections::{
     SETTINGS_TARGET_EDITOR_TYPING, SettingsHighlightState, bounded_singleline_text_edit,
     settings_target_heading,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::{
     EditorAutoClosingEditStrategy, EditorAutoClosingStrategy, EditorDropIntoEditorShowDropSelector,
@@ -27,15 +28,16 @@ pub(super) fn render_typing_settings_with_highlight(
         .spacing([18.0, 10.0])
         .show(ui, |ui| {
             ui.label("Auto indent");
-            ui.checkbox(&mut draft.auto_indent, "Indent new lines from context");
+            ui_switch(ui, &mut draft.auto_indent).on_hover_text("Indent new lines from context");
             ui.end_row();
 
             ui.label("Auto close brackets");
-            ui.checkbox(&mut draft.auto_closing_brackets, "Insert matching brackets");
+            ui_switch(ui, &mut draft.auto_closing_brackets)
+                .on_hover_text("Insert matching brackets");
             ui.end_row();
 
             ui.label("Auto close quotes");
-            ui.checkbox(&mut draft.auto_closing_quotes, "Insert matching quotes");
+            ui_switch(ui, &mut draft.auto_closing_quotes).on_hover_text("Insert matching quotes");
             ui.end_row();
 
             ui.label("Auto close comments");
@@ -63,29 +65,24 @@ pub(super) fn render_typing_settings_with_highlight(
             ui.end_row();
 
             ui.label("Auto surround");
-            ui.checkbox(&mut draft.auto_surround, "Wrap selections with pairs");
+            ui_switch(ui, &mut draft.auto_surround).on_hover_text("Wrap selections with pairs");
             ui.end_row();
 
             ui.label("Indent pasted text");
-            ui.checkbox(
-                &mut draft.auto_indent_on_paste,
-                "Adjust indentation when pasting text",
-            );
+            ui_switch(ui, &mut draft.auto_indent_on_paste);
             ui.end_row();
 
             ui.label("Indent paste in strings");
-            ui.checkbox(
-                &mut draft.auto_indent_on_paste_within_string,
-                "Adjust indentation for pasted text inside strings",
-            );
+            ui_switch(ui, &mut draft.auto_indent_on_paste_within_string);
             ui.end_row();
 
             ui.label("Format on paste");
-            ui.checkbox(&mut draft.format_on_paste, "Format after pasting text");
+            ui_switch(ui, &mut draft.format_on_paste);
             ui.end_row();
 
             ui.label("Paste as");
-            ui.checkbox(&mut draft.paste_as_enabled, "Enable paste transformations");
+            ui_switch(ui, &mut draft.paste_as_enabled)
+                .on_hover_text("Enable paste transformations");
             ui.end_row();
 
             ui.label("Paste selector");
@@ -97,35 +94,47 @@ pub(super) fn render_typing_settings_with_highlight(
             ui.end_row();
 
             ui.label("Format on type");
-            ui.checkbox(&mut draft.format_on_type, "Format the line after typing");
+            ui_switch(ui, &mut draft.format_on_type).on_hover_text("Format the line after typing");
             ui.end_row();
 
             ui.label("Sticky tab stops");
-            ui.checkbox(
-                &mut draft.sticky_tab_stops,
-                "Make selection snap to tab stops when using spaces",
-            );
+            ui_switch(ui, &mut draft.sticky_tab_stops)
+                .on_hover_text("Make selection snap to tab stops when using spaces");
             ui.end_row();
 
             ui.label("Linked editing");
-            ui.checkbox(&mut draft.linked_editing, "Edit linked symbols together");
+            ui_switch(ui, &mut draft.linked_editing).on_hover_text("Edit linked symbols together");
             ui.end_row();
 
             ui.label("Rename on type");
-            ui.checkbox(
-                &mut draft.rename_on_type,
-                "Rename linked symbols while typing",
-            );
+            ui_switch(ui, &mut draft.rename_on_type)
+                .on_hover_text("Rename linked symbols while typing");
             ui.end_row();
 
             ui.label("Tab focus mode");
-            ui.checkbox(&mut draft.tab_focus_mode, "Move focus with Tab");
+            ui_switch(ui, &mut draft.tab_focus_mode).on_hover_text("Move focus with Tab");
             ui.end_row();
 
             ui.label("Read-only");
             ui.vertical(|ui| {
-                ui.checkbox(&mut draft.read_only, "Open editors as read-only");
-                ui.checkbox(&mut draft.dom_read_only, "Use DOM read-only input");
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.read_only);
+                    ui.label(
+                        egui::RichText::new("Open editors as read-only")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.dom_read_only);
+                    ui.label(
+                        egui::RichText::new("Use DOM read-only input")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
             });
             ui.end_row();
 
@@ -134,38 +143,28 @@ pub(super) fn render_typing_settings_with_highlight(
             ui.end_row();
 
             ui.label("Comment spacing");
-            ui.checkbox(
-                &mut draft.comments_insert_space,
-                "Insert a space after line comment tokens",
-            );
+            ui_switch(ui, &mut draft.comments_insert_space)
+                .on_hover_text("Insert a space after line comment tokens");
             ui.end_row();
 
             ui.label("Ignore empty comments");
-            ui.checkbox(
-                &mut draft.comments_ignore_empty_lines,
-                "Skip empty lines when toggling comments",
-            );
+            ui_switch(ui, &mut draft.comments_ignore_empty_lines)
+                .on_hover_text("Skip empty lines when toggling comments");
             ui.end_row();
 
             ui.label("Select blocks");
-            ui.checkbox(
-                &mut draft.double_click_selects_block,
-                "Double-clicking beside brackets selects block content",
-            );
+            ui_switch(ui, &mut draft.double_click_selects_block)
+                .on_hover_text("Double-clicking beside brackets selects block content");
             ui.end_row();
 
             ui.label("Drag and drop");
-            ui.checkbox(
-                &mut draft.drag_and_drop,
-                "Allow moving selections with drag and drop",
-            );
+            ui_switch(ui, &mut draft.drag_and_drop)
+                .on_hover_text("Allow moving selections with drag and drop");
             ui.end_row();
 
             ui.label("Drop into editor");
-            ui.checkbox(
-                &mut draft.drop_into_editor_enabled,
-                "Enable external drop handling",
-            );
+            ui_switch(ui, &mut draft.drop_into_editor_enabled)
+                .on_hover_text("Enable external drop handling");
             ui.end_row();
 
             ui.label("Drop selector");
@@ -186,11 +185,24 @@ pub(super) fn render_typing_settings_with_highlight(
 
             ui.label("Multi cursor behavior");
             ui.vertical(|ui| {
-                ui.checkbox(
-                    &mut draft.multi_cursor_merge_overlapping,
-                    "Merge overlapping cursors",
-                );
-                ui.checkbox(&mut draft.column_selection, "Enable column selection");
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.multi_cursor_merge_overlapping);
+                    ui.label(
+                        egui::RichText::new("Merge overlapping cursors")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.column_selection);
+                    ui.label(
+                        egui::RichText::new("Enable column selection")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
             });
             ui.end_row();
 
@@ -215,24 +227,18 @@ pub(super) fn render_typing_settings_with_highlight(
             ui.end_row();
 
             ui.label("Empty selection clipboard");
-            ui.checkbox(
-                &mut draft.empty_selection_clipboard,
-                "Copy or cut the current line when nothing is selected",
-            );
+            ui_switch(ui, &mut draft.empty_selection_clipboard)
+                .on_hover_text("Copy or cut the current line when nothing is selected");
             ui.end_row();
 
             ui.label("Selection clipboard");
-            ui.checkbox(
-                &mut draft.selection_clipboard,
-                "Support the primary selection clipboard",
-            );
+            ui_switch(ui, &mut draft.selection_clipboard)
+                .on_hover_text("Support the primary selection clipboard");
             ui.end_row();
 
             ui.label("Copy highlighting");
-            ui.checkbox(
-                &mut draft.copy_with_syntax_highlighting,
-                "Copy text with syntax highlighting",
-            );
+            ui_switch(ui, &mut draft.copy_with_syntax_highlighting)
+                .on_hover_text("Copy text with syntax highlighting");
             ui.end_row();
         });
 }

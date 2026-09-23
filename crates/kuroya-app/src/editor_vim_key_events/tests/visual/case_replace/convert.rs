@@ -153,3 +153,119 @@ fn normal_mode_visual_character_case_commands_convert_selection() {
         None,
     ));
 }
+
+#[test]
+fn normal_mode_visual_character_case_commands_convert_unicode_letters() {
+    let mut mode = EditorVimMode::Normal;
+    let mut pending = None;
+    let mut last_char_find = None;
+    let mut unnamed_register = None;
+
+    let mut buffer = TextBuffer::from_text(1, None, "Ünïcode".to_owned());
+    for key in [Key::V, Key::End] {
+        let result = handle_vim_editor_key_event_with_state(
+            &mut buffer,
+            key,
+            Modifiers::NONE,
+            &mut mode,
+            &mut pending,
+            &mut last_char_find,
+            &mut unnamed_register,
+        );
+        assert!(result.handled);
+        assert!(!result.changed);
+    }
+    let upper = handle_vim_editor_key_event_with_state(
+        &mut buffer,
+        Key::U,
+        Modifiers::SHIFT,
+        &mut mode,
+        &mut pending,
+        &mut last_char_find,
+        &mut unnamed_register,
+    );
+    assert!(upper.handled);
+    assert!(upper.changed);
+    assert_eq!(buffer.text(), "ÜNÏCODE");
+
+    buffer = TextBuffer::from_text(1, None, "Ünïcode".to_owned());
+    for key in [Key::V, Key::End] {
+        let result = handle_vim_editor_key_event_with_state(
+            &mut buffer,
+            key,
+            Modifiers::NONE,
+            &mut mode,
+            &mut pending,
+            &mut last_char_find,
+            &mut unnamed_register,
+        );
+        assert!(result.handled);
+        assert!(!result.changed);
+    }
+    let lower = handle_vim_editor_key_event_with_state(
+        &mut buffer,
+        Key::U,
+        Modifiers::NONE,
+        &mut mode,
+        &mut pending,
+        &mut last_char_find,
+        &mut unnamed_register,
+    );
+    assert!(lower.handled);
+    assert!(lower.changed);
+    assert_eq!(buffer.text(), "ünïcode");
+
+    buffer = TextBuffer::from_text(1, None, "ß".to_owned());
+    for key in [Key::V, Key::End] {
+        let result = handle_vim_editor_key_event_with_state(
+            &mut buffer,
+            key,
+            Modifiers::NONE,
+            &mut mode,
+            &mut pending,
+            &mut last_char_find,
+            &mut unnamed_register,
+        );
+        assert!(result.handled);
+        assert!(!result.changed);
+    }
+    let sharp_s_upper = handle_vim_editor_key_event_with_state(
+        &mut buffer,
+        Key::U,
+        Modifiers::SHIFT,
+        &mut mode,
+        &mut pending,
+        &mut last_char_find,
+        &mut unnamed_register,
+    );
+    assert!(sharp_s_upper.handled);
+    assert!(sharp_s_upper.changed);
+    assert_eq!(buffer.text(), "SS");
+
+    buffer = TextBuffer::from_text(1, None, "Ünï".to_owned());
+    for key in [Key::V, Key::End] {
+        let result = handle_vim_editor_key_event_with_state(
+            &mut buffer,
+            key,
+            Modifiers::NONE,
+            &mut mode,
+            &mut pending,
+            &mut last_char_find,
+            &mut unnamed_register,
+        );
+        assert!(result.handled);
+        assert!(!result.changed);
+    }
+    let toggle = handle_vim_editor_key_event_with_state(
+        &mut buffer,
+        Key::Backtick,
+        Modifiers::SHIFT,
+        &mut mode,
+        &mut pending,
+        &mut last_char_find,
+        &mut unnamed_register,
+    );
+    assert!(toggle.handled);
+    assert!(toggle.changed);
+    assert_eq!(buffer.text(), "üNÏ");
+}

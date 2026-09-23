@@ -9,9 +9,9 @@ use super::super::{
 use super::{
     character_action::handle_vim_visual_character_action_key_event,
     character_navigation::handle_vim_visual_character_navigation_key_event,
-    vim_restore_visual_character_pending, vim_set_visual_character_selection,
-    vim_visual_character_clamped_cursor, vim_visual_character_swap_key,
-    vim_visual_character_toggle_key,
+    vim_exit_visual_selection, vim_restore_visual_character_pending,
+    vim_set_visual_character_selection, vim_visual_character_clamped_cursor,
+    vim_visual_character_swap_key, vim_visual_character_toggle_key,
 };
 
 pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_key_event(
@@ -33,12 +33,22 @@ pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_key_event(
     let cursor = vim_visual_character_clamped_cursor(buffer, cursor);
     if vim_escape_key(key, modifiers) || vim_visual_character_toggle_key(key, modifiers) {
         *pending = None;
-        buffer.set_single_cursor(cursor);
+        vim_exit_visual_selection(buffer, anchor, cursor);
         return VimKeyResult::handled(suppress_text);
     }
     if modifiers.command || modifiers.alt || modifiers.ctrl {
         vim_restore_visual_character_pending(pending, anchor, cursor, count);
         return VimKeyResult::ignored();
+    }
+
+    if key == Key::V && modifiers.shift && !modifiers.command && !modifiers.alt {
+        super::vim_set_visual_line_selection(buffer, anchor, cursor);
+        *pending = Some(EditorVimPendingKey::VisualLine {
+            anchor,
+            cursor,
+            count: None,
+        });
+        return VimKeyResult::handled(suppress_text);
     }
     if count.is_none()
         && let Some(digit) = vim_count_digit(key, modifiers, false)
@@ -112,6 +122,7 @@ pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_key_event(
         last_change,
         anchor,
         cursor,
+        count,
         indent_unit,
         suppress_text,
     ) {

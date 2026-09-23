@@ -1,10 +1,10 @@
+use crate::lsp_client::pending::PendingLspRequests;
 use crate::lsp_client::{
     commands::LspClientCommand,
     pending::{PendingLspRequest, lsp_request_target_is_valid, register_pending_request},
     request_dispatch::write_request_message,
 };
 use kuroya_core::LspWireMessage;
-use std::collections::HashMap;
 use tokio::process::ChildStdin;
 
 use super::super::reserve_request_id;
@@ -13,7 +13,7 @@ pub(super) async fn handle_call_hierarchy_request_command(
     command: LspClientCommand,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     match command {
         LspClientCommand::PrepareCallHierarchy {

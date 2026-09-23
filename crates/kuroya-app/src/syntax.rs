@@ -3,7 +3,10 @@ use crate::{
         CHECKPOINT_INTERVAL, HighlightCache, HighlightCacheKey, MAX_HIGHLIGHT_CACHES,
         MAX_VISIBLE_LAYOUT_ROWS_PER_RANGE,
     },
-    syntax_layout::{advance_highlight_state, highlighted_job, normalize_layout_inputs, plain_job},
+    syntax_layout::{
+        SyntaxThemeColors, advance_highlight_state, highlighted_job, normalize_layout_inputs,
+        plain_job,
+    },
 };
 use anyhow::Context;
 use egui::{Color32, text::LayoutJob};
@@ -148,6 +151,7 @@ impl SyntaxHighlighter {
         }
 
         let (font_size, tab_width) = normalize_layout_inputs(font_size, tab_width);
+        let theme_colors = SyntaxThemeColors::from_text_color(text_color);
         let syntax_extension = syntax_extension_for_buffer(buffer);
         let key = HighlightCacheKey::for_buffer_with_extension(
             buffer,
@@ -155,6 +159,7 @@ impl SyntaxHighlighter {
             tab_width,
             syntax_extension.as_ref(),
             line_char_limit,
+            text_color,
         );
 
         let end = rows.end.min(buffer.len_lines());
@@ -233,6 +238,7 @@ impl SyntaxHighlighter {
                             &highlighter,
                             font_size,
                             tab_width,
+                            theme_colors,
                         ))
                     }
                 }
@@ -480,11 +486,11 @@ mod hardening_tests {
         let mut highlighter = SyntaxHighlighter::new();
 
         highlighter.layout_visible(&first, 13.0, 4, 0..1, true, egui::Color32::WHITE, -1);
-        let first_key = HighlightCacheKey::for_buffer(&first, 13.0, 4);
+        let first_key = HighlightCacheKey::for_buffer(&first, 13.0, 4, egui::Color32::WHITE);
         assert!(highlighter.caches.contains_key(&first_key));
 
         highlighter.layout_visible(&second, 13.0, 4, 0..2, true, egui::Color32::WHITE, -1);
-        let second_key = HighlightCacheKey::for_buffer(&second, 13.0, 4);
+        let second_key = HighlightCacheKey::for_buffer(&second, 13.0, 4, egui::Color32::WHITE);
 
         assert_ne!(first_key, second_key);
         assert!(!highlighter.caches.contains_key(&first_key));

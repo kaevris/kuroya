@@ -1461,6 +1461,7 @@ fn pane_with_sessions(sessions: Vec<TerminalSession>, size: PtySize) -> Terminal
         ignore_bracketed_paste_mode: DEFAULT_TERMINAL_IGNORE_BRACKETED_PASTE_MODE,
         multi_line_paste_warning: TerminalMultiLinePasteWarning::Auto,
         pending_multiline_paste: None,
+        paste_notice: None,
         word_separators: DEFAULT_TERMINAL_WORD_SEPARATORS.to_owned(),
         mouse_wheel_scroll_sensitivity: DEFAULT_TERMINAL_MOUSE_WHEEL_SCROLL_SENSITIVITY,
         fast_scroll_sensitivity: DEFAULT_TERMINAL_FAST_SCROLL_SENSITIVITY,

@@ -60,6 +60,9 @@ impl KuroyaApp {
         let mut window_open = self.goto_line_open;
 
         egui::Window::new("Go to Line")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 150.0,
+            ))
             .open(&mut window_open)
             .collapsible(false)
             .resizable(false)

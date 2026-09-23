@@ -2,8 +2,8 @@ use eframe::egui::{Key, Modifiers};
 
 use super::super::super::{
     EditorVimPendingKey, no_text_modifiers, vim_case_conversion_repeated_operator_key,
-    vim_command_input_control_edit, vim_mark_name_for_key, vim_named_register_for_key,
-    vim_replacement_key_char, vim_search_input_control_edit,
+    vim_command_input_control_edit, vim_jump_mark_name_for_key, vim_mark_name_for_key,
+    vim_named_register_for_key, vim_replacement_key_char, vim_search_input_control_edit,
 };
 use super::super::{
     vim_operator_go_motion_for_key, vim_operator_motion_for_key, vim_text_object_kind_for_key,
@@ -74,11 +74,11 @@ pub(in crate::editor_vim_key_events) fn vim_pending_key_accepts(
     if matches!(pending, Some(EditorVimPendingKey::OperatorGoMotion { .. })) {
         return vim_operator_go_motion_for_key(key, modifiers).is_some();
     }
-    if matches!(
-        pending,
-        Some(EditorVimPendingKey::JumpMark { .. } | EditorVimPendingKey::SetMark)
-    ) {
+    if matches!(pending, Some(EditorVimPendingKey::SetMark)) {
         return vim_mark_name_for_key(key, modifiers).is_some();
+    }
+    if matches!(pending, Some(EditorVimPendingKey::JumpMark { .. })) {
+        return vim_jump_mark_name_for_key(key, modifiers).is_some();
     }
     if let Some(
         EditorVimPendingKey::ConvertCaseOperator { conversion, .. }

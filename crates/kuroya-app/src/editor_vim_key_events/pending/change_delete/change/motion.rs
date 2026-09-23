@@ -30,7 +30,7 @@ pub(super) fn handle_vim_change_line_motion_key_event(
     ) {
         return Some(result);
     }
-    let motion = vim_operator_motion_for_key(key, modifiers)?;
+    let motion = vim_change_motion_for_key(key, modifiers)?;
     Some(apply_change_operator_motion(
         buffer,
         mode,
@@ -68,7 +68,7 @@ pub(super) fn handle_vim_change_line_into_register_motion_key_event(
     ) {
         return Some(result);
     }
-    let motion = vim_operator_motion_for_key(key, modifiers)?;
+    let motion = vim_change_motion_for_key(key, modifiers)?;
     Some(apply_change_operator_motion_into_register(
         buffer,
         mode,
@@ -107,7 +107,7 @@ pub(super) fn handle_vim_change_motion_count_key_event(
     ) {
         return Some(result);
     }
-    let motion = vim_operator_motion_for_key(key, modifiers)?;
+    let motion = vim_change_motion_for_key(key, modifiers)?;
     Some(apply_change_operator_motion(
         buffer,
         mode,
@@ -146,7 +146,7 @@ pub(super) fn handle_vim_change_motion_count_into_register_key_event(
     ) {
         return Some(result);
     }
-    let motion = vim_operator_motion_for_key(key, modifiers)?;
+    let motion = vim_change_motion_for_key(key, modifiers)?;
     Some(apply_change_operator_motion_into_register(
         buffer,
         mode,
@@ -160,6 +160,14 @@ pub(super) fn handle_vim_change_motion_count_into_register_key_event(
     ))
 }
 
+fn vim_change_motion_for_key(key: Key, modifiers: Modifiers) -> Option<EditorVimOperatorMotion> {
+    let motion = vim_operator_motion_for_key(key, modifiers)?;
+    Some(match motion {
+        EditorVimOperatorMotion::WordForward => EditorVimOperatorMotion::WordForwardChange,
+        other => other,
+    })
+}
+
 fn apply_change_operator_motion(
     buffer: &mut TextBuffer,
     mode: &mut EditorVimMode,
@@ -171,7 +179,7 @@ fn apply_change_operator_motion(
     suppress_text: Option<char>,
 ) -> VimKeyResult {
     let count = vim_combined_count(operator_count, motion_count);
-    let changed = vim_apply_operator_motion(
+    let changed = vim_apply_change_operator_motion(
         buffer,
         operator_count,
         motion_count,
@@ -200,7 +208,7 @@ fn apply_change_operator_motion_into_register(
     suppress_text: Option<char>,
 ) -> VimKeyResult {
     let count = vim_combined_count(operator_count, motion_count);
-    let changed = vim_apply_operator_motion_into_named_register(
+    let changed = vim_apply_change_operator_motion_into_named_register(
         buffer,
         operator_count,
         motion_count,

@@ -18,6 +18,18 @@ pub(super) fn vim_apply_edit_repeat_action(
             buffer.move_right();
             ApplyLastActionOutcome::normal(false)
         }
+        EditorVimRepeatAction::Substitute {
+            query,
+            replacement,
+            global,
+        } => ApplyLastActionOutcome::normal(
+            super::super::super::command_input::vim_apply_substitute_repeat(
+                buffer,
+                &query,
+                &replacement,
+                global,
+            ),
+        ),
         EditorVimRepeatAction::IndentLines => {
             ApplyLastActionOutcome::normal(vim_indent_lines(buffer, count, indent_unit))
         }

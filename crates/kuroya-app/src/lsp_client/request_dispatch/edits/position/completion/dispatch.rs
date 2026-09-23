@@ -1,9 +1,10 @@
 use super::super::super::super::reserve_request_id;
 use super::pending::{register_completion_item_resolve_request, register_completion_request};
+use crate::lsp_client::pending::PendingLspRequests;
 use crate::{
     lsp_client::{
         pending::{
-            MAX_LSP_OUTBOUND_JSON_PAYLOAD_BYTES, PendingLspRequest, lsp_json_payload_is_bounded,
+            MAX_LSP_OUTBOUND_JSON_PAYLOAD_BYTES, lsp_json_payload_is_bounded,
             lsp_request_target_is_valid,
         },
         request_dispatch::write_request_message,
@@ -11,7 +12,7 @@ use crate::{
     lsp_completion_resolve::CompletionResolveIntent,
 };
 use kuroya_core::{BufferId, LspCompletionItem, LspWireMessage};
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 use tokio::process::ChildStdin;
 
 pub(super) async fn dispatch_completion(
@@ -22,7 +23,7 @@ pub(super) async fn dispatch_completion(
     character: usize,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     if !lsp_request_target_is_valid(id, &path) {
         return true;
@@ -52,7 +53,7 @@ pub(super) async fn dispatch_completion_item_resolve(
     intent: CompletionResolveIntent,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     if !lsp_request_target_is_valid(id, &path) {
         return true;
@@ -79,7 +80,7 @@ pub(super) async fn dispatch_completion_item_resolve(
 
 fn reserve_completion_item_resolve_message(
     next_request_id: &mut u64,
-    pending_requests: &HashMap<u64, PendingLspRequest>,
+    pending_requests: &PendingLspRequests,
     item: &LspCompletionItem,
 ) -> Option<(u64, serde_json::Value)> {
     let resolve_payload = item.resolve_payload.as_ref()?;
@@ -103,10 +104,11 @@ fn reserve_completion_item_resolve_message(
 #[cfg(test)]
 mod tests {
     use super::reserve_completion_item_resolve_message;
+    use crate::lsp_client::pending::PendingLspRequests;
     use crate::lsp_client::pending::{MAX_LSP_OUTBOUND_JSON_PAYLOAD_BYTES, PendingLspRequest};
     use kuroya_core::LspCompletionItem;
     use serde_json::json;
-    use std::{collections::HashMap, path::PathBuf, sync::Arc};
+    use std::{path::PathBuf, sync::Arc};
 
     fn hover(version: u64) -> PendingLspRequest {
         PendingLspRequest::Hover {
@@ -121,7 +123,7 @@ mod tests {
     #[test]
     fn completion_item_resolve_message_does_not_reserve_without_payload() {
         let mut next_request_id = 9;
-        let pending_requests = HashMap::new();
+        let pending_requests = PendingLspRequests::default();
         let item = completion_item(None);
 
         let message =
@@ -134,7 +136,7 @@ mod tests {
     #[test]
     fn completion_item_resolve_message_reserves_after_payload_exists() {
         let mut next_request_id = 9;
-        let pending_requests = HashMap::new();
+        let pending_requests = PendingLspRequests::default();
         let item = completion_item(Some(Arc::new(json!({
             "label": "HashMap",
             "data": { "id": 7 }
@@ -154,7 +156,7 @@ mod tests {
     #[test]
     fn completion_item_resolve_message_skips_active_pending_id() {
         let mut next_request_id = 9;
-        let pending_requests = HashMap::from([(9, hover(1))]);
+        let pending_requests = PendingLspRequests::from([(9, hover(1))]);
         let item = completion_item(Some(Arc::new(json!({
             "label": "HashMap",
             "data": { "id": 7 }
@@ -172,7 +174,7 @@ mod tests {
     #[test]
     fn completion_item_resolve_message_does_not_reserve_oversized_payload() {
         let mut next_request_id = 9;
-        let pending_requests = HashMap::new();
+        let pending_requests = PendingLspRequests::default();
         let item = completion_item(Some(Arc::new(json!({
             "data": "x".repeat(MAX_LSP_OUTBOUND_JSON_PAYLOAD_BYTES)
         }))));

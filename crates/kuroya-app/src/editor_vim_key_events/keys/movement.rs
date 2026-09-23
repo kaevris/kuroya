@@ -3,13 +3,17 @@ use kuroya_core::TextBuffer;
 use std::ops::Range;
 
 use super::super::VIM_MAX_COUNT;
+use super::super::motion::vim_line_first_non_whitespace_char;
+use super::super::state::vim_set_previous_context_mark;
 
 pub(in crate::editor_vim_key_events) fn vim_go_to_line(
     buffer: &mut TextBuffer,
     line_one_based: usize,
 ) {
+    vim_set_previous_context_mark(buffer);
+
     let line = line_one_based.saturating_sub(1);
-    let cursor = buffer.line_column_to_char(line, 0);
+    let cursor = vim_line_first_non_whitespace_char(buffer, line);
     buffer.set_single_cursor(cursor);
 }
 

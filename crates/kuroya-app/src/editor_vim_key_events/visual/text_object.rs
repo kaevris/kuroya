@@ -5,7 +5,10 @@ use super::super::{
     EditorVimPendingKey, EditorVimTextObjectScope, VimKeyResult, vim_escape_key,
     vim_text_object_kind_for_key, vim_text_object_range,
 };
-use super::{vim_set_visual_character_selection, vim_visual_character_clamped_cursor};
+use super::{
+    vim_exit_visual_selection, vim_set_visual_character_selection,
+    vim_visual_character_clamped_cursor,
+};
 
 pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_text_object_key_event(
     buffer: &mut TextBuffer,
@@ -22,7 +25,7 @@ pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_text_object_
     let cursor = vim_visual_character_clamped_cursor(buffer, cursor);
     if vim_escape_key(key, modifiers) {
         *pending = None;
-        buffer.set_single_cursor(cursor);
+        vim_exit_visual_selection(buffer, anchor, cursor);
         return VimKeyResult::handled(suppress_text);
     }
     if modifiers.command || modifiers.alt || modifiers.ctrl {

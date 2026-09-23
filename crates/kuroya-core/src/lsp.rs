@@ -12,6 +12,7 @@ use std::{
 
 mod completion_signature;
 mod diagnostics;
+mod document_sync;
 mod snippet;
 mod symbols;
 mod text;
@@ -34,6 +35,10 @@ pub use completion_signature::{
 };
 pub use diagnostics::{
     LspDiagnostic, PublishDiagnosticsParams, diagnostics_from_lsp, parse_publish_diagnostics,
+};
+pub use document_sync::{
+    ContentChange, TextDocumentSyncKindSetting, parse_text_document_sync_kind,
+    text_document_content_change_event,
 };
 
 pub use symbols::{
@@ -77,6 +82,7 @@ const MAX_LSP_DIAGNOSTICS_PER_FILE: usize = 5_000;
 const MAX_LSP_DIAGNOSTIC_SOURCE_CHARS: usize = 128;
 const MAX_LSP_DIAGNOSTIC_MESSAGE_CHARS: usize = 2_000;
 const MAX_LSP_DOCUMENT_HIGHLIGHTS: usize = 500;
+const MAX_LSP_PREPARE_RENAME_PLACEHOLDER_CHARS: usize = 256;
 const MAX_LSP_INLAY_HINTS: usize = 500;
 const MAX_LSP_INLAY_HINT_LABEL_PARTS: usize = 512;
 const MAX_LSP_INLAY_HINT_LABEL_CHARS: usize = 10_000;
@@ -166,6 +172,13 @@ pub struct LspServerConfig {
     pub extensions: Vec<String>,
     #[serde(default)]
     pub root_markers: Vec<String>,
+    /// Entries missing from the settings file (older schemas) stay enabled.
+    #[serde(default = "lsp_server_enabled_default")]
+    pub enabled: bool,
+}
+
+fn lsp_server_enabled_default() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,6 +232,22 @@ impl From<u64> for LspRequestId {
     fn from(id: u64) -> Self {
         Self::Number(id)
     }
+}
+
+/// One entry of a `workspace/didChangeWatchedFiles` notification.
+///
+/// `kind` uses the LSP `FileChangeType` numbering: 1 = Created,
+/// 2 = Changed, 3 = Deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchedFileChange {
+    pub uri: String,
+    pub kind: u8,
+}
+
+impl WatchedFileChange {
+    pub const CREATED: u8 = 1;
+    pub const CHANGED: u8 = 2;
+    pub const DELETED: u8 = 3;
 }
 
 impl LspWireMessage {
@@ -328,6 +357,10 @@ impl LspWireMessage {
                         "references": {
                             "dynamicRegistration": false
                         },
+                        "rename": {
+                            "dynamicRegistration": false,
+                            "prepareSupport": true
+                        },
                         "codeAction": {
                             "dynamicRegistration": false,
                             "dataSupport": true,
@@ -401,6 +434,18 @@ impl LspWireMessage {
                 "textDocument": {
                     "uri": path_to_file_uri(path)
                 }
+            }),
+        }
+    }
+
+    pub fn did_change_watched_files(changes: &[WatchedFileChange]) -> Self {
+        Self::Notification {
+            method: "workspace/didChangeWatchedFiles".to_owned(),
+            params: json!({
+                "changes": changes.iter().map(|change| json!({
+                    "uri": change.uri,
+                    "type": change.kind
+                })).collect::<Vec<_>>()
             }),
         }
     }
@@ -500,6 +545,14 @@ impl LspWireMessage {
             id,
             method: "textDocument/references".to_owned(),
             params,
+        }
+    }
+
+    pub fn prepare_rename(id: u64, path: &Path, line: usize, character: usize) -> Self {
+        Self::Request {
+            id,
+            method: "textDocument/prepareRename".to_owned(),
+            params: text_document_position_params(path, line, character),
         }
     }
 
@@ -752,6 +805,25 @@ impl LspWireMessage {
         }
     }
 
+    /// Success reply for `client/registerCapability`. The empty
+    /// `capabilities` result is spec-valid; it only means the client accepted
+    /// the registration without extra server-side processing data.
+    pub fn register_capability_response(id: impl Into<LspRequestId>) -> Self {
+        Self::Response {
+            id: id.into(),
+            result: json!({ "capabilities": {} }),
+        }
+    }
+
+    /// Success reply for `client/unregisterCapability`; same shape as the
+    /// registration reply.
+    pub fn unregister_capability_response(id: impl Into<LspRequestId>) -> Self {
+        Self::Response {
+            id: id.into(),
+            result: json!({ "capabilities": {} }),
+        }
+    }
+
     pub fn apply_workspace_edit_response(
         id: impl Into<LspRequestId>,
         applied: bool,
@@ -809,6 +881,18 @@ pub struct LspDefinition {
     pub path: PathBuf,
     pub line: usize,
     pub column: usize,
+}
+
+/// Valid `textDocument/prepareRename` result: the one-based range the server
+/// is willing to rename plus the optional placeholder the editor should
+/// prefill. Coordinates follow the parsed-range convention (one-based).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspPrepareRename {
+    pub start_line: usize,
+    pub start_column: usize,
+    pub end_line: usize,
+    pub end_column: usize,
+    pub placeholder: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -951,8 +1035,20 @@ pub struct LspPosition {
     pub character: usize,
 }
 
+/// Languages whose built-in servers start enabled. Every other built-in
+/// ships disabled; users can switch servers on in the LSP settings.
+const DEFAULT_ENABLED_LANGUAGES: [&str; 7] = [
+    "rust",
+    "python",
+    "typescript",
+    "javascript",
+    "go",
+    "c",
+    "cpp",
+];
+
 pub fn default_server_configs() -> Vec<LspServerConfig> {
-    vec![
+    let mut servers = vec![
         lsp_server_config(
             "rust",
             "rust-analyzer",
@@ -1159,7 +1255,11 @@ pub fn default_server_configs() -> Vec<LspServerConfig> {
         lsp_server_config("powershell", "powershell-es", &["-Stdio"], &[".git"]),
         lsp_server_config("shellscript", "bash-language-server", &["start"], &[".git"]),
         lsp_server_config("sql", "sqls", &[], &["sqls.yml", ".git"]),
-    ]
+    ];
+    for server in &mut servers {
+        server.enabled = DEFAULT_ENABLED_LANGUAGES.contains(&server.language.as_str());
+    }
+    servers
 }
 
 pub fn server_config_for_language(
@@ -1181,6 +1281,7 @@ fn lsp_server_config(
         command: command.to_owned(),
         args: args.iter().map(|arg| (*arg).to_owned()).collect(),
         extensions: Vec::new(),
+        enabled: true,
         root_markers: root_markers
             .iter()
             .map(|marker| (*marker).to_owned())
@@ -1372,6 +1473,39 @@ pub fn parse_definition_response(value: &Value) -> Option<LspDefinition> {
         path,
         line: start_line,
         column: start_column,
+    })
+}
+
+/// Parses a `textDocument/prepareRename` response. A null result means the
+/// server cannot rename the symbol at the requested position. The spec allows
+/// three success shapes: a bare `Range`, a `{ range, placeholder? }` object,
+/// and the deprecated `{ start, end }` object; all parse to the same result.
+/// Ranges must be well-formed and ordered (start <= end) like every other
+/// parsed LSP range.
+pub fn parse_prepare_rename_response(value: &Value) -> Option<LspPrepareRename> {
+    let result = value.get("result")?;
+    if result.is_null() {
+        return None;
+    }
+
+    let range = if result.get("start").is_some() || result.get("end").is_some() {
+        result
+    } else {
+        result.get("range")?
+    };
+    let (start_line, start_column, end_line, end_column) = parse_lsp_range(range)?;
+    let placeholder = result
+        .get("placeholder")
+        .and_then(Value::as_str)
+        .and_then(|placeholder| {
+            bounded_lsp_text(placeholder, MAX_LSP_PREPARE_RENAME_PLACEHOLDER_CHARS)
+        });
+    Some(LspPrepareRename {
+        start_line,
+        start_column,
+        end_line,
+        end_column,
+        placeholder,
     })
 }
 

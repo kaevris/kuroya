@@ -127,6 +127,9 @@ impl KuroyaApp {
         let mut cancel = false;
 
         egui::Window::new("No Staged Changes")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 24.0,
+            ))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -236,6 +239,9 @@ impl KuroyaApp {
         let mut cancel = false;
 
         egui::Window::new("Confirm Empty Commit")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 24.0,
+            ))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -346,6 +352,9 @@ impl KuroyaApp {
         let mut cancel = false;
 
         egui::Window::new("Protected Branch")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 24.0,
+            ))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -545,6 +554,9 @@ impl KuroyaApp {
         let mut cancel = false;
 
         egui::Window::new("Unsaved Changes Before Commit")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 24.0,
+            ))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -713,6 +725,9 @@ impl KuroyaApp {
         let mut cancel = false;
 
         egui::Window::new("Unsaved Changes Before Stash")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 24.0,
+            ))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -795,6 +810,9 @@ fn render_source_control_saving_prompt(
     let mut cancel = false;
 
     egui::Window::new(window_title)
+        .max_size(crate::layout::popup_window_max_size_with_top_margin(
+            ctx, 24.0,
+        ))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

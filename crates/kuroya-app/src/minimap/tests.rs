@@ -1,12 +1,14 @@
 use super::{
     MAX_MINIMAP_LINE_LENGTH_CACHES, MAX_MINIMAP_LINE_SAMPLES, MinimapLineLengthCache,
     MinimapMarkerLines, MinimapSectionHeaderCache, minimap_background_color,
-    minimap_content_line_span, minimap_cursor_line_color, minimap_default_line_color,
-    minimap_find_match_line_color, minimap_first_visible_line, minimap_line_change_for_sample,
-    minimap_line_len, minimap_line_width, minimap_marker_line_bounds, minimap_render_size,
-    minimap_sample_count, minimap_section_header_char_advance, minimap_section_header_display_text,
+    minimap_background_fill, minimap_content_line_span, minimap_cursor_line_color,
+    minimap_default_line_color, minimap_find_match_line_color, minimap_first_visible_line,
+    minimap_jump_line_from_y, minimap_line_change_for_sample, minimap_line_len, minimap_line_width,
+    minimap_marker_line_bounds, minimap_render_size, minimap_row_count, minimap_sample_count,
+    minimap_section_header_char_advance, minimap_section_header_display_text,
     minimap_section_header_for_sample, minimap_section_header_scan_allowed, minimap_slider_color,
-    minimap_slider_visible, minimap_stroke_width, minimap_visible_line_count,
+    minimap_slider_visible, minimap_stroke_width, minimap_viewport_rect,
+    minimap_visible_line_count,
 };
 use crate::large_file_mode::{LARGE_FILE_MODE_MAX_BYTES, LARGE_FILE_MODE_MAX_LINES};
 use egui::{Color32, Rect, pos2, vec2};
@@ -14,6 +16,8 @@ use kuroya_core::{
     EditorMinimapShowSlider, GitLineChangeKind, MAX_EDITOR_MINIMAP_MAX_COLUMN, TextBuffer,
 };
 use std::collections::{BTreeMap, HashSet};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[test]
 fn minimap_slider_visibility_follows_setting_and_interaction() {
@@ -48,7 +52,10 @@ fn minimap_chrome_colors_follow_theme_visuals() {
     visuals.warn_fg_color = Color32::from_rgb(161, 104, 24);
     visuals.widgets.hovered.bg_fill = Color32::from_rgb(218, 225, 233);
 
-    assert_eq!(minimap_background_color(&visuals), visuals.code_bg_color);
+    assert_eq!(
+        minimap_background_color(&visuals, false),
+        visuals.code_bg_color
+    );
     assert_eq!(
         minimap_cursor_line_color(&visuals),
         visuals.widgets.active.bg_fill
@@ -64,6 +71,26 @@ fn minimap_chrome_colors_follow_theme_visuals() {
     assert_eq!(
         minimap_slider_color(&visuals, true, false),
         Color32::from_rgba_unmultiplied(218, 225, 233, 180)
+    );
+}
+
+#[test]
+fn minimap_background_fill_clears_base_slab_over_background_images() {
+    let bg = Color32::from_rgb(24, 26, 31);
+
+    assert_eq!(minimap_background_fill(bg, false), bg);
+    assert_eq!(minimap_background_fill(bg, true), Color32::TRANSPARENT);
+    assert_eq!(
+        minimap_background_fill(Color32::TRANSPARENT, true),
+        Color32::TRANSPARENT
+    );
+
+    let mut visuals = egui::Visuals::dark();
+    visuals.code_bg_color = bg;
+    assert_eq!(minimap_background_color(&visuals, false), bg);
+    assert_eq!(
+        minimap_background_color(&visuals, true),
+        Color32::TRANSPARENT
     );
 }
 
@@ -197,6 +224,52 @@ fn minimap_first_visible_line_bounds_extreme_offsets_before_integer_cast() {
         minimap_first_visible_line(f32::MAX, f32::MIN_POSITIVE, usize::MAX),
         usize::MAX - 1
     );
+}
+
+#[test]
+fn minimap_row_count_prefers_fold_filtered_rows_and_clamps_to_buffer() {
+    let indices = vec![0usize, 1, 5, 6, 9];
+    assert_eq!(minimap_row_count(&indices, 100, 10), 5);
+    assert_eq!(minimap_row_count(&[], 7, 10), 7);
+    assert_eq!(minimap_row_count(&[], 0, 10), 1);
+    assert_eq!(minimap_row_count(&[], usize::MAX, 10), 10);
+}
+
+#[test]
+fn minimap_thumb_math_uses_fold_filtered_row_space() {
+    // 1000 buffer lines, but folding collapses them to 40 scrollable rows.
+    let row_count = minimap_row_count(&[], 40, 1000);
+    assert_eq!(row_count, 40);
+    let visible_lines = minimap_visible_line_count(200.0, 20.0, row_count);
+    assert_eq!(visible_lines, 10);
+    let first_visible_row = minimap_first_visible_line(200.0, 20.0, row_count);
+    assert_eq!(first_visible_row, 10);
+
+    let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(80.0, 200.0));
+    let viewport = minimap_viewport_rect(rect, first_visible_row, visible_lines, row_count);
+    // Height: 10/40 * 200 = 50 clamps to 44; travel = 156; top ratio = 10/30.
+    assert!((viewport.height() - 44.0).abs() < 0.0001);
+    let expected_top = (10.0f64 / 30.0) * (200.0 - 44.0);
+    assert!((f64::from(viewport.top()) - expected_top).abs() < 0.0001);
+}
+
+#[test]
+fn minimap_click_maps_fold_filtered_row_to_buffer_line() {
+    let visible_line_indices = vec![0usize, 1, 5, 6, 9];
+    let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(80.0, 100.0));
+
+    // Click near the bottom: center row 4 -> target row 3 -> buffer line 6.
+    assert_eq!(
+        minimap_jump_line_from_y(100.0, rect, 10, 5, 2, &visible_line_indices),
+        6
+    );
+    // Click at the top maps to the first visible buffer line.
+    assert_eq!(
+        minimap_jump_line_from_y(0.0, rect, 10, 5, 2, &visible_line_indices),
+        0
+    );
+    // Without folds the fold-filtered row is the buffer line.
+    assert_eq!(minimap_jump_line_from_y(100.0, rect, 10, 5, 2, &[]), 3);
 }
 
 #[test]
@@ -646,9 +719,49 @@ fn minimap_section_header_cache_reuses_matching_buffer_version_and_settings() {
 }
 
 #[test]
-fn minimap_section_header_cache_invalidates_older_buffer_versions() {
+fn minimap_section_header_cache_shares_headers_without_deep_clone() {
+    let buffer = TextBuffer::from_text(1, None, "#region Setup\n".to_owned());
+    let mut cache = MinimapSectionHeaderCache::default();
+
+    let first = cache.headers_for(&buffer, true, false, "");
+    let second = cache.headers_for(&buffer, true, false, "");
+
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(cache.len(), 1);
+    assert_eq!(cache.hits(), 1);
+}
+
+#[test]
+fn minimap_section_header_cache_debounces_version_rescans_within_window() {
     let mut buffer = TextBuffer::from_text(1, None, "#region Setup\n".to_owned());
     let mut cache = MinimapSectionHeaderCache::default();
+
+    let first = cache.headers_for(&buffer, true, false, "");
+    buffer.set_single_cursor(buffer.len_chars());
+    buffer.insert_at_cursor("#region Later\n");
+
+    // Within the rescan debounce window the previous headers are reused
+    // without scanning the new buffer version.
+    let debounced = cache.headers_for(&buffer, true, false, "");
+    assert!(Arc::ptr_eq(&first, &debounced));
+    assert_eq!(cache.len(), 1);
+    assert_eq!(cache.hits(), 0);
+
+    // Once the window elapses the next frame rescans the new version.
+    cache.entries[0].last_rescan = Instant::now() - Duration::from_secs(2);
+    let refreshed = cache.headers_for(&buffer, true, false, "");
+    assert!(!Arc::ptr_eq(&first, &refreshed));
+    assert_eq!(refreshed.get(&2).map(String::as_str), Some("Later"));
+    assert_eq!(cache.len(), 1);
+}
+
+#[test]
+fn minimap_section_header_cache_invalidates_older_buffer_versions() {
+    let mut buffer = TextBuffer::from_text(1, None, "#region Setup\n".to_owned());
+    let mut cache = MinimapSectionHeaderCache {
+        rescan_debounce: Duration::ZERO,
+        ..Default::default()
+    };
 
     let first = cache.headers_for(&buffer, true, false, "");
     buffer.set_single_cursor(buffer.len_chars());

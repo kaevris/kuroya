@@ -497,6 +497,42 @@ fn multicursor_delete_backwards_applies_simultaneously() {
 }
 
 #[test]
+fn multicursor_backspace_at_buffer_start_keeps_other_cursors() {
+    let mut buffer = TextBuffer::from_text(1, None, "abcd".to_owned());
+    buffer.set_cursors([0, 3]);
+
+    assert!(buffer.delete_backward());
+
+    assert_eq!(buffer.text(), "abd");
+    assert_eq!(
+        buffer
+            .cursor_positions()
+            .into_iter()
+            .map(|pos| pos.char_idx)
+            .collect::<Vec<_>>(),
+        vec![0, 2]
+    );
+}
+
+#[test]
+fn multicursor_delete_forward_at_buffer_end_keeps_other_cursors() {
+    let mut buffer = TextBuffer::from_text(1, None, "abcd".to_owned());
+    buffer.set_cursors([1, 4]);
+
+    assert!(buffer.delete_forward());
+
+    assert_eq!(buffer.text(), "acd");
+    assert_eq!(
+        buffer
+            .cursor_positions()
+            .into_iter()
+            .map(|pos| pos.char_idx)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+}
+
+#[test]
 fn undo_restores_adjacent_multicursor_deletes_in_original_order() {
     let mut buffer = TextBuffer::from_text(1, None, "abcd".to_owned());
     buffer.set_cursors([1, 2]);

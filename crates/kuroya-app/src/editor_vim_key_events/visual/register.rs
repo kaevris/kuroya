@@ -6,11 +6,12 @@ use super::super::{
     EditorVimRegister, EditorVimRepeatAction, VimKeyResult, vim_escape_key,
     vim_named_register_for_key, vim_repeatable_change_result,
 };
+use super::character_action::{vim_put_over_visual_character, vim_visual_character_put_key};
 use super::{
-    vim_delete_visual_character_into_named_register, vim_visual_character_change_key,
-    vim_visual_character_clamped_cursor, vim_visual_character_delete_key,
-    vim_visual_character_repeat_count, vim_visual_character_yank_key,
-    vim_yank_visual_character_into_named_register,
+    vim_delete_visual_character_into_named_register, vim_exit_visual_selection,
+    vim_visual_character_change_key, vim_visual_character_clamped_cursor,
+    vim_visual_character_delete_key, vim_visual_character_repeat_count,
+    vim_visual_character_yank_key, vim_yank_visual_character_into_named_register,
 };
 
 pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_register_prefix_key_event(
@@ -27,7 +28,7 @@ pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_register_pre
     let cursor = vim_visual_character_clamped_cursor(buffer, cursor);
     if vim_escape_key(key, modifiers) {
         *pending = None;
-        buffer.set_single_cursor(cursor);
+        vim_exit_visual_selection(buffer, anchor, cursor);
         return VimKeyResult::handled(suppress_text);
     }
     if modifiers.command || modifiers.alt || modifiers.ctrl {
@@ -78,7 +79,7 @@ pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_register_com
     let cursor = vim_visual_character_clamped_cursor(buffer, cursor);
     if vim_escape_key(key, modifiers) {
         *pending = None;
-        buffer.set_single_cursor(cursor);
+        vim_exit_visual_selection(buffer, anchor, cursor);
         return VimKeyResult::handled(suppress_text);
     }
     if modifiers.command || modifiers.alt || modifiers.ctrl {
@@ -98,8 +99,31 @@ pub(in crate::editor_vim_key_events) fn handle_vim_visual_character_register_com
             unnamed_register,
             register,
         );
+        super::vim_record_visual_bounds_marks(buffer, anchor, cursor);
         *pending = None;
         return VimKeyResult::handled(suppress_text);
+    }
+    if vim_visual_character_put_key(key, modifiers) {
+        let repeat = count.unwrap_or(1).clamp(1, super::super::VIM_MAX_COUNT);
+        let source = super::super::state::vim_named_register(register).map(|mut register| {
+            if repeat > 1 {
+                register.text = register.text.repeat(repeat);
+            }
+            register
+        });
+        let changed = vim_put_over_visual_character(
+            buffer,
+            anchor,
+            cursor,
+            source.as_ref(),
+            unnamed_register,
+        );
+        *pending = None;
+        return if changed {
+            VimKeyResult::changed(suppress_text)
+        } else {
+            VimKeyResult::handled(suppress_text)
+        };
     }
     if vim_visual_character_delete_key(key, modifiers) {
         let changed = vim_delete_visual_character_into_named_register(

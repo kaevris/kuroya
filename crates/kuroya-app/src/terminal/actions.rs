@@ -12,7 +12,11 @@ use kuroya_core::{
     clamp_terminal_min_rows, clamp_terminal_minimum_contrast_ratio,
     clamp_terminal_scroll_sensitivity, clamp_terminal_scrollback_rows,
 };
-use std::{cell::Cell, sync::atomic::Ordering};
+use std::{
+    cell::Cell,
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
+};
 
 mod input;
 mod state;
@@ -148,6 +152,21 @@ enum TerminalInputQueueResult {
     Empty,
     Full(String),
     Disconnected,
+}
+
+/// Outcome of sending input to a session, enough to surface paste failures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalInputDelivery {
+    Delivered,
+    Unavailable,
+    Full,
+    Disconnected,
+}
+
+impl TerminalInputDelivery {
+    fn delivered(&self) -> bool {
+        matches!(self, Self::Delivered)
+    }
 }
 
 impl TerminalPane {
@@ -984,6 +1003,7 @@ impl TerminalPane {
             return false;
         };
         self.send_input_to_resolved_action_target(target, input, clear_selection)
+            .delivered()
     }
 
     fn send_input_to_resolved_action_target(
@@ -991,13 +1011,13 @@ impl TerminalPane {
         target: TerminalSessionActionTarget,
         input: String,
         clear_selection: bool,
-    ) -> bool {
+    ) -> TerminalInputDelivery {
         if input.is_empty()
             || !self.sessions.get(target.index).is_some_and(|session| {
                 session.id == target.session_id && session.has_command_target()
             })
         {
-            return false;
+            return TerminalInputDelivery::Unavailable;
         }
         if clear_selection {
             self.clear_terminal_input_selection_state();
@@ -1007,14 +1027,14 @@ impl TerminalPane {
             .get_mut(target.index)
             .filter(|session| session.id == target.session_id && session.has_command_target())
         else {
-            return false;
+            return TerminalInputDelivery::Unavailable;
         };
         match session.send_input(input) {
-            Ok(()) => true,
-            Err(TerminalCommandQueueError::Full) => false,
+            Ok(()) => TerminalInputDelivery::Delivered,
+            Err(TerminalCommandQueueError::Full) => TerminalInputDelivery::Full,
             Err(TerminalCommandQueueError::Disconnected) => {
                 session.mark_stopped();
-                false
+                TerminalInputDelivery::Disconnected
             }
         }
     }
@@ -1043,11 +1063,22 @@ impl TerminalPane {
             return;
         };
         let input = terminal_paste_input(text.into(), bracketed_paste, ignore_bracketed_paste_mode);
-        self.send_input_to_resolved_action_target(target, input, true);
+        match self.send_input_to_resolved_action_target(target, input, true) {
+            TerminalInputDelivery::Delivered | TerminalInputDelivery::Unavailable => {}
+            TerminalInputDelivery::Full => {
+                self.show_paste_notice(super::TERMINAL_PASTE_BUSY_NOTICE);
+            }
+            TerminalInputDelivery::Disconnected => {
+                self.show_paste_notice(super::TERMINAL_PASTE_UNDELIVERED_NOTICE);
+            }
+        }
     }
 
     pub(super) fn paste_text(&mut self, index: usize, text: String) {
         let pending_paste_session_id = self.pending_paste_session_id.take();
+        if text.len() > TERMINAL_INPUT_MAX_BYTES {
+            self.show_paste_notice(super::TERMINAL_PASTE_TRUNCATED_NOTICE);
+        }
         let text = bounded_terminal_input(text, TERMINAL_INPUT_MAX_BYTES);
         if text.is_empty() {
             return;
@@ -1061,6 +1092,7 @@ impl TerminalPane {
             return;
         };
         if !self.activate_session_action_target(target) {
+            self.show_paste_notice(super::TERMINAL_PASTE_UNDELIVERED_NOTICE);
             return;
         }
         let Some(target) = self.resolve_session_action_target(target) else {
@@ -1096,6 +1128,35 @@ impl TerminalPane {
 
     pub(super) fn cancel_pending_multiline_paste(&mut self) {
         self.pending_multiline_paste = None;
+    }
+
+    pub(super) fn show_paste_notice(&mut self, message: impl Into<String>) {
+        self.paste_notice = Some(super::TerminalPasteNotice {
+            message: message.into(),
+            created: Instant::now(),
+        });
+    }
+
+    /// Returns the active notice message and the time left before it expires.
+    pub(super) fn active_paste_notice(&self) -> Option<(&str, Duration)> {
+        self.active_paste_notice_at(Instant::now())
+    }
+
+    fn active_paste_notice_at(&self, now: Instant) -> Option<(&str, Duration)> {
+        let notice = self.paste_notice.as_ref()?;
+        let elapsed = now.checked_duration_since(notice.created)?;
+        let remaining = super::TERMINAL_PASTE_NOTICE_TTL.checked_sub(elapsed)?;
+        Some((notice.message.as_str(), remaining))
+    }
+
+    pub(super) fn expire_paste_notice(&mut self) {
+        self.expire_paste_notice_at(Instant::now());
+    }
+
+    fn expire_paste_notice_at(&mut self, now: Instant) {
+        if self.paste_notice.is_some() && self.active_paste_notice_at(now).is_none() {
+            self.paste_notice = None;
+        }
     }
 
     fn should_warn_for_multiline_paste(
@@ -1524,6 +1585,22 @@ impl super::TerminalSession {
     }
 
     fn queue_input(&mut self, input: String) -> TerminalInputQueueResult {
+        self.queue_input_scrolling_to_bottom(input, true)
+    }
+
+    /// Queues a response the terminal itself synthesized (a cursor-position
+    /// report and similar replies). Unlike user input this must not jump the
+    /// scrollback to the bottom: the user may be reading history while the
+    /// running program probes the cursor.
+    fn queue_synthesized_input(&mut self, input: String) -> TerminalInputQueueResult {
+        self.queue_input_scrolling_to_bottom(input, false)
+    }
+
+    fn queue_input_scrolling_to_bottom(
+        &mut self,
+        input: String,
+        scroll_to_bottom: bool,
+    ) -> TerminalInputQueueResult {
         if !self.has_command_target() {
             return TerminalInputQueueResult::Empty;
         }
@@ -1537,7 +1614,9 @@ impl super::TerminalSession {
         }
         match tx.try_send(TerminalCommand::Input(input)) {
             Ok(()) => {
-                self.parser.screen_mut().set_scrollback(0);
+                if scroll_to_bottom {
+                    self.parser.screen_mut().set_scrollback(0);
+                }
                 TerminalInputQueueResult::Queued
             }
             Err(crossbeam_channel::TrySendError::Full(TerminalCommand::Input(input))) => {
@@ -1561,7 +1640,7 @@ impl super::TerminalSession {
         let mut responses = responses.into_iter();
         let mut retained = Vec::new();
         while let Some(response) = responses.next() {
-            match self.queue_input(response) {
+            match self.queue_synthesized_input(response) {
                 TerminalInputQueueResult::Queued | TerminalInputQueueResult::Empty => {}
                 TerminalInputQueueResult::Disconnected => {
                     self.mark_stopped();

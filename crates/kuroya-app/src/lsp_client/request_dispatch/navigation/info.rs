@@ -1,9 +1,9 @@
+use crate::lsp_client::pending::PendingLspRequests;
 mod definition;
 mod document_highlights;
 mod hover;
 
-use crate::lsp_client::{commands::LspClientCommand, pending::PendingLspRequest};
-use std::collections::HashMap;
+use crate::lsp_client::commands::LspClientCommand;
 use tokio::process::ChildStdin;
 
 enum InfoNavigationRequestKind {
@@ -27,7 +27,7 @@ pub(super) async fn handle_info_navigation_request_command(
     command: LspClientCommand,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     let Some(kind) = info_navigation_request_kind(&command) else {
         return true;

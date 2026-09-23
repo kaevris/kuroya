@@ -1,6 +1,7 @@
 use kuroya_core::TextBuffer;
 use std::ops::Range;
 
+use super::super::state::vim_set_previous_context_mark;
 use super::vim_char_at;
 
 pub(in crate::editor_vim_key_events) fn vim_move_to_matching_bracket(
@@ -9,6 +10,8 @@ pub(in crate::editor_vim_key_events) fn vim_move_to_matching_bracket(
     let Some((_, target)) = vim_matching_bracket_pair(buffer) else {
         return false;
     };
+
+    vim_set_previous_context_mark(buffer);
     buffer.set_single_cursor(target);
     true
 }

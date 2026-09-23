@@ -7,6 +7,15 @@ use super::super::labels::{
 pub(super) fn push_visual_pending_label(label: &mut String, pending: EditorVimPendingKey) -> bool {
     match pending {
         EditorVimPendingKey::VisualCharacter { .. } => label.push('v'),
+        EditorVimPendingKey::VisualLine { count, .. } => {
+            label.push('V');
+            push_optional_count(label, count);
+        }
+        EditorVimPendingKey::VisualLineGo { count, .. } => {
+            label.push('V');
+            push_optional_count(label, count);
+            label.push('g');
+        }
         EditorVimPendingKey::VisualCharacterCount { count, .. } => {
             label.push('v');
             push_count_prefix(label, count);

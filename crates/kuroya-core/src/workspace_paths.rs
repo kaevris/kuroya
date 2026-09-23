@@ -249,7 +249,7 @@ fn components_match_lexically(left: Component<'_>, right: Component<'_>) -> bool
     }
 }
 
-fn path_starts_with_lexically(path: &Path, root: &Path) -> bool {
+pub(crate) fn path_starts_with_lexically(path: &Path, root: &Path) -> bool {
     if path.starts_with(root) {
         return true;
     }

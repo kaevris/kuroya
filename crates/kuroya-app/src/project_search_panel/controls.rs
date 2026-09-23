@@ -4,9 +4,9 @@ use crate::{
         MAX_PROJECT_SEARCH_QUERY_CHARS, MAX_PROJECT_SEARCH_RECENT_QUERIES, ProjectSearchQuery,
         project_search_recent_label,
     },
-    ui_icons::{IconKind, icon_label, icon_text_button},
+    ui_switch::ui_switch_with_label,
 };
-use eframe::egui::{self, RichText, TextEdit};
+use eframe::egui::{self, Align, Layout, TextEdit};
 
 const MAX_PROJECT_SEARCH_GLOB_DRAFT_CHARS: usize = 4096;
 const PROJECT_SEARCH_CONTROL_INPUT_SCAN_MULTIPLIER: usize = 4;
@@ -23,71 +23,72 @@ pub(super) fn render_project_search_controls(
 ) -> ProjectSearchControlState {
     let mut state = ProjectSearchControlState::default();
     let mut controls_changed = false;
-    ui.horizontal(|ui| {
-        icon_label(
-            ui,
-            IconKind::Search,
-            ui.visuals().widgets.inactive.fg_stroke.color,
-            "Project search",
-        );
-        ui.label(RichText::new("Project Search").strong());
-    });
     let response = ui.add(
         TextEdit::singleline(&mut app.project_search_query)
             .hint_text("Search text")
             .desired_width(f32::INFINITY),
     );
+    if app.project_search_focus_query {
+        response.request_focus();
+        app.project_search_focus_query = false;
+    }
     state.input_has_focus |= response.has_focus();
     if response.changed() {
         sanitize_project_search_query_input(&mut app.project_search_query);
         controls_changed = true;
     }
+
     ui.horizontal(|ui| {
-        if ui
-            .checkbox(&mut app.project_search_case_sensitive, "Case")
+        if ui_switch_with_label(ui, &mut app.project_search_case_sensitive, "Case")
             .on_hover_text("Match case")
             .changed()
         {
             controls_changed = true;
         }
-        if ui
-            .checkbox(&mut app.project_search_whole_word, "Word")
+        if ui_switch_with_label(ui, &mut app.project_search_whole_word, "Word")
             .on_hover_text("Match whole word")
             .changed()
         {
             controls_changed = true;
         }
-    });
-    let include_response = ui.add(
-        TextEdit::singleline(&mut app.project_search_include)
-            .hint_text("Include globs, e.g. src/**/*.rs")
-            .desired_width(f32::INFINITY),
-    );
-    state.input_has_focus |= include_response.has_focus();
-    if include_response.changed() {
-        sanitize_project_search_glob_input(&mut app.project_search_include);
-        controls_changed = true;
-    }
-    let exclude_response = ui.add(
-        TextEdit::singleline(&mut app.project_search_exclude)
-            .hint_text("Exclude globs, e.g. target/**,*.snap")
-            .desired_width(f32::INFINITY),
-    );
-    state.input_has_focus |= exclude_response.has_focus();
-    if exclude_response.changed() {
-        sanitize_project_search_glob_input(&mut app.project_search_exclude);
-        controls_changed = true;
-    }
-    ui.horizontal(|ui| {
-        if icon_text_button(ui, IconKind::Search, "Search", None, 112.0).clicked() {
-            state.search_requested = true;
+        if ui_switch_with_label(ui, &mut app.project_search_regex, "Regex")
+            .on_hover_text("Interpret the query as a regular expression")
+            .changed()
+        {
+            controls_changed = true;
         }
-        if render_project_search_recent(app, ui) {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if render_project_search_recent(app, ui) {
+                controls_changed = true;
+            }
+        });
+    });
+
+    ui.columns(2, |columns| {
+        let include_response = columns[0].add(
+            TextEdit::singleline(&mut app.project_search_include)
+                .hint_text("Include files")
+                .desired_width(f32::INFINITY),
+        );
+        let exclude_response = columns[1].add(
+            TextEdit::singleline(&mut app.project_search_exclude)
+                .hint_text("Exclude files")
+                .desired_width(f32::INFINITY),
+        );
+        state.input_has_focus |= include_response.has_focus() || exclude_response.has_focus();
+        if include_response.changed() {
+            sanitize_project_search_glob_input(&mut app.project_search_include);
+            controls_changed = true;
+        }
+        if exclude_response.changed() {
+            sanitize_project_search_glob_input(&mut app.project_search_exclude);
             controls_changed = true;
         }
     });
+
     if controls_changed {
         mark_project_search_controls_changed(app);
+        state.search_requested = true;
     }
     state
 }
@@ -109,7 +110,6 @@ fn render_project_search_recent(app: &mut KuroyaApp, ui: &mut egui::Ui) -> bool 
     let mut selected_recent_index = None;
     egui::ComboBox::from_id_salt("project_search_recent")
         .selected_text("Recent")
-        .width(132.0)
         .show_ui(ui, |ui| {
             for (index, entry) in app
                 .project_search_recent
@@ -139,6 +139,7 @@ fn apply_project_search_query(app: &mut KuroyaApp, entry: ProjectSearchQuery) {
         mut query,
         case_sensitive,
         whole_word,
+        regex,
         mut include,
         mut exclude,
     } = entry;
@@ -149,6 +150,7 @@ fn apply_project_search_query(app: &mut KuroyaApp, entry: ProjectSearchQuery) {
     app.project_search_query = query;
     app.project_search_case_sensitive = case_sensitive;
     app.project_search_whole_word = whole_word;
+    app.project_search_regex = regex;
     app.project_search_include = include;
     app.project_search_exclude = exclude;
 }
@@ -445,6 +447,7 @@ mod tests {
                 ),
                 case_sensitive: true,
                 whole_word: true,
+                regex: true,
                 include: format!(
                     "src/**/*.rs\r\n{}",
                     "x".repeat(MAX_PROJECT_SEARCH_GLOB_DRAFT_CHARS + 32)
@@ -455,6 +458,7 @@ mod tests {
 
         assert!(app.project_search_case_sensitive);
         assert!(app.project_search_whole_word);
+        assert!(app.project_search_regex);
         assert!(!app.project_search_query.chars().any(char::is_control));
         assert!(!app.project_search_query.contains('\u{202e}'));
         assert!(app.project_search_query.chars().count() <= MAX_PROJECT_SEARCH_QUERY_CHARS);

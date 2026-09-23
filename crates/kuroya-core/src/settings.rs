@@ -13,6 +13,10 @@ use crate::{
     },
     keymap::Keymap,
     lsp::{LspServerConfig, default_server_configs},
+    project::{
+        DEFAULT_PROJECT_INDEX_MAX_FILES, MAX_PROJECT_INDEX_MAX_FILES, MIN_PROJECT_INDEX_MAX_FILES,
+        default_project_index_exclude_globs,
+    },
 };
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -48,6 +52,7 @@ pub use git_scm_types::*;
 use io::{
     atomic_write, parse_settings_text_with_known_recovery, quarantine_corrupt_settings,
     read_settings_text_with_limit, settings_read_error_is_not_found,
+    settings_schema_version_newer_than_supported,
 };
 #[cfg(test)]
 use io::{parse_settings_text, settings_schema_version_from_toml};
@@ -130,6 +135,9 @@ pub const MAX_EDITOR_FONT_SIZE: f32 = 72.0;
 pub const DEFAULT_EDITOR_LETTER_SPACING: f32 = 0.0;
 pub const MIN_EDITOR_LETTER_SPACING: f32 = -5.0;
 pub const MAX_EDITOR_LETTER_SPACING: f32 = 20.0;
+pub const DEFAULT_EDITOR_BACKGROUND_IMAGE_DIM: f32 = 0.35;
+pub const MIN_EDITOR_BACKGROUND_IMAGE_DIM: f32 = 0.0;
+pub const MAX_EDITOR_BACKGROUND_IMAGE_DIM: f32 = 1.0;
 pub const DEFAULT_EDITOR_TAB_INDEX: i64 = 0;
 pub const MIN_EDITOR_TAB_INDEX: i64 = -1;
 pub const MAX_EDITOR_TAB_INDEX: i64 = 1_000_000;
@@ -302,7 +310,15 @@ pub const MAX_SCM_GRAPH_PAGE_SIZE: usize = 1_000;
 pub const DEFAULT_WINDOW_ZOOM_LEVEL: f32 = 0.0;
 pub const MIN_WINDOW_ZOOM_LEVEL: f32 = -5.0;
 pub const MAX_WINDOW_ZOOM_LEVEL: f32 = 5.0;
-pub const SETTINGS_SCHEMA_VERSION: u32 = 3;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 5;
+pub const DEFAULT_PROJECT_SEARCH_MAX_FILE_SIZE_MB: u64 = 2;
+pub const MIN_PROJECT_SEARCH_MAX_FILE_SIZE_MB: u64 = 1;
+pub const MAX_PROJECT_SEARCH_MAX_FILE_SIZE_MB: u64 = 256;
+pub const DEFAULT_PROJECT_SEARCH_MAX_RESULTS: usize = 500;
+pub const MIN_PROJECT_SEARCH_MAX_RESULTS: usize = 1;
+pub const MAX_PROJECT_SEARCH_MAX_RESULTS: usize = 50_000;
+pub const MAX_PLUGIN_SETTINGS_DISABLED_IDS: usize = 128;
+pub const MAX_PLUGIN_SETTINGS_DISABLED_ID_CHARS: usize = 128;
 const SETTINGS_FILE_MAX_BYTES: u64 = 512 * 1024;
 const SETTINGS_STRING_MAX_CHARS: usize = 4096;
 const SETTINGS_DISPLAY_TEXT_MAX_CHARS: usize = 512;
@@ -312,6 +328,39 @@ const SETTINGS_MAP_MAX_ITEMS: usize = 256;
 const SETTINGS_MAP_KEY_MAX_CHARS: usize = 256;
 const SETTINGS_MAP_VALUE_MAX_CHARS: usize = 4096;
 const SETTINGS_DISPLAY_TRUNCATION_MARKER: &str = "...";
+
+pub fn default_project_search_exclude_globs() -> Vec<String> {
+    default_project_index_exclude_globs()
+}
+
+pub fn clamp_project_index_max_files(value: usize) -> usize {
+    value.clamp(MIN_PROJECT_INDEX_MAX_FILES, MAX_PROJECT_INDEX_MAX_FILES)
+}
+
+pub fn clamp_project_search_max_file_size_mb(value: u64) -> u64 {
+    value.clamp(
+        MIN_PROJECT_SEARCH_MAX_FILE_SIZE_MB,
+        MAX_PROJECT_SEARCH_MAX_FILE_SIZE_MB,
+    )
+}
+
+pub fn clamp_project_search_max_results(value: usize) -> usize {
+    value.clamp(
+        MIN_PROJECT_SEARCH_MAX_RESULTS,
+        MAX_PROJECT_SEARCH_MAX_RESULTS,
+    )
+}
+
+pub fn clamp_editor_background_image_dim(value: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(
+            MIN_EDITOR_BACKGROUND_IMAGE_DIM,
+            MAX_EDITOR_BACKGROUND_IMAGE_DIM,
+        )
+    } else {
+        DEFAULT_EDITOR_BACKGROUND_IMAGE_DIM
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -559,6 +608,101 @@ pub struct EditorVimKeyOverride {
     pub command: Option<Command>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginSettings {
+    #[serde(default = "default_plugin_settings_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub disabled_ids: Vec<String>,
+}
+
+impl Default for PluginSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_plugin_settings_enabled(),
+            disabled_ids: Vec::new(),
+        }
+    }
+}
+
+impl PluginSettings {
+    pub fn sanitize(&mut self) -> bool {
+        sanitize_settings_string_list(
+            &mut self.disabled_ids,
+            MAX_PLUGIN_SETTINGS_DISABLED_IDS,
+            MAX_PLUGIN_SETTINGS_DISABLED_ID_CHARS,
+            true,
+        )
+    }
+}
+
+fn default_plugin_settings_enabled() -> bool {
+    true
+}
+
+/// Discord Rich Presence settings. Presence is opt-in: nothing connects,
+/// spawns a thread, or touches the Discord IPC socket until the user both
+/// enables it and configures their own application client id. The show flags
+/// omit their field from the activity payload entirely, so hidden content
+/// never reaches Discord.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiscordSettings {
+    pub presence_enabled: bool,
+    pub client_id: String,
+    pub show_details: bool,
+    pub show_workspace: bool,
+    pub show_elapsed: bool,
+}
+
+impl Default for DiscordSettings {
+    fn default() -> Self {
+        Self {
+            presence_enabled: false,
+            client_id: String::new(),
+            show_details: true,
+            show_workspace: true,
+            show_elapsed: true,
+        }
+    }
+}
+
+impl DiscordSettings {
+    pub fn presence_is_configurable(&self) -> bool {
+        self.presence_enabled && !self.client_id.is_empty()
+    }
+
+    pub(super) fn sanitize(&mut self) -> bool {
+        sanitize_settings_plain_string(&mut self.client_id)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EditorBackgroundImageFit {
+    #[default]
+    Cover,
+    Contain,
+    Stretch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditorBackgroundImageScope {
+    #[default]
+    Editor,
+    FullApp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EditorBackgroundImagePosition {
+    Top,
+    #[default]
+    Center,
+    Bottom,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EditorSettings {
@@ -629,6 +773,7 @@ pub struct EditorSettings {
     #[serde(alias = "vim_mode")]
     pub vim_keybindings: bool,
     pub vim: EditorVimSettings,
+    pub discord: DiscordSettings,
     pub quick_suggestions: bool,
     pub quick_suggestions_delay_ms: usize,
     pub suggest_on_trigger_characters: bool,
@@ -810,8 +955,12 @@ pub struct EditorSettings {
     pub status_bar_visible: bool,
     pub devtools_verbose_logging: bool,
     pub devtools_profiling_enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_server_configs")]
     pub lsp_servers: Vec<LspServerConfig>,
+    /// Offers to enable a shipped language server when a file whose server is
+    /// disabled opens. Off by default: no prompts unless asked for.
+    #[serde(default)]
+    pub lsp_suggest_missing_servers: bool,
     pub window_zoom_level: f32,
     pub line_numbers: EditorLineNumbers,
     pub line_decorations_width: EditorLineDecorationsWidth,
@@ -881,6 +1030,27 @@ pub struct EditorSettings {
     pub diff_word_wrap: DiffWordWrap,
     pub diff_only_show_accessible_viewer: bool,
     pub diff_is_in_embedded_editor: bool,
+    pub background_image_enabled: bool,
+    pub background_image_path: Option<String>,
+    pub background_image_scope: EditorBackgroundImageScope,
+    pub background_image_dim: f32,
+    pub background_image_fit: EditorBackgroundImageFit,
+    pub background_image_position: EditorBackgroundImagePosition,
+    pub project_index_max_files: usize,
+    #[serde(
+        default = "default_project_index_exclude_globs",
+        deserialize_with = "deserialize_optional_string_list"
+    )]
+    pub project_index_exclude_globs: Vec<String>,
+    #[serde(default)]
+    pub project_index_include_hidden_dirs: bool,
+    #[serde(
+        default = "default_project_search_exclude_globs",
+        deserialize_with = "deserialize_optional_string_list"
+    )]
+    pub project_search_exclude_globs: Vec<String>,
+    pub project_search_max_file_size_mb: u64,
+    pub project_search_max_results: usize,
     pub git_enabled: bool,
     pub git_add_ai_co_author: GitAddAiCoAuthor,
     pub git_allow_force_push: bool,
@@ -927,7 +1097,6 @@ pub struct EditorSettings {
     pub git_rebase_when_sync: bool,
     pub git_remember_post_commit_command: bool,
     pub git_replace_tags_when_pull: bool,
-    pub git_scan_repositories: Vec<String>,
     pub git_support_cancellation: bool,
     pub git_terminal_authentication: bool,
     pub git_terminal_git_editor: bool,
@@ -1087,28 +1256,110 @@ pub struct EditorSettings {
     pub theme: ThemeSettings,
     pub custom_theme_paths: Vec<String>,
     pub active_custom_theme_path: Option<String>,
+    #[serde(default)]
+    pub plugins: PluginSettings,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EditorSettingsLoad {
     pub settings: EditorSettings,
     pub quarantined_path: Option<PathBuf>,
+    /// Some(schema_version) when the settings file declares a schema_version
+    /// newer than this build supports: the file was written by a newer Kuroya,
+    /// so it is kept on disk untouched and this session runs on defaults.
+    pub future_schema_version: Option<u32>,
 }
 
+impl EditorSettingsLoad {
+    /// Distinct status for a settings file written by a newer build: unlike a
+    /// corrupt file it is never quarantined or rewritten, so the message must
+    /// not call it corrupt.
+    pub fn future_schema_version_status(&self) -> Option<String> {
+        self.future_schema_version.map(|version| {
+            format!(
+                "Settings were written by a newer version of Kuroya (schema {version}); \
+                this build uses them as defaults. Upgrade Kuroya or remove the settings \
+                file to reset."
+            )
+        })
+    }
+}
+
+/// The configured server list is authoritative: settings hold the full list,
+/// including entries that came from the built-in defaults. This only
+/// normalizes; it no longer merges implicit defaults.
 pub fn effective_lsp_server_configs(settings_servers: &[LspServerConfig]) -> Vec<LspServerConfig> {
+    let (servers, _) = normalize_lsp_server_configs(settings_servers.iter().cloned());
+    servers
+}
+
+/// Old (schema <= 3) settings stored only overrides: the first configured
+/// entry for a language replaced the built-in default in place and extra
+/// entries for the same language were appended. Used by the schema 4
+/// migration to materialize defaults into the settings list.
+pub(crate) fn merge_lsp_server_configs_with_defaults(
+    settings_servers: &[LspServerConfig],
+) -> Vec<LspServerConfig> {
     let mut servers = default_server_configs();
     let (settings_servers, _) = normalize_lsp_server_configs(settings_servers.iter().cloned());
+    let mut replaced_defaults: Vec<usize> = Vec::new();
     for server in settings_servers {
-        if let Some(index) = servers
+        let index = servers
             .iter()
-            .position(|existing| existing.language == server.language)
-        {
-            servers[index] = server;
-        } else {
-            servers.push(server);
+            .enumerate()
+            .find(|(index, existing)| {
+                existing.language == server.language && !replaced_defaults.contains(index)
+            })
+            .map(|(index, _)| index);
+        match index {
+            Some(index) => {
+                servers[index] = server;
+                replaced_defaults.push(index);
+            }
+            None => servers.push(server),
         }
     }
     servers
+}
+
+/// Built-in default server for a language ID, if one exists.
+pub fn default_lsp_server_for_language(language: &str) -> Option<LspServerConfig> {
+    default_server_configs()
+        .into_iter()
+        .find(|server| server.language == language)
+}
+
+/// True when the entry still has the built-in default configuration for its
+/// language. The enabled switch is ignored: turning a server off does not
+/// change its configuration.
+pub fn lsp_server_matches_builtin(server: &LspServerConfig) -> bool {
+    default_lsp_server_for_language(&server.language).is_some_and(|default| {
+        default.command == server.command
+            && default.args == server.args
+            && default.extensions == server.extensions
+            && default.root_markers == server.root_markers
+    })
+}
+
+/// Built-in defaults whose language has no configured entry.
+pub fn missing_builtin_lsp_servers(configured: &[LspServerConfig]) -> Vec<LspServerConfig> {
+    default_server_configs()
+        .into_iter()
+        .filter(|default| {
+            !configured
+                .iter()
+                .any(|server| server.language == default.language)
+        })
+        .collect()
+}
+
+/// Appends built-in defaults that are missing from the list. Returns true
+/// when anything was added.
+pub fn restore_builtin_lsp_servers(servers: &mut Vec<LspServerConfig>) -> bool {
+    let missing = missing_builtin_lsp_servers(servers);
+    let changed = !missing.is_empty();
+    servers.extend(missing);
+    changed
 }
 
 fn sanitize_lsp_server_configs(servers: &mut Vec<LspServerConfig>) -> bool {
@@ -1137,11 +1388,9 @@ fn normalize_lsp_server_configs(
             continue;
         };
         changed |= server != original_server;
-        if let Some(index) = normalized
-            .iter()
-            .position(|existing: &LspServerConfig| existing.language == server.language)
-        {
-            normalized[index] = server;
+        // Multiple servers per language are allowed; only exact duplicates of
+        // an already-normalized entry collapse (last-wins is a no-op there).
+        if normalized.contains(&server) {
             changed = true;
         } else {
             normalized.push(server);

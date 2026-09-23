@@ -557,6 +557,7 @@ mod tests {
             depth: relative_path.components().count().saturating_sub(1),
             relative_path,
             is_dir,
+            ..Default::default()
         }
     }
 

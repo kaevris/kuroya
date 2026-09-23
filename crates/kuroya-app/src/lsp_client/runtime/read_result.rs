@@ -1,10 +1,12 @@
-use super::super::pending::PendingLspRequest;
+use super::super::pending::PendingLspRequests;
 use super::messages::{LspServerMessageOutcome, handle_lsp_server_message};
 use super::status::send_lsp_read_error_status;
+use crate::lsp_client::stderr_log::LspStderrLog;
+use crate::lsp_client::watched_files::LspWatchedFilesState;
 use crate::ui_event_channel::Sender;
 use crate::ui_events::UiEvent;
 use serde_json::Value;
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 use tokio::process::ChildStdin;
 
 pub(super) async fn handle_lsp_read_result(
@@ -12,9 +14,11 @@ pub(super) async fn handle_lsp_read_result(
     language: &str,
     root: &Path,
     generation: u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
     ui_tx: &Sender<UiEvent>,
     writer: &mut ChildStdin,
+    stderr_log: &LspStderrLog,
+    watched_files: &LspWatchedFilesState,
 ) -> bool {
     match message {
         Ok(Some(value)) => {
@@ -27,6 +31,8 @@ pub(super) async fn handle_lsp_read_result(
                     pending_requests,
                     ui_tx,
                     writer,
+                    stderr_log,
+                    watched_files,
                 )
                 .await,
                 LspServerMessageOutcome::Continue
@@ -43,9 +49,12 @@ pub(super) async fn handle_lsp_read_result(
 #[cfg(test)]
 mod tests {
     use super::handle_lsp_read_result;
-    use crate::{lsp_client::pending::PendingLspRequest, ui_event_channel::ui_event_channel};
+    use crate::{
+        lsp_client::pending::PendingLspRequests, lsp_client::stderr_log::LspStderrLog,
+        ui_event_channel::ui_event_channel,
+    };
     use serde_json::json;
-    use std::{collections::HashMap, path::PathBuf, process::Stdio};
+    use std::{path::PathBuf, process::Stdio};
     use tokio::process::{ChildStdin, Command};
 
     #[tokio::test]
@@ -59,7 +68,7 @@ mod tests {
                 "token": "cargo-check"
             }
         });
-        let mut pending_requests: HashMap<u64, PendingLspRequest> = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
         let (ui_tx, ui_rx) = ui_event_channel();
         let mut writer = exited_child_stdin().await;
 
@@ -71,6 +80,8 @@ mod tests {
             &mut pending_requests,
             &ui_tx,
             &mut writer,
+            &LspStderrLog::default(),
+            &crate::lsp_client::watched_files::LspWatchedFilesState::default(),
         )
         .await;
 
@@ -87,7 +98,7 @@ mod tests {
             "method": "workspace/configuration",
             "params": []
         });
-        let mut pending_requests: HashMap<u64, PendingLspRequest> = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
         let (ui_tx, ui_rx) = ui_event_channel();
         let mut writer = exited_child_stdin().await;
 
@@ -99,6 +110,8 @@ mod tests {
             &mut pending_requests,
             &ui_tx,
             &mut writer,
+            &LspStderrLog::default(),
+            &crate::lsp_client::watched_files::LspWatchedFilesState::default(),
         )
         .await;
 

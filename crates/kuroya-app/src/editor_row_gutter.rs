@@ -74,7 +74,11 @@ pub(crate) fn paint_row_gutter(
             row.scm_diff_decorations_gutter_width,
             visible_change_kind,
             row.scm_diff_decorations_gutter_pattern,
-            ui.visuals().code_bg_color,
+            if row.background_image_active {
+                Color32::TRANSPARENT
+            } else {
+                ui.visuals().code_bg_color
+            },
         );
 
         if let Some(severity) = row.diagnostics_by_line.get(&line_number).copied() {
@@ -341,6 +345,9 @@ fn paint_line_change_marker(
     }
 
     let color = line_change_marker_color(kind, fallback_color);
+    if color == Color32::TRANSPARENT {
+        return;
+    }
     if let Some(kind) = kind
         && line_change_marker_uses_pattern(kind, pattern)
     {

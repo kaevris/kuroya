@@ -360,6 +360,37 @@ fn equivalent_root_indexed_event_finishes_in_flight_index() {
 }
 
 #[test]
+fn completed_index_refresh_restarts_active_project_search() {
+    let root = PathBuf::from("workspace");
+    let mut app = app_for_test(root.clone());
+    app.project_search = true;
+    app.project_search_query = "needle".to_owned();
+    app.project_search_result_query = "needle".to_owned();
+    app.project_index_generation = 1;
+    app.project_search_index_generation = 1;
+    app.project_search_result_index_generation = 1;
+    app.workspace_index_next_request_id = 2;
+    app.workspace_index_active_request_id = 2;
+    app.workspace_index_in_flight_request_id = Some(2);
+
+    assert!(crate::ui_event_channel::send_ui_event(
+        &app.tx,
+        UiEvent::Indexed {
+            request_id: 2,
+            root,
+            index: ProjectIndex::default(),
+        }
+    ));
+
+    assert!(app.handle_events() >= 1);
+    assert_eq!(app.workspace_index_in_flight_request_id, None);
+    assert_eq!(app.project_search_index_generation, 2);
+    assert_eq!(app.project_search_result_index_generation, 2);
+    assert_eq!(app.project_search_active_request_id, 1);
+    assert!(app.project_search_results_match_current_query());
+}
+
+#[test]
 fn current_root_stale_indexed_event_drains_queued_refresh_without_applying_result() {
     let root = PathBuf::from("workspace");
     let mut app = app_for_test(root.clone());
@@ -436,6 +467,73 @@ fn current_git_scanned_event_finishes_in_flight_scan() {
     assert_eq!(app.git_scan_in_flight_request_id, None);
     assert!(!app.git_scan_refresh_queued);
     assert_eq!(app.git_scan_active_request_id, 1);
+}
+
+#[test]
+fn current_git_scanned_event_with_scan_error_sets_failed_status() {
+    let root = PathBuf::from("workspace");
+    let mut app = app_for_test(root.clone());
+    app.git_scan_next_request_id = 1;
+    app.git_scan_active_request_id = 1;
+    app.git_scan_in_flight_request_id = Some(1);
+
+    assert!(crate::ui_event_channel::send_ui_event(
+        &app.tx,
+        UiEvent::GitScanned {
+            request_id: 1,
+            root,
+            scan_root: Some(PathBuf::from("workspace")),
+            root_cache_entry: None,
+            git: GitSnapshot::default().with_scan_error("repository unavailable".to_owned()),
+        }
+    ));
+
+    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.status, "Git scan failed: repository unavailable");
+    assert_eq!(app.git_scan_in_flight_request_id, None);
+    assert!(!app.git_scan_refresh_queued);
+}
+
+#[test]
+fn stale_git_scanned_event_with_scan_error_keeps_current_status() {
+    let root = PathBuf::from("workspace");
+    let mut app = app_for_test(root);
+    app.status = "unchanged".to_owned();
+    app.git_scan_next_request_id = 2;
+    app.git_scan_active_request_id = 2;
+    app.git_scan_in_flight_request_id = Some(1);
+
+    assert!(crate::ui_event_channel::send_ui_event(
+        &app.tx,
+        UiEvent::GitScanned {
+            request_id: 1,
+            root: PathBuf::from("old-workspace"),
+            scan_root: Some(PathBuf::from("old-workspace")),
+            root_cache_entry: None,
+            git: GitSnapshot::default().with_scan_error("stale failure".to_owned()),
+        }
+    ));
+
+    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.status, "unchanged");
+}
+
+#[test]
+fn git_scan_failed_status_sanitizes_and_bounds_error_detail() {
+    let status = git_scan_failed_status(&format!(
+        "first line\nsecond line \u{202e}{}",
+        "x".repeat(crate::path_display::DISPLAY_ERROR_LABEL_MAX_CHARS * 2)
+    ));
+
+    assert!(status.starts_with("Git scan failed: first line "));
+    assert!(!status.contains('\n'));
+    assert!(!status.contains('\u{202e}'));
+    assert!(status.contains("..."));
+    assert!(
+        status.chars().count()
+            <= "Git scan failed: ".chars().count()
+                + crate::path_display::DISPLAY_ERROR_LABEL_MAX_CHARS
+    );
 }
 
 #[test]

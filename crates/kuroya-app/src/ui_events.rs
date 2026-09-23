@@ -1,10 +1,16 @@
 use crate::{
+    background_image::LoadedBackgroundImage,
     explorer::{ExplorerEntryKind, ExplorerOperationResult},
+    explorer_tree_panel::ExplorerDirectoryEntries,
+    file_history::LocalHistorySnapshot,
     image_preview::LoadedImagePreview,
     lsp_ui_events::LspUiEvent,
+    persistence::PersistedSession,
     plugin_command_runtime::PluginCommandExecution,
+    quick_open::{QuickOpenRankKey, QuickOpenResult},
     source_control_diff_runtime::{SourceControlDiffOpenOutcome, SourceControlDiffOpenRequest},
     source_control_patch_runtime::{SourceControlPatchCopyOutcome, SourceControlPatchCopyRequest},
+    startup_arguments::StartupTarget,
     startup_tasks::GitScanRootCacheEntry,
     syntax::PluginSyntaxLoad,
     update_checker::{UpdateCheckOutcome, UpdateInstallerReady},
@@ -16,7 +22,12 @@ use kuroya_core::{
     GitLineChangeKind, GitSnapshot, GitStashEntry, LspFoldingRange, PluginDescriptor,
     PluginDiscoveryError, ProjectIndex, SearchProgress, SearchResult, TextBuffer, WorkspaceTask,
 };
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsFontTarget {
@@ -124,6 +135,21 @@ pub(crate) enum UiEvent {
         path: PathBuf,
         error: String,
     },
+    LocalHistoryBrowserLoaded {
+        root: PathBuf,
+        generation: u64,
+        path: PathBuf,
+        snapshots: Vec<LocalHistorySnapshot>,
+    },
+    LocalHistoryBrowserSnapshotLoaded {
+        root: PathBuf,
+        generation: u64,
+        path: PathBuf,
+        snapshot_path: PathBuf,
+        sequence: u128,
+        modified: Option<SystemTime>,
+        result: Result<String, String>,
+    },
     SessionSaved {
         root: PathBuf,
     },
@@ -157,6 +183,30 @@ pub(crate) enum UiEvent {
         root: PathBuf,
         generation: u64,
         target: SettingsFontTarget,
+        error: String,
+    },
+    SettingsBackgroundImagePicked {
+        root: PathBuf,
+        generation: u64,
+        path: String,
+    },
+    SettingsBackgroundImagePickerCanceled {
+        root: PathBuf,
+        generation: u64,
+    },
+    SettingsBackgroundImagePickerFailed {
+        root: PathBuf,
+        generation: u64,
+        error: String,
+    },
+    EditorBackgroundImageLoaded {
+        request_id: u64,
+        path: PathBuf,
+        loaded: LoadedBackgroundImage,
+    },
+    EditorBackgroundImageLoadFailed {
+        request_id: u64,
+        path: PathBuf,
         error: String,
     },
     ExplorerCreatePathPicked {
@@ -197,6 +247,8 @@ pub(crate) enum UiEvent {
         whole_word: bool,
         include_globs: Vec<String>,
         exclude_globs: Vec<String>,
+        max_file_bytes: u64,
+        max_results: usize,
         result: SearchResult,
     },
     SearchProgress {
@@ -208,6 +260,8 @@ pub(crate) enum UiEvent {
         whole_word: bool,
         include_globs: Vec<String>,
         exclude_globs: Vec<String>,
+        max_file_bytes: u64,
+        max_results: usize,
         progress: SearchProgress,
     },
     GitScanned {
@@ -527,12 +581,37 @@ pub(crate) enum UiEvent {
         command_id: String,
         result: Result<PluginCommandExecution, String>,
     },
+    PluginOpenFileRequested {
+        plugin_id: String,
+        path: PathBuf,
+    },
+    /// Staged by `kuroya.buffer_set_text` during a plugin command run and
+    /// sent after the run finishes (on success or failure, whichever the
+    /// plugin produced). The UI thread applies the text to the open buffer
+    /// with full undo support.
+    PluginBufferTextApply {
+        plugin_id: String,
+        path: PathBuf,
+        text: String,
+    },
     DiagnosticsComputed {
         request_id: u64,
         id: BufferId,
         path: PathBuf,
         version: u64,
         diagnostics: Vec<Diagnostic>,
+    },
+    QuickOpenRanked {
+        request_id: u64,
+        key: Arc<QuickOpenRankKey>,
+        results: Vec<QuickOpenResult>,
+    },
+    ExplorerDirectoryLoaded {
+        root: PathBuf,
+        generation: u64,
+        request_token: u64,
+        directory: PathBuf,
+        snapshot: ExplorerDirectoryEntries,
     },
     UpdateCheckFinished(UpdateCheckOutcome),
     UpdateCheckFailed {
@@ -542,6 +621,20 @@ pub(crate) enum UiEvent {
     UpdateDownloadFailed {
         latest_version: String,
         error: String,
+    },
+    /// Delivered once by the startup session-load task spawned in
+    /// `AppStartupContext`/`KuroyaApp::new`. Carries the saved session read
+    /// off-thread (boxed to keep the enum variant small) or the load warning
+    /// when the load failed, plus the startup target that must be handled
+    /// only after the restore, so the deferred path applies state in the
+    /// same order the previous synchronous startup did. `root` is the
+    /// workspace root the load was started for; events for a root the app no
+    /// longer occupies are ignored.
+    StartupSessionLoaded {
+        root: PathBuf,
+        target: Option<StartupTarget>,
+        session: Option<Box<PersistedSession>>,
+        warning: Option<String>,
     },
     Lsp(LspUiEvent),
 }

@@ -17,6 +17,9 @@ const IMAGE_PREVIEW_RETAINED_BYTES_CAP: usize = IMAGE_PREVIEW_MAX_RGBA_BYTES as 
 const IMAGE_PREVIEW_MAX_SIDE: u32 = 16_384;
 const IMAGE_PREVIEW_MARGIN: f32 = 24.0;
 const IMAGE_PREVIEW_METADATA_PADDING: f32 = 10.0;
+pub(crate) const SUPPORTED_RASTER_IMAGE_EXTENSIONS: &[&str] = &[
+    "bmp", "gif", "ico", "jpeg", "jpg", "jfif", "png", "tif", "tiff", "webp",
+];
 
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedImagePreview {
@@ -198,10 +201,9 @@ pub(crate) fn render_image_preview(
 }
 
 fn image_extension_is_supported(extension: &str) -> bool {
-    matches!(
-        extension.to_ascii_lowercase().as_str(),
-        "bmp" | "gif" | "ico" | "jpeg" | "jpg" | "jfif" | "png" | "tif" | "tiff" | "webp"
-    )
+    SUPPORTED_RASTER_IMAGE_EXTENSIONS
+        .iter()
+        .any(|supported| extension.eq_ignore_ascii_case(supported))
 }
 
 fn decode_image_preview(bytes: Vec<u8>) -> Result<LoadedImagePreview, String> {

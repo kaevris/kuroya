@@ -3,6 +3,10 @@ use crate::{
     app_state::KeybindingEscapeCancel,
     commands::{command_label, keybinding_chord_for_command},
     keybinding_input::CapturedKeybinding,
+    keybindings::{
+        KeybindingChordShadow, keybinding_chord_shadow_conflict,
+        keybinding_default_chord_for_command,
+    },
     keybindings_runtime::{
         keybinding_cancel_save_failed_status, malformed_keybinding_chord_rejection_reason,
         prune_stale_keybinding_assignments,
@@ -12,14 +16,15 @@ use crate::{
 use kuroya_core::Command;
 use std::time::{Duration, Instant};
 
-const KEYBINDING_ESCAPE_CANCEL_WINDOW: Duration = Duration::from_secs(1);
-const KEYBINDING_ESCAPE_CANCEL_HINT: &str = "; press Esc again to cancel";
+const KEYBINDING_ESCAPE_ARM_WINDOW: Duration = Duration::from_secs(1);
+const KEYBINDING_ESCAPE_ARM_MESSAGE: &str = "Press Esc again to bind Escape";
 
 #[derive(Default)]
 pub(crate) struct PendingKeybindingsPanelActions {
     pub(crate) captured: Option<CapturedKeybinding>,
     pub(crate) start_capture: Option<Command>,
     pub(crate) remove_binding: Option<Command>,
+    pub(crate) reset_binding: Option<Command>,
     pub(crate) close: bool,
     pub(crate) open_settings: bool,
 }
@@ -47,12 +52,18 @@ impl KuroyaApp {
                 return;
             }
             self.keybinding_capture_command = Some(command);
-            self.status = "Capturing shortcut; press keys, or press Esc twice to cancel".to_owned();
+            self.status =
+                "Capturing shortcut; press keys, or press Esc twice to bind Escape".to_owned();
         } else if let Some(command) = actions.remove_binding {
             if self.has_keybinding_capture_in_progress() && !self.cancel_keybinding_capture() {
                 return;
             }
             self.remove_keybinding_for_command(command);
+        } else if let Some(command) = actions.reset_binding {
+            if self.has_keybinding_capture_in_progress() && !self.cancel_keybinding_capture() {
+                return;
+            }
+            self.reset_keybinding_for_command(command);
         } else if actions.close {
             if self.has_keybinding_capture_in_progress() && !self.cancel_keybinding_capture() {
                 return;
@@ -75,15 +86,12 @@ impl KuroyaApp {
         if now < pending.deadline {
             return false;
         }
-        if pending.saved_escape_binding
-            && self.keybinding_capture_command == Some(pending.command.clone())
-        {
+        let command = pending.command.clone();
+        self.keybinding_escape_cancel = None;
+        if self.keybinding_capture_command == Some(command) {
             self.keybinding_capture_command = None;
         }
-        self.keybinding_escape_cancel = None;
-        if let Some(status) = self.status.strip_suffix(KEYBINDING_ESCAPE_CANCEL_HINT) {
-            self.status = status.to_owned();
-        }
+        self.status = "Canceled shortcut capture".to_owned();
         true
     }
 
@@ -124,7 +132,9 @@ impl KuroyaApp {
             }
         }
         self.keybinding_capture_command = None;
-        if !self.save_keybinding_chord(command.clone(), chord) {
+        if self.save_keybinding_chord(command.clone(), chord) {
+            self.report_keybinding_shadow_warning(&command);
+        } else {
             self.keybinding_capture_command = Some(command);
         }
     }
@@ -138,30 +148,54 @@ impl KuroyaApp {
             .as_ref()
             .is_some_and(|pending| pending.command == command && now <= pending.deadline)
         {
-            self.restore_keybinding_escape_cancel();
+            self.bind_escape_for_armed_capture(command);
             return;
         }
 
-        let mut bindings_before_escape = self.settings.keymap.bindings.clone();
-        prune_stale_keybinding_assignments(&mut bindings_before_escape);
-        let saved_escape_binding = self.save_keybinding_chord(command.clone(), "Escape".to_owned())
-            && keybinding_chord_for_command(&self.settings.keymap.bindings, &command).as_deref()
-                == Some("Escape");
-        if saved_escape_binding {
-            self.keybinding_capture_command = Some(command.clone());
-        } else {
+        self.keybinding_escape_cancel = Some(KeybindingEscapeCancel {
+            command,
+            bindings_before_escape: Vec::new(),
+            deadline: now + KEYBINDING_ESCAPE_ARM_WINDOW,
+            saved_escape_binding: false,
+        });
+        self.status = KEYBINDING_ESCAPE_ARM_MESSAGE.to_owned();
+    }
+
+    fn bind_escape_for_armed_capture(&mut self, command: Command) {
+        self.keybinding_escape_cancel = None;
+        self.keybinding_capture_command = None;
+        if !self.save_keybinding_chord(command.clone(), "Escape".to_owned()) {
             self.keybinding_capture_command = Some(command);
         }
-        self.keybinding_escape_cancel = Some(KeybindingEscapeCancel {
-            command: self
-                .keybinding_capture_command
-                .clone()
-                .expect("capture command should remain active after Escape"),
-            bindings_before_escape,
-            deadline: now + KEYBINDING_ESCAPE_CANCEL_WINDOW,
-            saved_escape_binding,
-        });
-        self.status.push_str(KEYBINDING_ESCAPE_CANCEL_HINT);
+    }
+
+    fn reset_keybinding_for_command(&mut self, command: Command) {
+        let Some(default_chord) = keybinding_default_chord_for_command(&command) else {
+            return;
+        };
+        let label = command_label(&command);
+        if keybinding_chord_for_command(&self.settings.keymap.bindings, &command).as_deref()
+            == Some(default_chord.as_str())
+        {
+            self.status = format!("{label} already uses the default shortcut {default_chord}");
+            return;
+        }
+
+        if self.save_keybinding_chord(command, default_chord.clone()) {
+            self.status = format!("Restored default shortcut {default_chord} for {label}");
+        }
+    }
+
+    fn report_keybinding_shadow_warning(&mut self, command: &Command) {
+        let Some(chord) = keybinding_chord_for_command(&self.settings.keymap.bindings, command)
+        else {
+            return;
+        };
+        if let Some(shadow) =
+            keybinding_chord_shadow_conflict(&self.settings.keymap.bindings, command, &chord)
+        {
+            self.status = keybinding_shadow_warning_status(&chord, shadow);
+        }
     }
 
     fn restore_keybinding_escape_cancel(&mut self) {
@@ -188,6 +222,17 @@ impl KuroyaApp {
                 self.keybinding_escape_cancel = Some(pending);
                 self.status = keybinding_cancel_save_failed_status(&label, error);
             }
+        }
+    }
+}
+
+fn keybinding_shadow_warning_status(chord: &str, shadow: KeybindingChordShadow) -> String {
+    match shadow {
+        KeybindingChordShadow::ShadowedBy { existing_chord } => {
+            format!("Warning: {chord} is shadowed by existing {existing_chord} binding")
+        }
+        KeybindingChordShadow::Shadows { existing_chord } => {
+            format!("Warning: {chord} shadows existing {existing_chord} binding")
         }
     }
 }

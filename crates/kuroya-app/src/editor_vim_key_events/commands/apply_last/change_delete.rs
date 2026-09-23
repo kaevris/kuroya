@@ -59,7 +59,7 @@ pub(super) fn vim_apply_change_delete_repeat_action(
             register,
         )),
         EditorVimRepeatAction::ChangeToLineEnd => {
-            ApplyLastActionOutcome::insert(vim_delete_to_line_end(buffer, count))
+            ApplyLastActionOutcome::insert(vim_delete_to_line_end(buffer, count, unnamed_register))
         }
         EditorVimRepeatAction::ChangeToLineEndIntoRegister(register) => {
             ApplyLastActionOutcome::insert(vim_delete_to_line_end_into_named_register(
@@ -69,9 +69,9 @@ pub(super) fn vim_apply_change_delete_repeat_action(
                 register,
             ))
         }
-        EditorVimRepeatAction::DeleteBackwardChars => {
-            ApplyLastActionOutcome::normal(vim_delete_backward_chars(buffer, count))
-        }
+        EditorVimRepeatAction::DeleteBackwardChars => ApplyLastActionOutcome::normal(
+            vim_delete_backward_chars(buffer, count, unnamed_register),
+        ),
         EditorVimRepeatAction::DeleteBackwardCharsIntoRegister(register) => {
             ApplyLastActionOutcome::normal(vim_delete_backward_chars_into_named_register(
                 buffer,
@@ -80,9 +80,9 @@ pub(super) fn vim_apply_change_delete_repeat_action(
                 register,
             ))
         }
-        EditorVimRepeatAction::DeleteForwardChars => {
-            ApplyLastActionOutcome::normal(vim_delete_forward_chars(buffer, count))
-        }
+        EditorVimRepeatAction::DeleteForwardChars => ApplyLastActionOutcome::normal(
+            vim_delete_forward_chars(buffer, count, unnamed_register),
+        ),
         EditorVimRepeatAction::DeleteForwardCharsIntoRegister(register) => {
             ApplyLastActionOutcome::normal(vim_delete_forward_chars_into_named_register(
                 buffer,
@@ -127,7 +127,7 @@ pub(super) fn vim_apply_change_delete_repeat_action(
             register,
         )),
         EditorVimRepeatAction::DeleteToLineEnd => {
-            ApplyLastActionOutcome::normal(vim_delete_to_line_end(buffer, count))
+            ApplyLastActionOutcome::normal(vim_delete_to_line_end(buffer, count, unnamed_register))
         }
         EditorVimRepeatAction::DeleteToLineEndIntoRegister(register) => {
             ApplyLastActionOutcome::normal(vim_delete_to_line_end_into_named_register(
@@ -137,9 +137,9 @@ pub(super) fn vim_apply_change_delete_repeat_action(
                 register,
             ))
         }
-        EditorVimRepeatAction::SubstituteForwardChars => {
-            ApplyLastActionOutcome::insert(vim_delete_forward_chars(buffer, count))
-        }
+        EditorVimRepeatAction::SubstituteForwardChars => ApplyLastActionOutcome::insert(
+            vim_delete_forward_chars(buffer, count, unnamed_register),
+        ),
         EditorVimRepeatAction::SubstituteForwardCharsIntoRegister(register) => {
             ApplyLastActionOutcome::insert(vim_delete_forward_chars_into_named_register(
                 buffer,

@@ -2,8 +2,12 @@
 use crate::text_match::ascii_case_insensitive_contains as contains_ascii_case_insensitive;
 #[cfg(test)]
 use crate::text_match::ascii_case_insensitive_starts_with as starts_with_ascii_case_insensitive;
+use crate::workspace_paths::{normalize_child_path, path_starts_with_lexically};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
+    borrow::Cow,
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -12,6 +16,7 @@ use std::{
 
 mod symbol_search;
 mod symbols;
+use symbols::RUST_AST_PARSE_BUDGET_BYTES;
 
 #[cfg(test)]
 use symbol_search::{ProjectSymbolQuery, project_symbol_search_path};
@@ -26,9 +31,33 @@ const MAX_SYMBOL_FILE_BYTES: u64 = 512 * 1024;
 const MAX_SYMBOL_LINE_BYTES: usize = 8 * 1024;
 const MAX_PROJECT_SYMBOL_QUERY_CHARS: usize = 512;
 const MAX_PROJECT_SYMBOL_QUERY_TERMS: usize = 32;
-const PROJECT_INDEX_PRUNED_WORKSPACE_DIRS: &[&str] = &[
-    ".git",
-    ".kuroya",
+/// Above this file count the full rebuild walk skips inline symbol extraction
+/// and publishes an empty symbol list: reading thousands of files dominates
+/// indexing time, and LSP workspace symbols remain the primary path for big
+/// projects. `apply_path_changes` still extracts symbols for individually
+/// changed files while the index stays at or below this limit.
+pub const PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT: usize = 5_000;
+/// Bump when symbol extraction changes (ordering, budgets, AST coverage) so
+/// startup reconciliation rebuilds caches carrying stale symbol sets even
+/// when the file entries themselves are unchanged.
+pub const PROJECT_INDEX_SYMBOL_POLICY_VERSION: u32 = 2;
+/// Source-byte budget for symbol extraction on projects larger than
+/// [`PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT`]. Files are scanned smallest
+/// first, so the budget buys maximum symbol coverage for the IO spent and
+/// huge generated/vendored files are naturally skipped.
+pub const PROJECT_INDEX_SYMBOL_SCAN_BUDGET_BYTES: u64 = 32 * 1024 * 1024;
+/// Safety ceiling for the number of indexed files, not the primary indexing
+/// tool. Bulk directories are expected to be skipped by the default exclude
+/// globs and the hidden-directory policy first; when the ceiling is still
+/// reached the walk stops early and the index reports `truncated`.
+pub const DEFAULT_PROJECT_INDEX_MAX_FILES: usize = 150_000;
+pub const MIN_PROJECT_INDEX_MAX_FILES: usize = 1_000;
+pub const MAX_PROJECT_INDEX_MAX_FILES: usize = 1_000_000;
+const PROJECT_INDEX_MAX_GLOB_PATTERNS: usize = 1024;
+const PROJECT_INDEX_MAX_GLOB_PATTERN_BYTES: usize = 4096;
+const PROJECT_INDEX_PROTECTED_WORKSPACE_DIRS: &[&str] = &[".git", ".kuroya"];
+const PROJECT_INDEX_INDEXED_HIDDEN_DIRS: &[&str] = &[".github", ".gitlab", ".config", ".vscode"];
+const DEFAULT_PROJECT_INDEX_EXCLUDE_GLOBS: &[&str] = &[
     "node_modules",
     "target",
     "dist",
@@ -36,7 +65,44 @@ const PROJECT_INDEX_PRUNED_WORKSPACE_DIRS: &[&str] = &[
     "coverage",
     ".next",
     "out",
+    ".cache",
+    ".turbo",
+    ".parcel-cache",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".gradle",
+    ".terraform",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pnpm-store",
 ];
+
+pub fn default_project_index_exclude_globs() -> Vec<String> {
+    DEFAULT_PROJECT_INDEX_EXCLUDE_GLOBS
+        .iter()
+        .map(|glob| (*glob).to_owned())
+        .collect()
+}
+
+/// Merges user-configured exclude globs on top of the built-in defaults.
+///
+/// Defaults always stay in effect; user globs extend them. Exact duplicates
+/// (after trimming) keep their first occurrence.
+pub fn merged_exclude_globs(user_globs: &[String]) -> Vec<String> {
+    let mut merged =
+        Vec::with_capacity(DEFAULT_PROJECT_INDEX_EXCLUDE_GLOBS.len() + user_globs.len());
+    merged.extend(default_project_index_exclude_globs());
+    for glob in user_globs {
+        let glob = glob.trim();
+        if glob.is_empty() || merged.iter().any(|existing| existing == glob) {
+            continue;
+        }
+        merged.push(glob.to_owned());
+    }
+    merged
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Workspace {
@@ -53,12 +119,58 @@ impl Workspace {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectEntry {
     pub path: PathBuf,
     pub relative_path: PathBuf,
     pub is_dir: bool,
     pub depth: usize,
+    /// File size in bytes; directories and unavailable metadata report 0.
+    #[serde(default)]
+    pub len: u64,
+    /// Unix-style milliseconds since the epoch for the modification time;
+    /// 0 when unavailable. Directories report 0.
+    #[serde(default)]
+    pub modified_millis: u64,
+    /// Unix-style milliseconds since the epoch for the creation time;
+    /// 0 when unavailable. Directories report 0.
+    #[serde(default)]
+    pub created_millis: u64,
+}
+
+impl ProjectEntry {
+    /// Builds an entry from walk metadata. Directories report zeroed size and
+    /// timestamps so entries are stable regardless of directory metadata
+    /// churn; unavailable file metadata also reports zeros.
+    pub fn from_metadata_parts(
+        path: PathBuf,
+        relative_path: PathBuf,
+        is_dir: bool,
+        depth: usize,
+        metadata: Option<&fs::Metadata>,
+    ) -> Self {
+        let (len, modified_millis, created_millis) = if is_dir {
+            (0, 0, 0)
+        } else {
+            match metadata {
+                Some(metadata) => (
+                    metadata.len(),
+                    metadata_modified_millis(metadata),
+                    metadata_created_millis(metadata),
+                ),
+                None => (0, 0, 0),
+            }
+        };
+        Self {
+            path,
+            relative_path,
+            is_dir,
+            depth,
+            len,
+            modified_millis,
+            created_millis,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,10 +215,73 @@ pub struct ProjectSymbol {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectIndexSignature {
     pub max_files: usize,
+    #[serde(default)]
+    pub options_fingerprint: u64,
     pub file_count: usize,
     pub entry_count: usize,
     pub truncated: bool,
+    #[serde(default)]
+    pub symbol_policy_version: u32,
     pub fingerprint: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectIndexOptions {
+    pub max_files: usize,
+    pub exclude_globs: Vec<String>,
+    pub excluded_paths: Vec<PathBuf>,
+    /// When false (the default), directories whose file name starts with `.`
+    /// are skipped unless they are on the indexed hidden-dir whitelist.
+    /// Hidden files are always indexed.
+    pub include_hidden_dirs: bool,
+}
+
+impl ProjectIndexOptions {
+    pub fn new(max_files: usize) -> Self {
+        Self {
+            max_files,
+            exclude_globs: default_project_index_exclude_globs(),
+            excluded_paths: Vec::new(),
+            include_hidden_dirs: false,
+        }
+    }
+
+    pub fn with_exclude_globs(max_files: usize, exclude_globs: Vec<String>) -> Self {
+        Self {
+            max_files,
+            exclude_globs,
+            excluded_paths: Vec::new(),
+            include_hidden_dirs: false,
+        }
+    }
+
+    pub fn with_excluded_path(mut self, path: PathBuf) -> Self {
+        self.excluded_paths.push(path);
+        self
+    }
+
+    pub fn with_include_hidden_dirs(mut self, include_hidden_dirs: bool) -> Self {
+        self.include_hidden_dirs = include_hidden_dirs;
+        self
+    }
+
+    pub fn options_fingerprint(&self) -> u64 {
+        project_index_options_fingerprint(
+            &self.exclude_globs,
+            &self.excluded_paths,
+            self.include_hidden_dirs,
+        )
+    }
+
+    pub fn path_filter(&self, root: &Path) -> ProjectIndexPathFilter {
+        ProjectIndexPathFilter::new(root, &self.exclude_globs, &self.excluded_paths)
+    }
+}
+
+impl Default for ProjectIndexOptions {
+    fn default() -> Self {
+        Self::new(DEFAULT_PROJECT_INDEX_MAX_FILES)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -114,7 +289,7 @@ pub struct ProjectIndex {
     data: Arc<ProjectIndexData>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 struct ProjectIndexData {
     root: PathBuf,
     files: Vec<PathBuf>,
@@ -123,6 +298,24 @@ struct ProjectIndexData {
     #[serde(skip)]
     symbol_search_paths: Vec<Arc<str>>,
     truncated: bool,
+    /// Index file cap this index was built with; drives the emergency brake
+    /// in `apply_path_changes`.
+    #[serde(default)]
+    max_files: usize,
+    /// Hidden-directory policy this index was built with, so incremental
+    /// updates prune the same directories the walk prunes.
+    #[serde(default)]
+    include_hidden_dirs: bool,
+    /// Source bytes spent on symbol extraction by the last rebuild, so
+    /// incremental updates keep filling the same budget instead of
+    /// re-scanning files the rebuild already skipped.
+    #[serde(default)]
+    symbol_budget_used: u64,
+    /// Exclude filter this index was built with. Rebuilt indexes carry the
+    /// exact filter; indexes deserialized from the disk cache have `None` and
+    /// rely on the caller-side filter plus the stored hidden-dir policy.
+    #[serde(skip)]
+    path_filter: Option<ProjectIndexPathFilter>,
 }
 
 #[derive(Deserialize)]
@@ -132,6 +325,12 @@ struct ProjectIndexSerde {
     entries: Vec<ProjectEntry>,
     symbols: Vec<ProjectSymbol>,
     truncated: bool,
+    #[serde(default)]
+    max_files: usize,
+    #[serde(default)]
+    include_hidden_dirs: bool,
+    #[serde(default)]
+    symbol_budget_used: u64,
 }
 
 impl<'de> Deserialize<'de> for ProjectIndex {
@@ -145,6 +344,9 @@ impl<'de> Deserialize<'de> for ProjectIndex {
             entries,
             symbols,
             truncated,
+            max_files,
+            include_hidden_dirs,
+            symbol_budget_used,
         } = ProjectIndexSerde::deserialize(deserializer)?;
         let symbol_search_paths = project_symbol_search_paths(&symbols);
         Ok(Self {
@@ -155,6 +357,10 @@ impl<'de> Deserialize<'de> for ProjectIndex {
                 symbols,
                 symbol_search_paths,
                 truncated,
+                max_files,
+                include_hidden_dirs,
+                symbol_budget_used,
+                path_filter: None,
             }),
         })
     }
@@ -192,37 +398,58 @@ impl ProjectIndex {
             symbol_search_paths,
             symbols,
             truncated,
+            max_files: 0,
+            include_hidden_dirs: false,
+            symbol_budget_used: 0,
+            path_filter: None,
         })
     }
 
     pub fn rebuild(root: &Path, max_files: usize) -> Self {
-        Self::rebuild_with_signature(root, max_files).0
+        Self::rebuild_with_options(root, &ProjectIndexOptions::new(max_files))
     }
 
     pub fn rebuild_with_signature(root: &Path, max_files: usize) -> (Self, ProjectIndexSignature) {
-        Self::rebuild_with_signature_inner(root, max_files, true)
+        Self::rebuild_with_signature_options(root, &ProjectIndexOptions::new(max_files))
+    }
+
+    pub fn rebuild_with_options(root: &Path, options: &ProjectIndexOptions) -> Self {
+        Self::rebuild_with_signature_options(root, options).0
+    }
+
+    pub fn rebuild_with_signature_options(
+        root: &Path,
+        options: &ProjectIndexOptions,
+    ) -> (Self, ProjectIndexSignature) {
+        Self::rebuild_with_signature_inner(root, options, true)
     }
 
     fn rebuild_with_signature_inner(
         root: &Path,
-        max_files: usize,
-        extract_symbols_enabled: bool,
+        options: &ProjectIndexOptions,
+        extract_symbols_requested: bool,
     ) -> (Self, ProjectIndexSignature) {
-        let mut files = Vec::with_capacity(max_files.min(MAX_PROJECT_SYMBOLS));
-        let mut entries = Vec::new();
-        let mut signature_entries = Vec::new();
+        let max_files = options.max_files;
+        let mut entries = Vec::with_capacity(project_index_initial_entry_capacity(max_files));
+        let mut file_count = 0usize;
         let mut symbols = Vec::with_capacity(
             max_files
+                .min(PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT)
                 .saturating_mul(MAX_SYMBOLS_PER_FILE)
                 .min(MAX_PROJECT_SYMBOLS),
         );
         let mut truncated = false;
+        let path_filter = options.path_filter(root);
+        let include_hidden_dirs = options.include_hidden_dirs;
+        let walker_filter = path_filter.clone();
         let walker = ignore::WalkBuilder::new(root)
             .hidden(false)
             .git_ignore(true)
             .git_exclude(true)
             .parents(true)
-            .filter_entry(project_index_entry_is_not_pruned)
+            .filter_entry(move |entry| {
+                project_index_entry_is_not_pruned(entry, &walker_filter, include_hidden_dirs)
+            })
             .build();
 
         for entry in walker.flatten() {
@@ -236,7 +463,9 @@ impl ProjectIndex {
             };
             let is_dir = file_type.is_dir();
             let is_file = file_type.is_file();
-            if is_file && files.len() >= max_files {
+            // Emergency brake only: bulk directories are expected to be
+            // skipped by exclude globs and the hidden-dir policy first.
+            if is_file && file_count >= max_files {
                 truncated = true;
                 break;
             }
@@ -249,50 +478,43 @@ impl ProjectIndex {
             let metadata = if is_file { entry.metadata().ok() } else { None };
 
             if is_file {
-                files.push(path.clone());
-                if extract_symbols_enabled && symbols.len() < MAX_PROJECT_SYMBOLS {
-                    symbols.extend(extract_project_symbols(
-                        &path,
-                        &relative_path,
-                        metadata.as_ref().map(fs::Metadata::len),
-                        MAX_PROJECT_SYMBOLS - symbols.len(),
-                    ));
-                }
+                file_count = file_count.saturating_add(1);
             }
 
             let depth = relative_path.components().count().saturating_sub(1);
-            let signature_entry = ProjectIndexSignatureEntry::from_parts(
-                relative_path.clone(),
-                is_dir,
-                metadata.as_ref(),
-            );
-            entries.push(ProjectEntry {
+            entries.push(ProjectEntry::from_metadata_parts(
                 path,
                 relative_path,
                 is_dir,
                 depth,
-            });
-            signature_entries.push(signature_entry);
+                metadata.as_ref(),
+            ));
         }
 
-        files.sort_unstable();
         entries.sort_unstable_by(|a, b| {
-            a.relative_path
-                .cmp(&b.relative_path)
-                .then(a.is_dir.cmp(&b.is_dir).reverse())
+            project_index_entry_sort_cmp(&a.relative_path, a.is_dir, &b.relative_path, b.is_dir)
         });
-        signature_entries.sort_unstable_by(|a, b| {
-            a.relative_path
-                .cmp(&b.relative_path)
-                .then(a.is_dir.cmp(&b.is_dir).reverse())
-        });
-        let signature = ProjectIndexSignature::from_entries(
-            max_files,
-            files.len(),
-            entries.len(),
-            truncated,
-            &signature_entries,
-        );
+        // Small projects scan every file in walk order. Larger projects scan
+        // smallest-files-first within a byte budget instead of skipping
+        // symbols entirely, so monorepos keep symbols for their source files
+        // and only huge generated blobs fall back to LSP-only symbols.
+        let mut symbol_budget_used = 0u64;
+        if extract_symbols_requested {
+            let (extracted, used) = collect_project_symbols(
+                &entries,
+                file_count,
+                MAX_PROJECT_SYMBOLS,
+                PROJECT_INDEX_SYMBOL_SCAN_BUDGET_BYTES,
+            );
+            symbols = extracted;
+            symbol_budget_used = used;
+        }
+        let signature = ProjectIndexSignature::from_stored_entries(options, truncated, &entries);
+        let files = entries
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .map(|entry| entry.path.clone())
+            .collect();
         let index = Self::from_data(ProjectIndexData {
             root: root.to_path_buf(),
             files,
@@ -300,68 +522,215 @@ impl ProjectIndex {
             symbol_search_paths: project_symbol_search_paths(&symbols),
             symbols,
             truncated,
+            max_files,
+            include_hidden_dirs,
+            symbol_budget_used,
+            path_filter: Some(path_filter),
         });
         (index, signature)
     }
 
-    pub fn scan_signature(root: &Path, max_files: usize) -> ProjectIndexSignature {
-        let mut file_count = 0usize;
-        let mut signature_entries = Vec::with_capacity(max_files.min(MAX_PROJECT_SYMBOLS));
-        let mut truncated = false;
-        let walker = ignore::WalkBuilder::new(root)
-            .hidden(false)
-            .git_ignore(true)
-            .git_exclude(true)
-            .parents(true)
-            .filter_entry(project_index_entry_is_not_pruned)
-            .build();
+    pub fn root(&self) -> &Path {
+        &self.data.root
+    }
 
-        for entry in walker.flatten() {
-            let path = entry.path();
-            if path == root {
-                continue;
-            }
+    /// True when this index holds real indexed data (a rebuild, a loaded
+    /// cache, or an applied update) rather than the pre-first-walk
+    /// placeholder, whose root is empty.
+    pub fn is_warm(&self) -> bool {
+        !self.data.root.as_os_str().is_empty()
+    }
 
-            let Some(file_type) = entry.file_type() else {
+    /// File cap this index was built with; 0 for the placeholder and test
+    /// helpers that bypass `rebuild_with_options`.
+    pub fn max_files(&self) -> usize {
+        self.data.max_files
+    }
+
+    /// Deep-copies the index so `apply_path_changes` can mutate the copy
+    /// while readers keep using the current snapshot.
+    pub fn clone_for_update(&self) -> Self {
+        Self::from_data((*self.data).clone())
+    }
+
+    /// Recomputes the index signature from the stored per-entry metadata, so
+    /// cache validation never needs a second stat walk: the rebuild walk and
+    /// incremental updates derive signatures from entries with the exact
+    /// same function.
+    pub fn signature_from_entries(&self, options: &ProjectIndexOptions) -> ProjectIndexSignature {
+        ProjectIndexSignature::from_stored_entries(options, self.data.truncated, &self.data.entries)
+    }
+
+    /// Applies watcher-reported path changes incrementally: files are
+    /// upserted or removed in place, and directories are re-scanned as a
+    /// subtree. Paths outside `root`, inside `.git`/`.kuroya`, or matching
+    /// the index's exclude/hidden-dir policy are ignored. Returns whether
+    /// the index changed. Falls back to a full rebuild at the caller when
+    /// this returns without covering the change (for example the batch
+    /// touches the workspace root itself).
+    pub fn apply_path_changes(&mut self, root: &Path, changed: &[PathBuf]) -> bool {
+        if !self.is_warm() || root.as_os_str() != self.data.root.as_os_str() {
+            return false;
+        }
+        let data = Arc::make_mut(&mut self.data);
+        let include_hidden_dirs = data.include_hidden_dirs;
+        let mut file_count = data.files.len();
+        let mut symbols_changed = false;
+        let mut needs_sort = false;
+        let mut truncated = data.truncated;
+        let mut changed_any = false;
+        let mut budget_remaining = if file_count > PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT {
+            PROJECT_INDEX_SYMBOL_SCAN_BUDGET_BYTES.saturating_sub(data.symbol_budget_used)
+        } else {
+            0
+        };
+
+        for raw_path in changed {
+            let Some(path) = normalize_child_path(&data.root, raw_path) else {
                 continue;
             };
-            let is_dir = file_type.is_dir();
-            let is_file = file_type.is_file();
-            if is_file && file_count >= max_files {
-                truncated = true;
-                break;
+            // The workspace root itself needs a full rebuild; the caller
+            // falls back when its batch contains the root.
+            if path.as_os_str() == data.root.as_os_str() {
+                continue;
             }
-            if is_file {
-                file_count += 1;
+            let Ok(relative_path) = path.strip_prefix(&data.root) else {
+                continue;
+            };
+
+            let metadata = fs::metadata(&path).ok();
+            let is_dir = metadata.as_ref().is_some_and(fs::Metadata::is_dir);
+            let is_file = metadata.as_ref().is_some_and(fs::Metadata::is_file);
+            if project_index_path_is_ignored_by_policy(
+                relative_path,
+                is_dir,
+                include_hidden_dirs,
+                data.path_filter.as_ref(),
+                &path,
+            ) {
+                continue;
             }
 
-            if is_dir || is_file {
-                let metadata = if is_file { entry.metadata().ok() } else { None };
-                let relative_path = path.strip_prefix(root).unwrap_or(path).to_path_buf();
-                signature_entries.push(ProjectIndexSignatureEntry::from_parts(
-                    relative_path,
-                    is_dir,
+            if !is_dir && !is_file {
+                // Missing, or neither file nor directory: a rebuild would
+                // not index it either way.
+                let removed = project_index_remove_subtree(&mut data.entries, &path);
+                if !removed.is_empty() {
+                    file_count = file_count
+                        .saturating_sub(removed.iter().filter(|entry| !entry.is_dir).count());
+                    symbols_changed |=
+                        project_index_retain_symbols_outside(&mut data.symbols, &path);
+                    changed_any = true;
+                }
+                continue;
+            }
+
+            if is_dir {
+                let removed = project_index_remove_subtree(&mut data.entries, &path);
+                let removed_files = removed.iter().filter(|entry| !entry.is_dir).count();
+                file_count = file_count.saturating_sub(removed_files);
+                symbols_changed |= project_index_retain_symbols_outside(&mut data.symbols, &path);
+                changed_any |= !removed.is_empty();
+                let (added, hit_cap) = project_index_scan_subtree(
+                    &data.root,
+                    &path,
+                    include_hidden_dirs,
+                    data.path_filter.as_ref(),
+                    max_files_remaining(file_count, data.max_files),
+                    &mut file_count,
+                );
+                if !added.is_empty() {
+                    symbols_changed |= project_index_extract_symbols_for_new_entries(
+                        &mut data.symbols,
+                        &added,
+                        file_count,
+                        &mut budget_remaining,
+                    );
+                    data.entries.extend(added);
+                    needs_sort = true;
+                    changed_any = true;
+                }
+                truncated |= hit_cap;
+                continue;
+            }
+
+            if is_file {
+                let depth = relative_path.components().count().saturating_sub(1);
+                let fresh = ProjectEntry::from_metadata_parts(
+                    path.clone(),
+                    relative_path.to_path_buf(),
+                    false,
+                    depth,
                     metadata.as_ref(),
-                ));
+                );
+                if let Some(existing) = project_index_find_file_entry(&data.entries, relative_path)
+                    && existing == &fresh
+                {
+                    continue;
+                }
+                let removed = project_index_remove_subtree(&mut data.entries, &path);
+                file_count =
+                    file_count.saturating_sub(removed.iter().filter(|entry| !entry.is_dir).count());
+                symbols_changed |= project_index_retain_symbols_outside(&mut data.symbols, &path);
+
+                if data.max_files > 0 && file_count >= data.max_files {
+                    // Emergency brake: the workspace outgrew the cap, so new
+                    // files stay unindexed and the index reports truncation.
+                    truncated = true;
+                    changed_any = true;
+                    continue;
+                }
+                let position = data.entries.binary_search_by(|entry| {
+                    project_index_entry_sort_cmp(
+                        &entry.relative_path,
+                        entry.is_dir,
+                        &fresh.relative_path,
+                        fresh.is_dir,
+                    )
+                });
+                let Err(insert_at) = position else {
+                    // Exact matches were handled above, and the previous
+                    // subtree removal cleared any entry at this path.
+                    continue;
+                };
+                data.entries.insert(insert_at, fresh);
+                file_count = file_count.saturating_add(1);
+                changed_any = true;
+                symbols_changed |= project_index_extract_symbols_for_new_entries(
+                    &mut data.symbols,
+                    &data.entries[insert_at..insert_at + 1],
+                    file_count,
+                    &mut budget_remaining,
+                );
             }
         }
 
-        signature_entries.sort_unstable_by(|a, b| {
-            a.relative_path
-                .cmp(&b.relative_path)
-                .then(a.is_dir.cmp(&b.is_dir).reverse())
-        });
-        ProjectIndexSignature::from_entries(
-            max_files,
-            file_count,
-            signature_entries.len(),
-            truncated,
-            &signature_entries,
-        )
-    }
-
-    pub fn root(&self) -> &Path {
-        &self.data.root
+        if !changed_any {
+            return false;
+        }
+        if needs_sort {
+            data.entries.sort_unstable_by(|a, b| {
+                project_index_entry_sort_cmp(&a.relative_path, a.is_dir, &b.relative_path, b.is_dir)
+            });
+        }
+        data.files = data
+            .entries
+            .iter()
+            .filter(|entry| !entry.is_dir)
+            .map(|entry| entry.path.clone())
+            .collect();
+        // A batch that hit the cap sets `truncated` for this update; once
+        // deletions bring the file count back under the cap the flag clears
+        // (previously it stuck until the next full rebuild).
+        data.truncated = truncated && file_count >= data.max_files;
+        if file_count > PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT {
+            data.symbol_budget_used =
+                PROJECT_INDEX_SYMBOL_SCAN_BUDGET_BYTES.saturating_sub(budget_remaining);
+        }
+        if symbols_changed {
+            data.symbol_search_paths = project_symbol_search_paths(&data.symbols);
+        }
+        true
     }
 
     pub fn files(&self) -> &[PathBuf] {
@@ -417,80 +786,269 @@ impl ProjectIndex {
     }
 }
 
-fn project_index_entry_is_not_pruned(entry: &ignore::DirEntry) -> bool {
-    entry.depth() == 0
-        || entry.file_name().to_str().is_none_or(|name| {
-            !PROJECT_INDEX_PRUNED_WORKSPACE_DIRS
-                .iter()
-                .any(|pruned| name.eq_ignore_ascii_case(pruned))
-        })
+fn project_index_entry_is_not_pruned(
+    entry: &ignore::DirEntry,
+    path_filter: &ProjectIndexPathFilter,
+    include_hidden_dirs: bool,
+) -> bool {
+    if entry.depth() == 0 {
+        return true;
+    }
+    // Returning false for a directory prunes it, so its children are never
+    // visited. Hidden files stay indexed.
+    if !include_hidden_dirs
+        && entry
+            .file_type()
+            .is_some_and(|file_type| file_type.is_dir())
+        && project_index_dir_is_hidden(entry.path())
+    {
+        return false;
+    }
+
+    !path_filter.is_excluded(entry.path())
+}
+
+/// True for directories whose file name starts with `.` and that are not on
+/// the indexed hidden-dir whitelist. Protected workspace dirs (`.git`,
+/// `.kuroya`) are excluded separately and never indexed.
+fn project_index_dir_is_hidden(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    name.starts_with('.')
+        && !PROJECT_INDEX_INDEXED_HIDDEN_DIRS
+            .iter()
+            .any(|indexed| name.eq_ignore_ascii_case(indexed))
 }
 
 #[derive(Debug, Clone)]
-struct ProjectIndexSignatureEntry {
-    relative_path: PathBuf,
-    is_dir: bool,
-    len: u64,
-    modified_nanos: u128,
-    created_nanos: u128,
+pub struct ProjectIndexPathFilter {
+    root: PathBuf,
+    globs: Option<GlobSet>,
+    excluded_paths: Vec<PathBuf>,
 }
 
-impl ProjectIndexSignatureEntry {
-    fn from_parts(relative_path: PathBuf, is_dir: bool, metadata: Option<&fs::Metadata>) -> Self {
+impl ProjectIndexPathFilter {
+    fn new(root: &Path, patterns: &[String], excluded_paths: &[PathBuf]) -> Self {
         Self {
-            relative_path,
-            is_dir,
-            len: if is_dir {
-                0
-            } else {
-                metadata.map_or(0, fs::Metadata::len)
-            },
-            modified_nanos: if is_dir {
-                0
-            } else {
-                metadata.map(metadata_modified_nanos).unwrap_or_default()
-            },
-            created_nanos: if is_dir {
-                0
-            } else {
-                metadata.map(metadata_created_nanos).unwrap_or_default()
-            },
+            root: root.to_path_buf(),
+            globs: build_project_index_glob_set(patterns),
+            excluded_paths: excluded_paths
+                .iter()
+                .filter_map(|path| normalize_child_path(root, path))
+                .collect(),
         }
+    }
+
+    pub fn is_excluded(&self, path: &Path) -> bool {
+        if self.has_protected_component(path) {
+            return true;
+        }
+        if self
+            .excluded_paths
+            .iter()
+            .any(|excluded| path_starts_with_lexically(path, excluded))
+        {
+            return true;
+        }
+        let Some(globs) = &self.globs else {
+            return false;
+        };
+        let relative = self.relative_path(path);
+        let file_name = path.file_name().map(Path::new);
+        globs.is_match(relative.as_ref()) || file_name.is_some_and(|name| globs.is_match(name))
+    }
+
+    fn has_protected_component(&self, path: &Path) -> bool {
+        self.relative_path(path).components().any(|component| {
+            let std::path::Component::Normal(name) = component else {
+                return false;
+            };
+            name.to_str().is_some_and(|name| {
+                PROJECT_INDEX_PROTECTED_WORKSPACE_DIRS
+                    .iter()
+                    .any(|protected| name.eq_ignore_ascii_case(protected))
+            })
+        })
+    }
+
+    fn relative_path<'a>(&self, path: &'a Path) -> Cow<'a, Path> {
+        if let Ok(relative) = path.strip_prefix(&self.root) {
+            return Cow::Borrowed(relative);
+        }
+        if path_starts_with_lexically(path, &self.root) {
+            let relative = path
+                .components()
+                .skip(self.root.components().count())
+                .collect::<PathBuf>();
+            return Cow::Owned(relative);
+        }
+        Cow::Borrowed(path)
     }
 }
 
-impl ProjectIndexSignature {
-    fn from_entries(
-        max_files: usize,
-        file_count: usize,
-        entry_count: usize,
-        truncated: bool,
-        entries: &[ProjectIndexSignatureEntry],
-    ) -> Self {
-        Self {
-            max_files,
-            file_count,
-            entry_count,
-            truncated,
-            fingerprint: project_index_signature_fingerprint(max_files, truncated, entries),
+fn build_project_index_glob_set(patterns: &[String]) -> Option<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    let mut added = HashSet::with_capacity(
+        patterns
+            .len()
+            .min(PROJECT_INDEX_MAX_GLOB_PATTERNS)
+            .saturating_mul(3),
+    );
+    let mut has_patterns = false;
+    let mut pattern_count = 0usize;
+
+    for pattern in patterns {
+        let pattern = pattern.trim();
+        if pattern.is_empty() {
+            continue;
         }
+        pattern_count = pattern_count.saturating_add(1);
+        if pattern_count > PROJECT_INDEX_MAX_GLOB_PATTERNS
+            || pattern.len() > PROJECT_INDEX_MAX_GLOB_PATTERN_BYTES
+        {
+            continue;
+        }
+        if add_project_index_glob_pattern(&mut builder, &mut added, pattern).is_err() {
+            continue;
+        }
+        has_patterns = true;
+        if project_index_glob_pattern_is_bare(pattern) {
+            let _ = add_project_index_bare_glob_variants(&mut builder, &mut added, pattern);
+        }
+    }
+
+    if has_patterns {
+        builder.build().ok()
+    } else {
+        None
+    }
+}
+
+fn project_index_glob_pattern_is_bare(pattern: &str) -> bool {
+    !pattern.contains(['/', '\\']) && !pattern.starts_with("**")
+}
+
+fn add_project_index_glob_pattern(
+    builder: &mut GlobSetBuilder,
+    added: &mut HashSet<String>,
+    pattern: &str,
+) -> Result<(), globset::Error> {
+    if added.insert(pattern.to_owned()) {
+        let mut glob = GlobBuilder::new(pattern);
+        glob.case_insensitive(cfg!(windows));
+        builder.add(glob.build()?);
+    }
+    Ok(())
+}
+
+fn add_project_index_bare_glob_variants(
+    builder: &mut GlobSetBuilder,
+    added: &mut HashSet<String>,
+    pattern: &str,
+) -> Result<(), globset::Error> {
+    let mut descendant_pattern = String::with_capacity(pattern.len() + 6);
+    descendant_pattern.push_str("**/");
+    descendant_pattern.push_str(pattern);
+    add_project_index_glob_pattern(builder, added, &descendant_pattern)?;
+
+    descendant_pattern.push_str("/**");
+    add_project_index_glob_pattern(builder, added, &descendant_pattern)
+}
+
+fn project_index_options_fingerprint(
+    exclude_globs: &[String],
+    excluded_paths: &[PathBuf],
+    include_hidden_dirs: bool,
+) -> u64 {
+    let mut hash = FNV_OFFSET;
+    for glob in exclude_globs {
+        let glob = glob.trim();
+        if glob.is_empty() {
+            continue;
+        }
+        for byte in glob.as_bytes() {
+            fnv_hash_u8(&mut hash, *byte);
+        }
+        fnv_hash_u8(&mut hash, 0);
+    }
+    fnv_hash_u8(&mut hash, 0xff);
+    for path in excluded_paths {
+        for byte in path.to_string_lossy().as_bytes() {
+            fnv_hash_u8(&mut hash, *byte);
+        }
+        fnv_hash_u8(&mut hash, 0);
+    }
+    fnv_hash_u8(&mut hash, 0xfe);
+    fnv_hash_u8(&mut hash, u8::from(include_hidden_dirs));
+    hash
+}
+
+fn project_index_entry_sort_cmp(
+    left_path: &Path,
+    left_is_dir: bool,
+    right_path: &Path,
+    right_is_dir: bool,
+) -> std::cmp::Ordering {
+    left_path
+        .cmp(right_path)
+        .then(left_is_dir.cmp(&right_is_dir).reverse())
+}
+
+fn project_index_initial_entry_capacity(max_files: usize) -> usize {
+    max_files.min(DEFAULT_PROJECT_INDEX_MAX_FILES)
+}
+
+impl ProjectIndexSignature {
+    /// Derives the signature from stored entry metadata. The rebuild walk,
+    /// cache writes, and incremental updates all use this single derivation,
+    /// so cache validation never needs a second stat walk.
+    fn from_stored_entries(
+        options: &ProjectIndexOptions,
+        truncated: bool,
+        entries: &[ProjectEntry],
+    ) -> Self {
+        let options_fingerprint = options.options_fingerprint();
+        let file_count = entries.iter().filter(|entry| !entry.is_dir).count();
+        Self {
+            max_files: options.max_files,
+            options_fingerprint,
+            file_count,
+            entry_count: entries.len(),
+            truncated,
+            symbol_policy_version: PROJECT_INDEX_SYMBOL_POLICY_VERSION,
+            fingerprint: project_index_signature_fingerprint(
+                options.max_files,
+                options_fingerprint,
+                truncated,
+                entries,
+            ),
+        }
+    }
+
+    pub fn matches_options(&self, options: &ProjectIndexOptions) -> bool {
+        self.max_files == options.max_files
+            && self.options_fingerprint == options.options_fingerprint()
+            && self.symbol_policy_version == PROJECT_INDEX_SYMBOL_POLICY_VERSION
     }
 }
 
 fn project_index_signature_fingerprint(
     max_files: usize,
+    options_fingerprint: u64,
     truncated: bool,
-    entries: &[ProjectIndexSignatureEntry],
+    entries: &[ProjectEntry],
 ) -> u64 {
     let mut hash = FNV_OFFSET;
     fnv_hash_u64(&mut hash, max_files as u64);
+    fnv_hash_u64(&mut hash, options_fingerprint);
     fnv_hash_u8(&mut hash, u8::from(truncated));
     for entry in entries {
         fnv_hash_path(&mut hash, &entry.relative_path);
         fnv_hash_u8(&mut hash, u8::from(entry.is_dir));
         fnv_hash_u64(&mut hash, entry.len);
-        fnv_hash_u128(&mut hash, entry.modified_nanos);
-        fnv_hash_u128(&mut hash, entry.created_nanos);
+        fnv_hash_u64(&mut hash, entry.modified_millis);
+        fnv_hash_u64(&mut hash, entry.created_millis);
     }
     hash
 }
@@ -520,28 +1078,353 @@ fn fnv_hash_u64(hash: &mut u64, value: u64) {
     }
 }
 
-fn fnv_hash_u128(hash: &mut u64, value: u128) {
-    for byte in value.to_le_bytes() {
-        fnv_hash_u8(hash, byte);
-    }
-}
-
-fn metadata_modified_nanos(metadata: &fs::Metadata) -> u128 {
+fn metadata_modified_millis(metadata: &fs::Metadata) -> u64 {
     metadata
         .modified()
         .ok()
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default()
 }
 
-fn metadata_created_nanos(metadata: &fs::Metadata) -> u128 {
+fn metadata_created_millis(metadata: &fs::Metadata) -> u64 {
     metadata
         .created()
         .ok()
         .and_then(|created| created.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default()
+}
+
+/// File allowance left under the emergency brake; `usize::MAX` when the
+/// index carries no cap (placeholder/test indexes with `max_files == 0`).
+fn max_files_remaining(file_count: usize, max_files: usize) -> usize {
+    if max_files == 0 {
+        usize::MAX
+    } else {
+        max_files.saturating_sub(file_count)
+    }
+}
+
+/// True when an incremental update must ignore a changed path: protected
+/// workspace dirs, the exclude filter, or the hidden-directory policy. Files
+/// under hidden directories are pruned by their ancestors; the directory
+/// itself is additionally checked when the entry is a directory.
+fn project_index_path_is_ignored_by_policy(
+    relative_path: &Path,
+    is_dir_entry: bool,
+    include_hidden_dirs: bool,
+    path_filter: Option<&ProjectIndexPathFilter>,
+    absolute_path: &Path,
+) -> bool {
+    if project_index_relative_path_is_protected(relative_path) {
+        return true;
+    }
+    if path_filter.is_some_and(|filter| filter.is_excluded(absolute_path)) {
+        return true;
+    }
+    if include_hidden_dirs {
+        return false;
+    }
+    let components: Vec<_> = relative_path.components().collect();
+    let ancestor_count = if is_dir_entry {
+        components.len()
+    } else {
+        components.len().saturating_sub(1)
+    };
+    components[..ancestor_count].iter().any(|component| {
+        let std::path::Component::Normal(name) = component else {
+            return false;
+        };
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+        name.starts_with('.')
+            && !PROJECT_INDEX_INDEXED_HIDDEN_DIRS
+                .iter()
+                .any(|indexed| name.eq_ignore_ascii_case(indexed))
+    })
+}
+
+fn project_index_relative_path_is_protected(relative_path: &Path) -> bool {
+    relative_path.components().any(|component| {
+        let std::path::Component::Normal(name) = component else {
+            return false;
+        };
+        name.to_str().is_some_and(|name| {
+            PROJECT_INDEX_PROTECTED_WORKSPACE_DIRS
+                .iter()
+                .any(|protected| name.eq_ignore_ascii_case(protected))
+        })
+    })
+}
+
+/// Removes the entry at `absolute` plus everything below it, returning the
+/// removed entries so callers can adjust counts and detect no-ops.
+fn project_index_remove_subtree(
+    entries: &mut Vec<ProjectEntry>,
+    absolute: &Path,
+) -> Vec<ProjectEntry> {
+    let mut removed = Vec::new();
+    entries.retain(|entry| {
+        if project_index_entry_starts_with(&entry.path, absolute) {
+            removed.push(entry.clone());
+            false
+        } else {
+            true
+        }
+    });
+    removed
+}
+
+/// `Path::starts_with` against stored index paths, case-folded on Windows:
+/// the filesystem there is case-insensitive, so a case-only rename reports
+/// the new spelling while stored entries keep the casing seen at index time.
+/// Matching exactly would leave the stale entry behind as a ghost beside the
+/// re-indexed file. The upsert lookup needs no folding: this removal runs
+/// first and clears any case-variant entry before the fresh one is inserted.
+fn project_index_entry_starts_with(entry_path: &Path, prefix: &Path) -> bool {
+    #[cfg(not(windows))]
+    {
+        entry_path.starts_with(prefix)
+    }
+    #[cfg(windows)]
+    {
+        entry_path.starts_with(prefix)
+            || project_index_starts_with_case_insensitively(entry_path, prefix)
+    }
+}
+
+#[cfg(windows)]
+fn project_index_starts_with_case_insensitively(entry_path: &Path, prefix: &Path) -> bool {
+    let mut entry_components = entry_path
+        .components()
+        .map(project_index_windows_component_key);
+    let mut prefix_components = prefix.components().map(project_index_windows_component_key);
+    loop {
+        match (entry_components.next(), prefix_components.next()) {
+            (Some(entry), Some(prefix_component)) => {
+                if entry != prefix_component {
+                    return false;
+                }
+            }
+            (Some(_), None) => return true,
+            (None, Some(_)) => return false,
+            (None, None) => return true,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn project_index_windows_component_key(component: std::path::Component<'_>) -> String {
+    let component = component.as_os_str().to_string_lossy();
+    if component.is_ascii() {
+        let mut lowered = component.into_owned();
+        lowered.make_ascii_lowercase();
+        lowered
+    } else {
+        component.to_lowercase()
+    }
+}
+
+fn project_index_retain_symbols_outside(symbols: &mut Vec<ProjectSymbol>, absolute: &Path) -> bool {
+    let before = symbols.len();
+    symbols.retain(|symbol| !symbol.path.starts_with(absolute));
+    symbols.len() != before
+}
+
+/// Re-scans only the subtree at `subtree_root` with the same walk rules and
+/// caps as the full rebuild. Returns the collected entries (workspace-relative
+/// paths, sorted) and whether the file cap stopped the scan early.
+fn project_index_scan_subtree(
+    workspace_root: &Path,
+    subtree_root: &Path,
+    include_hidden_dirs: bool,
+    path_filter: Option<&ProjectIndexPathFilter>,
+    max_new_files: usize,
+    file_count: &mut usize,
+) -> (Vec<ProjectEntry>, bool) {
+    let mut entries = Vec::new();
+    let mut new_files = 0usize;
+    let mut hit_cap = false;
+    let path_filter = match path_filter {
+        Some(filter) => filter.clone(),
+        None => ProjectIndexPathFilter::new(workspace_root, &[], &[]),
+    };
+    let walker = ignore::WalkBuilder::new(subtree_root)
+        .hidden(false)
+        .git_ignore(true)
+        .git_exclude(true)
+        .parents(true)
+        .filter_entry(move |entry| {
+            project_index_entry_is_not_pruned(entry, &path_filter, include_hidden_dirs)
+        })
+        .build();
+
+    for entry in walker.flatten() {
+        if entry.depth() == 0 {
+            // The subtree root itself is part of the index (unlike the
+            // workspace root in the full walk): report it as a directory.
+            entries.push(ProjectEntry::from_metadata_parts(
+                subtree_root.to_path_buf(),
+                subtree_root
+                    .strip_prefix(workspace_root)
+                    .unwrap_or(subtree_root)
+                    .to_path_buf(),
+                true,
+                subtree_root
+                    .strip_prefix(workspace_root)
+                    .unwrap_or(subtree_root)
+                    .components()
+                    .count()
+                    .saturating_sub(1),
+                None,
+            ));
+            continue;
+        }
+        let Some(file_type) = entry.file_type() else {
+            continue;
+        };
+        let is_dir = file_type.is_dir();
+        let is_file = file_type.is_file();
+        if is_file {
+            if new_files >= max_new_files {
+                hit_cap = true;
+                break;
+            }
+            new_files += 1;
+            *file_count = file_count.saturating_add(1);
+        }
+        if !(is_dir || is_file) {
+            continue;
+        }
+        let path = entry.path().to_path_buf();
+        let relative_path = path
+            .strip_prefix(workspace_root)
+            .unwrap_or(&path)
+            .to_path_buf();
+        let depth = relative_path.components().count().saturating_sub(1);
+        let metadata = if is_file { entry.metadata().ok() } else { None };
+        entries.push(ProjectEntry::from_metadata_parts(
+            path,
+            relative_path,
+            is_dir,
+            depth,
+            metadata.as_ref(),
+        ));
+    }
+
+    entries.sort_unstable_by(|a, b| {
+        project_index_entry_sort_cmp(&a.relative_path, a.is_dir, &b.relative_path, b.is_dir)
+    });
+    (entries, hit_cap)
+}
+
+fn project_index_find_file_entry<'a>(
+    entries: &'a [ProjectEntry],
+    relative_path: &Path,
+) -> Option<&'a ProjectEntry> {
+    let index = entries
+        .binary_search_by(|entry| {
+            project_index_entry_sort_cmp(&entry.relative_path, entry.is_dir, relative_path, false)
+        })
+        .ok()?;
+    let entry = &entries[index];
+    (!entry.is_dir && entry.relative_path == relative_path).then_some(entry)
+}
+
+/// Symbol-extraction policy shared by rebuild and incremental updates.
+///
+/// Files are always scanned smallest-first so the symbol cap buys maximum
+/// coverage: without the ordering, files early in the alphabet consume the
+/// whole [`MAX_PROJECT_SYMBOLS`] cap and late-alphabetical files get nothing
+/// even in small projects. Projects above [`PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT`]
+/// additionally stop after [`PROJECT_INDEX_SYMBOL_SCAN_BUDGET_BYTES`] of
+/// source is consumed.
+///
+/// Returns the extracted symbols plus the source bytes spent attempting
+/// extraction (charged per scanned file, including files that yielded no
+/// symbols, to bound IO as well as memory). The returned spend is 0 for
+/// small projects, which never budget.
+fn collect_project_symbols(
+    entries: &[ProjectEntry],
+    total_file_count: usize,
+    symbol_cap: usize,
+    budget_bytes: u64,
+) -> (Vec<ProjectSymbol>, u64) {
+    let mut symbols = Vec::new();
+    let mut ast_budget = RUST_AST_PARSE_BUDGET_BYTES;
+    let budgeted = total_file_count > PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT;
+
+    let mut files: Vec<&ProjectEntry> = entries.iter().filter(|entry| !entry.is_dir).collect();
+    files.sort_unstable_by_key(|entry| entry.len);
+    let mut budget_used = 0u64;
+    for entry in files {
+        if symbols.len() >= symbol_cap {
+            break;
+        }
+        if budgeted {
+            if budget_used >= budget_bytes {
+                break;
+            }
+            budget_used = budget_used.saturating_add(entry.len);
+        }
+        symbols.extend(extract_project_symbols(
+            &entry.path,
+            &entry.relative_path,
+            (entry.len > 0).then_some(entry.len),
+            symbol_cap - symbols.len(),
+            &mut ast_budget,
+        ));
+    }
+    (symbols, budget_used)
+}
+
+/// Extracts symbols for newly added file entries, mirroring the rebuild
+/// policy: small projects scan every added file; large projects scan the
+/// added file only while its size fits the remaining byte budget, so
+/// incremental updates keep filling the same budget the rebuild used.
+fn project_index_extract_symbols_for_new_entries(
+    symbols: &mut Vec<ProjectSymbol>,
+    new_entries: &[ProjectEntry],
+    total_file_count: usize,
+    budget_remaining: &mut u64,
+) -> bool {
+    let mut changed = false;
+    if symbols.len() >= MAX_PROJECT_SYMBOLS {
+        return false;
+    }
+    if total_file_count > PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT && *budget_remaining == 0 {
+        return false;
+    }
+    // Small projects have no byte budget; their incrementals get the full
+    // AST parse budget. Large projects share what the rebuild left over.
+    let mut ast_budget = if total_file_count > PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT {
+        RUST_AST_PARSE_BUDGET_BYTES.min((*budget_remaining).max(1))
+    } else {
+        RUST_AST_PARSE_BUDGET_BYTES
+    };
+    for entry in new_entries.iter().filter(|entry| !entry.is_dir) {
+        if symbols.len() >= MAX_PROJECT_SYMBOLS {
+            break;
+        }
+        if total_file_count > PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT {
+            if entry.len > *budget_remaining {
+                continue;
+            }
+            *budget_remaining = budget_remaining.saturating_sub(entry.len);
+        }
+        let before = symbols.len();
+        symbols.extend(extract_project_symbols(
+            &entry.path,
+            &entry.relative_path,
+            (entry.len > 0).then_some(entry.len),
+            MAX_PROJECT_SYMBOLS - symbols.len(),
+            &mut ast_budget,
+        ));
+        changed |= symbols.len() != before;
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -644,7 +1527,7 @@ mod tests {
     }
 
     #[test]
-    fn project_index_signature_matches_rebuilt_index() {
+    fn project_index_signature_matches_rebuilt_index_and_stored_entries() {
         let root = std::env::temp_dir().join(format!(
             "kuroya-project-signature-{}",
             SystemTime::now()
@@ -655,13 +1538,27 @@ mod tests {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/lib.rs"), "fn indexed() {}\n").unwrap();
 
+        let options = ProjectIndexOptions::new(40_000);
         let (index, signature) = ProjectIndex::rebuild_with_signature(&root, 40_000);
-        let scanned = ProjectIndex::scan_signature(&root, 40_000);
+        let rebuilt_again = ProjectIndex::rebuild_with_signature(&root, 40_000).1;
 
         assert_eq!(index.files().len(), 1);
-        assert_eq!(signature, scanned);
+        assert_eq!(signature, rebuilt_again);
+        // Cache writes and validation derive the signature from stored entry
+        // metadata with the same function, so this must round-trip exactly.
+        assert_eq!(index.signature_from_entries(&options), signature);
         assert_eq!(signature.file_count, 1);
         assert!(!signature.truncated);
+
+        fs::write(root.join("src/lib.rs"), "fn indexed() {}\nfn newer() {}\n").unwrap();
+        let changed = ProjectIndex::rebuild_with_signature(&root, 40_000).1;
+        assert_ne!(signature, changed);
+        assert_eq!(
+            ProjectIndex::rebuild_with_signature(&root, 40_000)
+                .0
+                .signature_from_entries(&options),
+            changed
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -729,6 +1626,283 @@ mod tests {
     }
 
     #[test]
+    fn merged_exclude_globs_extends_defaults_with_user_globs_and_dedupes() {
+        assert_eq!(
+            merged_exclude_globs(&[]),
+            default_project_index_exclude_globs()
+        );
+        assert_eq!(
+            merged_exclude_globs(&["vendor".to_owned(), "  ".to_owned()]),
+            [
+                default_project_index_exclude_globs(),
+                vec!["vendor".to_owned()]
+            ]
+            .concat()
+        );
+
+        let defaults = default_project_index_exclude_globs();
+        let mut user_globs = vec!["Target".to_owned(), " my-cache ".to_owned()];
+        user_globs.extend(defaults.iter().take(2).cloned());
+
+        let merged = merged_exclude_globs(&user_globs);
+
+        assert_eq!(merged.len(), defaults.len() + 2);
+        assert!(merged.starts_with(&defaults[..]));
+        assert_eq!(
+            &merged[defaults.len()..],
+            &["Target".to_owned(), "my-cache".to_owned()]
+        );
+    }
+
+    #[test]
+    fn project_index_skips_hidden_dirs_except_whitelist_and_keeps_hidden_files() {
+        let root = std::env::temp_dir().join(format!(
+            "kuroya-project-hidden-dirs-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join(".cargo/registry")).unwrap();
+        fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        fs::create_dir_all(root.join(".vscode")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join(".cargo/registry/x.txt"), "skipped()\n").unwrap();
+        fs::write(root.join(".github/workflows/ci.yml"), "indexed()\n").unwrap();
+        fs::write(root.join(".vscode/settings.json"), "{}").unwrap();
+        fs::write(root.join(".gitignore"), "target\n").unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        let options = ProjectIndexOptions::with_exclude_globs(40_000, Vec::new());
+        let (index, signature) = ProjectIndex::rebuild_with_signature_options(&root, &options);
+        let rebuilt_again = ProjectIndex::rebuild_with_signature_options(&root, &options).1;
+
+        assert_eq!(
+            index.files(),
+            &[
+                root.join(".github/workflows/ci.yml"),
+                root.join(".gitignore"),
+                root.join(".vscode/settings.json"),
+                root.join("src/main.rs"),
+            ]
+        );
+        assert!(
+            index
+                .all_entries()
+                .iter()
+                .all(|entry| !entry.relative_path.starts_with(".cargo"))
+        );
+        assert_eq!(rebuilt_again, signature);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_include_hidden_dirs_option_indexes_hidden_dirs() {
+        let root = std::env::temp_dir().join(format!(
+            "kuroya-project-hidden-dirs-included-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join(".cargo/registry")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join(".cargo/registry/x.txt"), "indexed()\n").unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        let options = ProjectIndexOptions::with_exclude_globs(40_000, Vec::new())
+            .with_include_hidden_dirs(true);
+        assert!(options.include_hidden_dirs);
+        let index = ProjectIndex::rebuild_with_options(&root, &options);
+
+        assert!(index.files().contains(&root.join(".cargo/registry/x.txt")));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_hidden_dirs_policy_invalidates_cached_signatures() {
+        let root = PathBuf::from("workspace");
+        let default_options = ProjectIndexOptions::new(40_000);
+        let include_options = default_options.clone().with_include_hidden_dirs(true);
+
+        assert_ne!(
+            default_options.options_fingerprint(),
+            include_options.options_fingerprint()
+        );
+        // Signatures built with one policy must not satisfy the other, so
+        // on-disk caches indexed with the old policy are treated as stale.
+        let default_signature =
+            ProjectIndex::rebuild_with_signature_options(&root, &default_options).1;
+        assert!(default_signature.matches_options(&default_options));
+        assert!(!default_signature.matches_options(&include_options));
+        let include_signature =
+            ProjectIndex::rebuild_with_signature_options(&root, &include_options).1;
+        assert!(include_signature.matches_options(&include_options));
+        assert!(!include_signature.matches_options(&default_options));
+    }
+
+    #[test]
+    fn project_index_options_can_clear_generated_excludes_but_not_protected_dirs() {
+        let root = std::env::temp_dir().join(format!(
+            "kuroya-project-empty-excludes-protected-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("target/debug")).unwrap();
+        fs::create_dir_all(root.join(".git/objects")).unwrap();
+        fs::create_dir_all(root.join(".kuroya/plugins")).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn indexed() {}\n").unwrap();
+        fs::write(
+            root.join("target/debug/generated.rs"),
+            "fn configurable() {}\n",
+        )
+        .unwrap();
+        fs::write(root.join(".git/config"), "").unwrap();
+        fs::write(root.join(".kuroya/state.json"), "{}").unwrap();
+
+        let options = ProjectIndexOptions::with_exclude_globs(40_000, Vec::new());
+        let index = ProjectIndex::rebuild_with_options(&root, &options);
+
+        assert_eq!(
+            index.files(),
+            &[
+                root.join("src/lib.rs"),
+                root.join("target/debug/generated.rs")
+            ]
+        );
+        assert!(index.all_entries().iter().all(|entry| {
+            !entry.relative_path.starts_with(".git") && !entry.relative_path.starts_with(".kuroya")
+        }));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_path_filter_uses_effective_globs_and_protected_dirs() {
+        let root = PathBuf::from("workspace");
+        let options = ProjectIndexOptions::with_exclude_globs(40_000, vec!["generated".to_owned()]);
+        let filter = options.path_filter(&root);
+
+        assert!(filter.is_excluded(&root.join("generated/output.rs")));
+        assert!(filter.is_excluded(&root.join("nested/.git/config")));
+        assert!(!filter.is_excluded(&root.join("target/output.rs")));
+        assert!(!filter.is_excluded(&root.join("src/main.rs")));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn project_index_path_filter_matches_globs_case_insensitively_on_windows() {
+        let root = PathBuf::from(r"C:\Repo\Project");
+        let filter = ProjectIndexOptions::new(40_000).path_filter(&root);
+
+        assert!(filter.is_excluded(Path::new(r"c:\repo\project\NODE_MODULES\dep\index.js")));
+    }
+
+    #[test]
+    fn project_index_excluded_paths_apply_to_rebuild_signature_and_fingerprint() {
+        let root = std::env::temp_dir().join(format!(
+            "kuroya-project-excluded-path-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let app_state = root.join("runtime-state");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(app_state.join("workspaces/current")).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn indexed() {}\n").unwrap();
+        fs::write(
+            app_state.join("workspaces/current/project-index.json"),
+            "{}",
+        )
+        .unwrap();
+
+        let base_options = ProjectIndexOptions::with_exclude_globs(40_000, Vec::new());
+        let options = base_options.clone().with_excluded_path(app_state.clone());
+        let (index, signature) = ProjectIndex::rebuild_with_signature_options(&root, &options);
+        let rebuilt_again = ProjectIndex::rebuild_with_signature_options(&root, &options).1;
+
+        assert_eq!(index.files(), &[root.join("src/lib.rs")]);
+        assert_eq!(signature, rebuilt_again);
+        assert_eq!(signature.file_count, 1);
+        assert_ne!(
+            options.options_fingerprint(),
+            base_options.options_fingerprint()
+        );
+        assert!(
+            index
+                .all_entries()
+                .iter()
+                .all(|entry| !entry.path.starts_with(&app_state))
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_exclude_globs_apply_to_rebuild_and_signature() {
+        let root = std::env::temp_dir().join(format!(
+            "kuroya-project-configurable-excludes-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("packages/web/cache")).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn indexed() {}\n").unwrap();
+        fs::write(root.join("packages/web/cache/generated.js"), "skipped();\n").unwrap();
+
+        let options = ProjectIndexOptions::with_exclude_globs(40_000, vec!["cache".to_owned()]);
+        let (index, signature) = ProjectIndex::rebuild_with_signature_options(&root, &options);
+        let rebuilt_again = ProjectIndex::rebuild_with_signature_options(&root, &options).1;
+
+        assert_eq!(index.files(), &[root.join("src/lib.rs")]);
+        assert_eq!(signature, rebuilt_again);
+        assert_eq!(signature.file_count, 1);
+        assert!(
+            index
+                .all_entries()
+                .iter()
+                .all(|entry| { !entry.relative_path.starts_with("packages/web/cache") })
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_signature_includes_exclude_options() {
+        let root = std::env::temp_dir().join(format!(
+            "kuroya-project-exclude-signature-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("target")).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn indexed() {}\n").unwrap();
+        fs::write(root.join("target/generated.rs"), "fn generated() {}\n").unwrap();
+
+        let default_options = ProjectIndexOptions::new(40_000);
+        let empty_options = ProjectIndexOptions::with_exclude_globs(40_000, Vec::new());
+        let default_signature =
+            ProjectIndex::rebuild_with_signature_options(&root, &default_options).1;
+        let empty_signature = ProjectIndex::rebuild_with_signature_options(&root, &empty_options).1;
+
+        assert_ne!(default_signature, empty_signature);
+        assert!(default_signature.matches_options(&default_options));
+        assert!(!default_signature.matches_options(&empty_options));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn project_index_signature_ignores_workspace_state_dir_changes() {
         let root = std::env::temp_dir().join(format!(
             "kuroya-project-state-dir-signature-{}",
@@ -739,11 +1913,11 @@ mod tests {
         ));
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(root.join("src/lib.rs"), "fn indexed() {}\n").unwrap();
-        let before = ProjectIndex::scan_signature(&root, 40_000);
+        let before = ProjectIndex::rebuild_with_signature(&root, 40_000).1;
 
         fs::create_dir_all(root.join(".kuroya")).unwrap();
         fs::write(root.join(".kuroya/project-index.json"), "{}").unwrap();
-        let after = ProjectIndex::scan_signature(&root, 40_000);
+        let after = ProjectIndex::rebuild_with_signature(&root, 40_000).1;
 
         assert_eq!(before, after);
 
@@ -762,10 +1936,10 @@ mod tests {
         fs::create_dir_all(root.join("src")).unwrap();
         let path = root.join("src/lib.rs");
         fs::write(&path, "fn indexed() {}\n").unwrap();
-        let first = ProjectIndex::scan_signature(&root, 40_000);
+        let first = ProjectIndex::rebuild_with_signature(&root, 40_000).1;
 
         fs::write(&path, "fn indexed() {}\nfn newer() {}\n").unwrap();
-        let second = ProjectIndex::scan_signature(&root, 40_000);
+        let second = ProjectIndex::rebuild_with_signature(&root, 40_000).1;
 
         assert_ne!(first, second);
 
@@ -774,20 +1948,25 @@ mod tests {
 
     #[test]
     fn project_index_signature_fingerprint_includes_created_identity() {
-        let entry = ProjectIndexSignatureEntry {
+        let entry = ProjectEntry {
+            path: PathBuf::from("workspace/src/lib.rs"),
             relative_path: PathBuf::from("src/lib.rs"),
             is_dir: false,
+            depth: 1,
             len: 12,
-            modified_nanos: 34,
-            created_nanos: 56,
+            modified_millis: 34,
+            created_millis: 56,
         };
-        let changed = ProjectIndexSignatureEntry {
-            created_nanos: 57,
+        let changed = ProjectEntry {
+            created_millis: 57,
             ..entry.clone()
         };
 
-        let first = project_index_signature_fingerprint(40_000, false, &[entry]);
-        let second = project_index_signature_fingerprint(40_000, false, &[changed]);
+        let options_fingerprint = ProjectIndexOptions::new(40_000).options_fingerprint();
+        let first =
+            project_index_signature_fingerprint(40_000, options_fingerprint, false, &[entry]);
+        let second =
+            project_index_signature_fingerprint(40_000, options_fingerprint, false, &[changed]);
 
         assert_ne!(first, second);
     }
@@ -998,12 +2177,20 @@ mod tests {
         let relative_path = Path::new("src/lib.rs");
         fs::write(&path, "fn indexed() {}\n").unwrap();
 
+        let mut ast = 1u64 << 20;
         assert!(
-            extract_project_symbols(&path, relative_path, Some(MAX_SYMBOL_FILE_BYTES + 1), 8)
-                .is_empty()
+            extract_project_symbols(
+                &path,
+                relative_path,
+                Some(MAX_SYMBOL_FILE_BYTES + 1),
+                8,
+                &mut ast
+            )
+            .is_empty()
         );
 
-        let symbols = extract_project_symbols(&path, relative_path, Some(16), 8);
+        let mut ast = 1u64 << 20;
+        let symbols = extract_project_symbols(&path, relative_path, Some(16), 8, &mut ast);
         assert_eq!(
             symbols
                 .iter()
@@ -1031,7 +2218,8 @@ mod tests {
         let relative_path = Path::new("cached/src/lib.rs");
         fs::write(&path, "fn indexed() {}\n").unwrap();
 
-        let symbols = extract_project_symbols(&path, relative_path, Some(16), 8);
+        let mut ast = 1u64 << 20;
+        let symbols = extract_project_symbols(&path, relative_path, Some(16), 8, &mut ast);
 
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name.as_str(), "indexed");
@@ -1055,9 +2243,14 @@ mod tests {
         fs::write(&go_mod, "func skipped() {}\n").unwrap();
         fs::write(&rust_path, "fn indexed() {}\n").unwrap();
 
-        assert!(extract_project_symbols(&go_mod, Path::new("go.mod"), Some(18), 8).is_empty());
+        let mut ast = 1u64 << 20;
+        assert!(
+            extract_project_symbols(&go_mod, Path::new("go.mod"), Some(18), 8, &mut ast).is_empty()
+        );
 
-        let symbols = extract_project_symbols(&rust_path, Path::new("LIB.RS"), Some(16), 8);
+        let mut ast = 1u64 << 20;
+        let symbols =
+            extract_project_symbols(&rust_path, Path::new("LIB.RS"), Some(16), 8, &mut ast);
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name.as_str(), "indexed");
 
@@ -1081,14 +2274,17 @@ mod tests {
         );
         fs::write(&path, text).unwrap();
 
-        let symbols = extract_project_symbols(&path, Path::new("lib.rs"), None, 8);
+        let mut ast = 1u64 << 20;
+        let symbols = extract_project_symbols(&path, Path::new("lib.rs"), None, 8, &mut ast);
 
+        // The AST path parses the whole file, so the oversized line no longer
+        // hides the declaration before it.
         assert_eq!(
             symbols
                 .iter()
                 .map(|symbol| symbol.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["indexed"]
+            vec!["skipped", "indexed"]
         );
 
         fs::remove_dir_all(root).unwrap();
@@ -1488,5 +2684,568 @@ mod tests {
         assert!(contains_ascii_case_insensitive("TaskRunner", "task"));
         assert!(starts_with_ascii_case_insensitive("TaskRunner", "task"));
         assert!(!contains_ascii_case_insensitive("Über", "über"));
+    }
+
+    #[test]
+    fn project_index_entries_capture_file_metadata() {
+        let root = temp_project_dir("project-entry-metadata");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn indexed() {}\n").unwrap();
+
+        let index = ProjectIndex::rebuild(&root, 40_000);
+        let file_entry = index
+            .all_entries()
+            .iter()
+            .find(|entry| entry.relative_path == Path::new("src/lib.rs"))
+            .unwrap()
+            .clone();
+        let dir_entry = index
+            .all_entries()
+            .iter()
+            .find(|entry| entry.relative_path == Path::new("src"))
+            .unwrap()
+            .clone();
+
+        assert_eq!(
+            file_entry.len,
+            fs::metadata(root.join("src/lib.rs")).unwrap().len()
+        );
+        assert!(file_entry.modified_millis > 0);
+        assert!(file_entry.created_millis > 0);
+        assert_eq!(
+            (
+                dir_entry.len,
+                dir_entry.modified_millis,
+                dir_entry.created_millis
+            ),
+            (0, 0, 0)
+        );
+
+        // Metadata survives the disk-cache round trip.
+        let bytes = serde_json::to_vec(&index).unwrap();
+        let loaded = serde_json::from_slice::<ProjectIndex>(&bytes).unwrap();
+        let loaded_entry = loaded
+            .all_entries()
+            .iter()
+            .find(|entry| entry.relative_path == Path::new("src/lib.rs"))
+            .unwrap();
+        assert_eq!(loaded_entry.len, file_entry.len);
+        assert_eq!(loaded_entry.modified_millis, file_entry.modified_millis);
+        assert_eq!(loaded_entry.created_millis, file_entry.created_millis);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn collect_project_symbols_charges_the_byte_budget_and_skips_large_files() {
+        let root = temp_project_dir("collect-symbols-budget");
+        fs::create_dir_all(&root).unwrap();
+
+        // Three Rust files with symbols: one big (over the per-file AST and
+        // scan budget when charged), two small ones.
+        fs::write(
+            root.join("small_a.rs"),
+            "fn small_a() {}
+",
+        )
+        .unwrap();
+        fs::write(
+            root.join("small_b.rs"),
+            "fn small_b() {}
+",
+        )
+        .unwrap();
+        fs::write(
+            root.join("big.rs"),
+            format!(
+                "// {}
+",
+                "x".repeat(4096)
+            ),
+        )
+        .unwrap();
+        let big_len = fs::metadata(root.join("big.rs")).unwrap().len();
+
+        let entry = |path: std::path::PathBuf| {
+            let metadata = fs::metadata(&path).unwrap();
+            let relative = path.strip_prefix(&root).unwrap().to_path_buf();
+            ProjectEntry::from_metadata_parts(path.clone(), relative, false, 0, Some(&metadata))
+        };
+        let mut entries: Vec<ProjectEntry> = ["small_a.rs", "small_b.rs", "big.rs"]
+            .iter()
+            .map(|name| entry(root.join(name)))
+            .collect();
+        let small_len = entries[0].len;
+        assert!(small_len > 0);
+        assert_eq!(big_len, 4100); // "// " + 4096 x + newline
+
+        // Pretend the workspace is above the cliff: budget smaller than the
+        // big file, so only the two smallest files are scanned.
+        let budget = small_len * 2;
+        let (symbols, used) = collect_project_symbols(
+            &entries,
+            PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT + 1,
+            MAX_PROJECT_SYMBOLS,
+            budget,
+        );
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["small_a", "small_b"], "smallest files first");
+        assert!(
+            used <= budget,
+            "spend {used} must stay within budget {budget}"
+        );
+
+        // No directory entries are scanned even when present.
+        entries.clear();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn symbol_cap_does_not_starve_late_alphabetical_files() {
+        // Regression: the cap used to be consumed in walk (alphabetical)
+        // order, so a small file sorting late lost its symbols to early
+        // files. Smallest-first ordering must keep it indexed.
+        let root = temp_project_dir("symbol-cap-fairness");
+        fs::create_dir_all(&root).unwrap();
+
+        // Alphabetically early files stuffed with symbols to exhaust the cap.
+        let stuffing = "fn filler() {}
+"
+        .repeat(200);
+        fs::write(root.join("a_file.rs"), stuffing.clone()).unwrap();
+        fs::write(root.join("b_file.rs"), stuffing).unwrap();
+        // Tiny file sorts after them but must win under smallest-first.
+        fs::write(
+            root.join("z_tiny.rs"),
+            "pub struct TinySymbol;
+",
+        )
+        .unwrap();
+
+        let index = ProjectIndex::rebuild(&root, DEFAULT_PROJECT_INDEX_MAX_FILES);
+        let names: Vec<&str> = index.symbols().iter().map(|s| s.name.as_str()).collect();
+
+        assert!(
+            names.contains(&"TinySymbol"),
+            "the tiny late-alphabetical file must be scanned first: {names:?}"
+        );
+        // The cap forced some filler symbols out instead.
+        let fillers = names.iter().filter(|name| **name == "filler").count();
+        assert!(
+            fillers < 400,
+            "cap should have trimmed the stuffed files: {fillers}"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rust_ast_extraction_beats_the_line_scanner_on_string_literals() {
+        let root = temp_project_dir("rust-ast-vs-line-scan");
+        fs::create_dir_all(&root).unwrap();
+        // The line scanner sees "fn fake()" at text position; only the AST
+        // path knows it is inside a string literal.
+        fs::write(
+            root.join("lib.rs"),
+            "const SNIPPET: &str = \"fn fake() {}\";
+fn real() {}
+",
+        )
+        .unwrap();
+
+        let index = ProjectIndex::rebuild(&root, DEFAULT_PROJECT_INDEX_MAX_FILES);
+        let names: Vec<&str> = index.symbols().iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"real"), "real symbols extracted: {names:?}");
+        assert!(
+            !names.contains(&"fake"),
+            "string literals must not produce symbols: {names:?}"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_symbol_scan_is_budgeted_beyond_file_limit() {
+        let root = temp_project_dir("project-symbol-scan-limit");
+        fs::create_dir_all(root.join("src")).unwrap();
+        for index in 0..PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT {
+            let _ = fs::write(root.join("src").join(format!("mod_{index}.rs")), "");
+        }
+        // One real source file: even above the scan cliff its symbols must
+        // survive under the smallest-first budget policy.
+        fs::write(
+            root.join("src").join("lib.rs"),
+            "pub struct BudgetedSymbol;
+",
+        )
+        .unwrap();
+
+        let index = ProjectIndex::rebuild(&root, DEFAULT_PROJECT_INDEX_MAX_FILES);
+
+        assert_eq!(
+            index.files().len(),
+            PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT + 1
+        );
+        assert!(
+            index
+                .symbols()
+                .iter()
+                .any(|symbol| symbol.name == "BudgetedSymbol"),
+            "indexes above the symbol scan limit keep symbols within the byte budget"
+        );
+        assert!(!index.truncated());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_is_warm_distinguishes_placeholder() {
+        assert!(!ProjectIndex::default().is_warm());
+        assert_eq!(ProjectIndex::default().max_files(), 0);
+
+        let root = temp_project_dir("project-is-warm");
+        fs::create_dir_all(&root).unwrap();
+        let index = ProjectIndex::rebuild(&root, 40_000);
+        assert!(index.is_warm());
+        assert_eq!(index.max_files(), 40_000);
+        assert!(
+            ProjectIndex::rebuild(&root, 40_000)
+                .clone_for_update()
+                .is_warm()
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_apply_path_changes_upserts_new_changed_and_deleted_files() {
+        let root = temp_project_dir("project-apply-files");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.rs"), "fn a() {}\n").unwrap();
+        let options = ProjectIndexOptions::new(40_000);
+        let mut index = ProjectIndex::rebuild_with_options(&root, &options);
+
+        // Unchanged path: apply must be a no-op.
+        assert!(!index.apply_path_changes(&root, &[root.join("src/a.rs")]));
+
+        // New file inserts in sorted position.
+        fs::write(root.join("src/b.rs"), "fn b() {}\n").unwrap();
+        // Changed file updates metadata.
+        fs::write(root.join("src/a.rs"), "fn a() {}\nfn more() {}\n").unwrap();
+        // Deleted file disappears with its entry.
+        let deleted = root.join("src/a.rs");
+        fs::remove_file(&deleted).unwrap();
+
+        assert!(index.apply_path_changes(
+            &root,
+            &[
+                root.join("src/b.rs"),
+                root.join("src/a.rs"),
+                deleted.clone()
+            ],
+        ));
+
+        assert_eq!(index.files(), &[root.join("src/b.rs")]);
+        assert_eq!(
+            index
+                .all_entries()
+                .iter()
+                .map(|entry| entry.relative_path.as_path())
+                .collect::<Vec<_>>(),
+            &[Path::new("src"), Path::new("src/b.rs")]
+        );
+        assert!(
+            !index
+                .all_entries()
+                .iter()
+                .any(|entry| entry.path == deleted)
+        );
+        assert!(index.is_warm());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn project_index_apply_path_changes_resolves_case_only_renames_without_ghosts() {
+        let root = temp_project_dir("project-apply-case-rename");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/Foo.rs"), "fn foo() {}\n").unwrap();
+        let options = ProjectIndexOptions::new(40_000);
+        let mut index = ProjectIndex::rebuild_with_options(&root, &options);
+        assert_eq!(index.files(), &[root.join("src/Foo.rs")]);
+
+        // Case-only rename on a case-insensitive filesystem.
+        fs::rename(root.join("src/Foo.rs"), root.join("src/foo.rs")).unwrap();
+
+        // A later batch that only carries the new spelling (the From/To pair
+        // collapsed in an earlier batch) must remove the stored old casing
+        // instead of ghosting `Foo.rs` beside `foo.rs`.
+        assert!(index.apply_path_changes(&root, &[root.join("src/foo.rs")]));
+        assert_eq!(index.files(), &[root.join("src/foo.rs")]);
+        assert!(
+            index
+                .all_entries()
+                .iter()
+                .all(|entry| entry.path != root.join("src/Foo.rs"))
+        );
+
+        // Feeding the parent directory (the dedupe substitution) rescans the
+        // subtree and rebuilds the entry with the real on-disk casing.
+        fs::rename(root.join("src/foo.rs"), root.join("src/Foo.rs")).unwrap();
+        assert!(index.apply_path_changes(&root, &[root.join("src")]));
+        assert_eq!(index.files(), &[root.join("src/Foo.rs")]);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_apply_path_changes_scans_created_directory_subtree() {
+        let root = temp_project_dir("project-apply-dir-create");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("top.rs"), "fn top() {}\n").unwrap();
+        let options = ProjectIndexOptions::new(40_000);
+        let mut index = ProjectIndex::rebuild_with_options(&root, &options);
+
+        fs::create_dir_all(root.join("pkg/nested")).unwrap();
+        fs::write(root.join("pkg/inner.rs"), "fn inner() {}\n").unwrap();
+        fs::write(root.join("pkg/nested/deep.rs"), "fn deep() {}\n").unwrap();
+
+        assert!(index.apply_path_changes(&root, &[root.join("pkg")]));
+
+        assert_eq!(
+            index.files(),
+            &[
+                root.join("pkg/inner.rs"),
+                root.join("pkg/nested/deep.rs"),
+                root.join("top.rs"),
+            ]
+        );
+        assert_eq!(
+            index
+                .all_entries()
+                .iter()
+                .map(|entry| entry.relative_path.as_path())
+                .collect::<Vec<_>>(),
+            &[
+                Path::new("pkg"),
+                Path::new("pkg/inner.rs"),
+                Path::new("pkg/nested"),
+                Path::new("pkg/nested/deep.rs"),
+                Path::new("top.rs"),
+            ]
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_apply_path_changes_removes_deleted_directory_subtree() {
+        let root = temp_project_dir("project-apply-dir-delete");
+        fs::create_dir_all(root.join("pkg/nested")).unwrap();
+        fs::write(root.join("top.rs"), "fn top() {}\n").unwrap();
+        fs::write(root.join("pkg/inner.rs"), "fn inner() {}\n").unwrap();
+        fs::write(root.join("pkg/nested/deep.rs"), "fn deep() {}\n").unwrap();
+        let options = ProjectIndexOptions::new(40_000);
+        let mut index = ProjectIndex::rebuild_with_options(&root, &options);
+
+        fs::remove_dir_all(root.join("pkg")).unwrap();
+
+        assert!(index.apply_path_changes(&root, &[root.join("pkg")]));
+
+        assert_eq!(index.files(), &[root.join("top.rs")]);
+        assert!(
+            index
+                .all_entries()
+                .iter()
+                .all(|entry| !entry.path.starts_with(root.join("pkg")))
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_apply_path_changes_preserves_entry_sort_invariants() {
+        let root = temp_project_dir("project-apply-sorted");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/keep.rs"), "fn keep() {}\n").unwrap();
+        let options = ProjectIndexOptions::new(40_000);
+        let mut index = ProjectIndex::rebuild_with_options(&root, &options);
+
+        fs::write(root.join("aaa.rs"), "fn aaa() {}\n").unwrap();
+        fs::create_dir_all(root.join("zzz")).unwrap();
+        fs::write(root.join("zzz/last.rs"), "fn last() {}\n").unwrap();
+        fs::write(root.join("mm.rs"), "fn mm() {}\n").unwrap();
+
+        assert!(index.apply_path_changes(
+            &root,
+            &[root.join("zzz"), root.join("aaa.rs"), root.join("mm.rs")],
+        ));
+
+        let relative_paths = index
+            .all_entries()
+            .iter()
+            .map(|entry| entry.relative_path.clone())
+            .collect::<Vec<_>>();
+        let mut sorted = relative_paths.clone();
+        sorted.sort();
+        assert_eq!(relative_paths, sorted);
+        assert!(index.files().windows(2).all(|pair| pair[0] < pair[1]));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_apply_path_changes_ignores_excluded_protected_and_hidden_paths() {
+        let root = temp_project_dir("project-apply-policy");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn indexed() {}\n").unwrap();
+        let options = ProjectIndexOptions::with_exclude_globs(40_000, vec!["generated".to_owned()]);
+        let mut index = ProjectIndex::rebuild_with_options(&root, &options);
+
+        fs::create_dir_all(root.join("generated")).unwrap();
+        fs::create_dir_all(root.join(".cargo/registry")).unwrap();
+        fs::create_dir_all(root.join(".git/objects")).unwrap();
+        fs::create_dir_all(root.join(".kuroya")).unwrap();
+        fs::write(root.join("generated/out.rs"), "fn skipped() {}\n").unwrap();
+        fs::write(root.join(".cargo/registry/x.txt"), "skipped()\n").unwrap();
+        fs::write(root.join(".git/config"), "").unwrap();
+        fs::write(root.join(".kuroya/state.json"), "{}").unwrap();
+
+        assert!(!index.apply_path_changes(
+            &root,
+            &[
+                root.join("generated"),
+                root.join("generated/out.rs"),
+                root.join(".cargo"),
+                root.join(".cargo/registry/x.txt"),
+                root.join(".git"),
+                root.join(".git/config"),
+                root.join(".kuroya"),
+                root.join(".kuroya/state.json"),
+                root.join("outside-the-workspace.rs"),
+                root.join("src/lib.rs"),
+            ],
+        ));
+
+        assert_eq!(index.files(), &[root.join("src/lib.rs")]);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_apply_path_changes_marks_truncated_at_file_limit() {
+        let root = temp_project_dir("project-apply-truncated");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.rs"), "fn a() {}\n").unwrap();
+        fs::write(root.join("src/b.rs"), "fn b() {}\n").unwrap();
+        let options = ProjectIndexOptions::new(2);
+        let mut index = ProjectIndex::rebuild_with_options(&root, &options);
+        assert!(!index.truncated());
+
+        fs::write(root.join("src/c.rs"), "fn c() {}\n").unwrap();
+
+        assert!(index.apply_path_changes(&root, &[root.join("src/c.rs")]));
+        assert!(index.truncated());
+        assert_eq!(
+            index.files(),
+            &[root.join("src/a.rs"), root.join("src/b.rs")]
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_apply_path_changes_replaces_symbols_for_changed_file() {
+        let root = temp_project_dir("project-apply-symbols");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "fn old_name() {}\n").unwrap();
+        fs::write(root.join("src/other.rs"), "fn untouched() {}\n").unwrap();
+        let options = ProjectIndexOptions::new(40_000);
+        let mut index = ProjectIndex::rebuild_with_options(&root, &options);
+        assert!(
+            index
+                .symbols()
+                .iter()
+                .any(|symbol| symbol.name == "old_name")
+        );
+
+        fs::write(root.join("src/lib.rs"), "fn new_name() {}\nfn extra() {}\n").unwrap();
+
+        assert!(index.apply_path_changes(&root, &[root.join("src/lib.rs")]));
+
+        let names = index
+            .symbols()
+            .iter()
+            .map(|symbol| symbol.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(!names.contains(&"old_name"));
+        assert!(names.contains(&"new_name"));
+        assert!(names.contains(&"extra"));
+        assert!(
+            names.contains(&"untouched"),
+            "other files keep their symbols"
+        );
+        assert!(
+            index
+                .symbols()
+                .iter()
+                .all(|symbol| symbol.relative_path != Path::new("src/lib.rs")
+                    || symbol.name == "new_name"
+                    || symbol.name == "extra")
+        );
+
+        // Deleting the file removes its symbols too.
+        fs::remove_file(root.join("src/lib.rs")).unwrap();
+        assert!(index.apply_path_changes(&root, &[root.join("src/lib.rs")]));
+        assert!(
+            index
+                .symbols()
+                .iter()
+                .all(|symbol| symbol.relative_path != Path::new("src/lib.rs"))
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn project_index_apply_path_changes_matches_fresh_rebuild_signature() {
+        let root = temp_project_dir("project-apply-signature");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.rs"), "fn a() {}\n").unwrap();
+        let options = ProjectIndexOptions::new(40_000);
+        let mut index = ProjectIndex::rebuild_with_options(&root, &options);
+
+        fs::write(root.join("src/b.rs"), "pub struct NewThing {}\n").unwrap();
+        fs::write(root.join("src/a.rs"), "fn a_changed() {}\n").unwrap();
+        fs::create_dir_all(root.join("more")).unwrap();
+        fs::write(root.join("more/c.rs"), "fn c() {}\n").unwrap();
+
+        assert!(index.apply_path_changes(
+            &root,
+            &[
+                root.join("src/b.rs"),
+                root.join("src/a.rs"),
+                root.join("more")
+            ],
+        ));
+
+        let (rebuilt, signature) = ProjectIndex::rebuild_with_signature_options(&root, &options);
+        assert_eq!(index.signature_from_entries(&options), signature);
+        assert_eq!(index.files(), rebuilt.files());
+        assert_eq!(index.all_entries(), rebuilt.all_entries());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn temp_project_dir(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "kuroya-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
     }
 }

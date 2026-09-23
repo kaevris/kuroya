@@ -2,6 +2,7 @@ use crate::preference_panels::sections::{
     SETTINGS_TARGET_EDITOR_LANGUAGE, SettingsHighlightState, bounded_singleline_text_edit,
     bounded_singleline_text_edit_with_hint, settings_target_heading,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::{
     EditorInlineSuggestEditsAllowCodeShifting, EditorInlineSuggestEditsRenderSideBySide,
@@ -31,7 +32,7 @@ pub(super) fn render_language_settings_with_highlight(
         .spacing([18.0, 10.0])
         .show(ui, |ui| {
             ui.label("Quick suggestions");
-            ui.checkbox(&mut draft.quick_suggestions, "Suggest while typing words");
+            ui_switch(ui, &mut draft.quick_suggestions).on_hover_text("Suggest while typing words");
             ui.end_row();
 
             ui.label("Quick suggestion delay");
@@ -48,29 +49,20 @@ pub(super) fn render_language_settings_with_highlight(
             ui.end_row();
 
             ui.label("Trigger characters");
-            ui.checkbox(
-                &mut draft.suggest_on_trigger_characters,
-                "Suggest after trigger characters",
-            );
+            ui_switch(ui, &mut draft.suggest_on_trigger_characters)
+                .on_hover_text("Suggest after trigger characters");
             ui.end_row();
 
             ui.label("Accept on Enter");
-            ui.checkbox(
-                &mut draft.accept_suggestion_on_enter,
-                "Apply selected suggestion with Enter",
-            );
+            ui_switch(ui, &mut draft.accept_suggestion_on_enter);
             ui.end_row();
 
             ui.label("Accept on Tab");
-            ui.checkbox(
-                &mut draft.accept_suggestion_on_tab,
-                "Apply selected suggestion with Tab",
-            );
+            ui_switch(ui, &mut draft.accept_suggestion_on_tab);
             ui.end_row();
 
             ui.label("Accept on commit char");
-            ui.checkbox(
-                &mut draft.accept_suggestion_on_commit_character,
+            ui_switch(ui, &mut draft.accept_suggestion_on_commit_character).on_hover_text(
                 "Apply suggestions when provider-defined commit characters are typed",
             );
             ui.end_row();
@@ -147,85 +139,153 @@ pub(super) fn render_language_settings_with_highlight(
 
             ui.label("Suggest behavior");
             ui.vertical(|ui| {
-                ui.checkbox(
-                    &mut draft.suggest_filter_graceful,
-                    "Graceful fuzzy filtering",
-                );
-                ui.checkbox(
-                    &mut draft.suggest_snippets_prevent_quick_suggestions,
-                    "Snippets block quick suggestions",
-                );
-                ui.checkbox(&mut draft.suggest_locality_bonus, "Prefer nearby words");
-                ui.checkbox(
-                    &mut draft.suggest_share_suggest_selections,
-                    "Share remembered selections",
-                );
-                ui.checkbox(&mut draft.suggest_preview, "Preview suggestion edits");
-                ui.checkbox(
-                    &mut draft.suggest_match_on_word_start_only,
-                    "Match only on word start",
-                );
-                ui.checkbox(&mut draft.show_unused, "Fade unused code");
-                ui.checkbox(&mut draft.show_deprecated, "Strike deprecated symbols");
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.suggest_filter_graceful);
+                    ui.label(
+                        egui::RichText::new("Graceful fuzzy filtering")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.suggest_snippets_prevent_quick_suggestions);
+                    ui.label(
+                        egui::RichText::new("Snippets block quick suggestions")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.suggest_locality_bonus);
+                    ui.label(egui::RichText::new("Prefer nearby words").small().weak());
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.suggest_share_suggest_selections);
+                    ui.label(
+                        egui::RichText::new("Share remembered selections")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.suggest_preview);
+                    ui.label(
+                        egui::RichText::new("Preview suggestion edits")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.suggest_match_on_word_start_only);
+                    ui.label(
+                        egui::RichText::new("Match only on word start")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.show_unused);
+                    ui.label(egui::RichText::new("Fade unused code").small().weak());
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.show_deprecated);
+                    ui.label(
+                        egui::RichText::new("Strike deprecated symbols")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
             });
             ui.end_row();
 
             ui.label("Suggest widget");
             ui.vertical(|ui| {
-                ui.checkbox(&mut draft.suggest_show_icons, "Show suggestion icons");
-                ui.checkbox(&mut draft.suggest_show_status_bar, "Show status bar");
-                ui.checkbox(
-                    &mut draft.suggest_show_inline_details,
-                    "Show details inline",
-                );
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.suggest_show_icons);
+                    ui.label(egui::RichText::new("Show suggestion icons").small().weak());
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.suggest_show_status_bar);
+                    ui.label(egui::RichText::new("Show status bar").small().weak());
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.suggest_show_inline_details);
+                    ui.label(egui::RichText::new("Show details inline").small().weak());
+                    r
+                });
             });
             ui.end_row();
 
             ui.label("Suggest item kinds");
-            ui.vertical(|ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut draft.suggest_show_methods, "Methods");
-                    ui.checkbox(&mut draft.suggest_show_functions, "Functions");
-                    ui.checkbox(&mut draft.suggest_show_constructors, "Constructors");
-                    ui.checkbox(&mut draft.suggest_show_fields, "Fields");
-                    ui.checkbox(&mut draft.suggest_show_variables, "Variables");
-                    ui.checkbox(&mut draft.suggest_show_classes, "Classes");
-                    ui.checkbox(&mut draft.suggest_show_structs, "Structs");
-                    ui.checkbox(&mut draft.suggest_show_interfaces, "Interfaces");
-                    ui.checkbox(&mut draft.suggest_show_modules, "Modules");
-                    ui.checkbox(&mut draft.suggest_show_properties, "Properties");
+            // Bounded sub-grid instead of horizontal_wrapped rows: a wrapped row
+            // inside a grid cell has no known width on first layout, so the grid
+            // measures it fully unwrapped and the min width resizes the window.
+            egui::Grid::new("settings_editor_suggest_item_kinds_grid")
+                .num_columns(4)
+                .spacing([14.0, 8.0])
+                .show(ui, |ui| {
+                    let mut column = 0usize;
+                    for (value, label) in [
+                        (&mut draft.suggest_show_methods, "Methods"),
+                        (&mut draft.suggest_show_functions, "Functions"),
+                        (&mut draft.suggest_show_constructors, "Constructors"),
+                        (&mut draft.suggest_show_fields, "Fields"),
+                        (&mut draft.suggest_show_variables, "Variables"),
+                        (&mut draft.suggest_show_classes, "Classes"),
+                        (&mut draft.suggest_show_structs, "Structs"),
+                        (&mut draft.suggest_show_interfaces, "Interfaces"),
+                        (&mut draft.suggest_show_modules, "Modules"),
+                        (&mut draft.suggest_show_properties, "Properties"),
+                        (&mut draft.suggest_show_events, "Events"),
+                        (&mut draft.suggest_show_operators, "Operators"),
+                        (&mut draft.suggest_show_units, "Units"),
+                        (&mut draft.suggest_show_values, "Values"),
+                        (&mut draft.suggest_show_constants, "Constants"),
+                        (&mut draft.suggest_show_enums, "Enums"),
+                        (&mut draft.suggest_show_enum_members, "Enum members"),
+                        (&mut draft.suggest_show_keywords, "Keywords"),
+                        (&mut draft.suggest_show_words, "Words"),
+                        (&mut draft.suggest_show_colors, "Colors"),
+                        (&mut draft.suggest_show_files, "Files"),
+                        (&mut draft.suggest_show_references, "References"),
+                        (&mut draft.suggest_show_customcolors, "Custom colors"),
+                        (&mut draft.suggest_show_folders, "Folders"),
+                        (&mut draft.suggest_show_type_parameters, "Type parameters"),
+                        (&mut draft.suggest_show_snippets, "Snippets"),
+                        (&mut draft.suggest_show_users, "Users"),
+                        (&mut draft.suggest_show_issues, "Issues"),
+                        (&mut draft.suggest_show_deprecated, "Deprecated"),
+                    ] {
+                        ui.horizontal(|ui| {
+                            let r = ui_switch(ui, value);
+                            ui.label(egui::RichText::new(label).small().weak());
+                            r
+                        });
+                        column += 1;
+                        if column == 4 {
+                            ui.end_row();
+                            column = 0;
+                        }
+                    }
+                    if column > 0 {
+                        ui.end_row();
+                    }
                 });
-                ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut draft.suggest_show_events, "Events");
-                    ui.checkbox(&mut draft.suggest_show_operators, "Operators");
-                    ui.checkbox(&mut draft.suggest_show_units, "Units");
-                    ui.checkbox(&mut draft.suggest_show_values, "Values");
-                    ui.checkbox(&mut draft.suggest_show_constants, "Constants");
-                    ui.checkbox(&mut draft.suggest_show_enums, "Enums");
-                    ui.checkbox(&mut draft.suggest_show_enum_members, "Enum members");
-                    ui.checkbox(&mut draft.suggest_show_keywords, "Keywords");
-                    ui.checkbox(&mut draft.suggest_show_words, "Words");
-                    ui.checkbox(&mut draft.suggest_show_colors, "Colors");
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut draft.suggest_show_files, "Files");
-                    ui.checkbox(&mut draft.suggest_show_references, "References");
-                    ui.checkbox(&mut draft.suggest_show_customcolors, "Custom colors");
-                    ui.checkbox(&mut draft.suggest_show_folders, "Folders");
-                    ui.checkbox(&mut draft.suggest_show_type_parameters, "Type parameters");
-                    ui.checkbox(&mut draft.suggest_show_snippets, "Snippets");
-                    ui.checkbox(&mut draft.suggest_show_users, "Users");
-                    ui.checkbox(&mut draft.suggest_show_issues, "Issues");
-                    ui.checkbox(&mut draft.suggest_show_deprecated, "Deprecated");
-                });
-            });
             ui.end_row();
 
             ui.label("Inline suggestions");
-            ui.checkbox(
-                &mut draft.inline_suggest_enabled,
-                "Show automatic inline suggestions",
-            );
+            ui_switch(ui, &mut draft.inline_suggest_enabled)
+                .on_hover_text("Show automatic inline suggestions");
             ui.end_row();
 
             ui.label("Inline suggest mode");
@@ -270,44 +330,93 @@ pub(super) fn render_language_settings_with_highlight(
 
             ui.label("Inline suggest details");
             ui.vertical(|ui| {
-                ui.checkbox(
-                    &mut draft.inline_suggest_syntax_highlighting_enabled,
-                    "Syntax highlight inline suggestions",
-                );
-                ui.checkbox(
-                    &mut draft.inline_suggest_suppress_suggestions,
-                    "Suppress suggest widget when inline suggestions are available",
-                );
-                ui.checkbox(
-                    &mut draft.inline_suggest_suppress_in_snippet_mode,
-                    "Suppress inline suggestions in snippet mode",
-                );
-                ui.checkbox(&mut draft.inline_suggest_keep_on_blur, "Keep on blur");
-                ui.checkbox(
-                    &mut draft.inline_suggest_trigger_command_on_provider_change,
-                    "Trigger command on provider change",
-                );
-                ui.checkbox(
-                    &mut draft.inline_completions_accessibility_verbose,
-                    "Verbose screen reader hint",
-                );
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.inline_suggest_syntax_highlighting_enabled);
+                    ui.label(
+                        egui::RichText::new("Syntax highlight inline suggestions")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.inline_suggest_suppress_suggestions);
+                    ui.label(
+                        egui::RichText::new(
+                            "Suppress suggest widget when inline suggestions are available",
+                        )
+                        .small()
+                        .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.inline_suggest_suppress_in_snippet_mode);
+                    ui.label(
+                        egui::RichText::new("Suppress inline suggestions in snippet mode")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.inline_suggest_keep_on_blur);
+                    ui.label(egui::RichText::new("Keep on blur").small().weak());
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(
+                        ui,
+                        &mut draft.inline_suggest_trigger_command_on_provider_change,
+                    );
+                    ui.label(
+                        egui::RichText::new("Trigger command on provider change")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.inline_completions_accessibility_verbose);
+                    ui.label(
+                        egui::RichText::new("Verbose screen reader hint")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
             });
             ui.end_row();
 
             ui.label("Inline suggest edits");
             ui.vertical(|ui| {
-                ui.checkbox(
-                    &mut draft.inline_suggest_edits_enabled,
-                    "Enable edit suggestions",
-                );
-                ui.checkbox(
-                    &mut draft.inline_suggest_edits_show_collapsed,
-                    "Show collapsed edit suggestions",
-                );
-                ui.checkbox(
-                    &mut draft.inline_suggest_edits_show_long_distance_hint,
-                    "Show long-distance hints",
-                );
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.inline_suggest_edits_enabled);
+                    ui.label(
+                        egui::RichText::new("Enable edit suggestions")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.inline_suggest_edits_show_collapsed);
+                    ui.label(
+                        egui::RichText::new("Show collapsed edit suggestions")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.inline_suggest_edits_show_long_distance_hint);
+                    ui.label(
+                        egui::RichText::new("Show long-distance hints")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
                 ui.horizontal(|ui| {
                     ui.label("Code shifting");
                     editor_inline_suggest_edits_allow_code_shifting_combo(
@@ -343,20 +452,40 @@ pub(super) fn render_language_settings_with_highlight(
                         &mut draft.inline_suggest_experimental_show_on_suggest_conflict,
                     );
                 });
-                ui.checkbox(
-                    &mut draft.inline_suggest_experimental_empty_response_information,
-                    "Empty response information",
-                );
+                ui.horizontal(|ui| {
+                    let r = ui_switch(
+                        ui,
+                        &mut draft.inline_suggest_experimental_empty_response_information,
+                    );
+                    ui.label(
+                        egui::RichText::new("Empty response information")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
             });
             ui.end_row();
 
             ui.label("Smart select");
             ui.vertical(|ui| {
-                ui.checkbox(
-                    &mut draft.smart_select_select_leading_and_trailing_whitespace,
-                    "Select leading and trailing whitespace",
-                );
-                ui.checkbox(&mut draft.smart_select_select_subwords, "Select subwords");
+                ui.horizontal(|ui| {
+                    let r = ui_switch(
+                        ui,
+                        &mut draft.smart_select_select_leading_and_trailing_whitespace,
+                    );
+                    ui.label(
+                        egui::RichText::new("Select leading and trailing whitespace")
+                            .small()
+                            .weak(),
+                    );
+                    r
+                });
+                ui.horizontal(|ui| {
+                    let r = ui_switch(ui, &mut draft.smart_select_select_subwords);
+                    ui.label(egui::RichText::new("Select subwords").small().weak());
+                    r
+                });
             });
             ui.end_row();
         });

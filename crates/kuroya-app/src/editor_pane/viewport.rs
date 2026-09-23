@@ -19,7 +19,9 @@ use eframe::egui::{
     UiBuilder, pos2, vec2,
 };
 use kuroya_core::settings::clamp_editor_font_size;
-use kuroya_core::{BufferId, EditorCursorSurroundingLinesStyle, buffer::CursorPosition};
+use kuroya_core::{
+    BufferId, EditorCursorSurroundingLinesStyle, TextBuffer, buffer::CursorPosition,
+};
 use layout::{
     editor_content_rect_with_padding, editor_horizontal_scrollbar_needed, editor_minimap_visible,
     editor_minimap_width, editor_mouse_wheel_zoom_delta_y, editor_mouse_wheel_zoom_modifier,
@@ -75,7 +77,7 @@ impl KuroyaApp {
         let base_line_total = data.visible_line_count.max(1);
         self.refresh_editor_selection_clipboard_from_buffer(buffer_index);
         let active_find_match = if self.buffer_find_open {
-            self.buffer_find_match
+            self.visible_pane_active_find_match(pane_id, active_id)
         } else {
             active_find_match_for_cursor(&data.cursor_positions, &data.find_matches)
         };
@@ -103,8 +105,12 @@ impl KuroyaApp {
         {
             pending_actions.focus_editor = true;
         }
-        ui.painter()
-            .rect_filled(viewport_rect, 0.0, ui.visuals().code_bg_color);
+        let image_preview_open = self.image_preview_buffers.contains_key(&active_id);
+        let background_image_active = self.background_image_is_ready();
+        if image_preview_open || !background_image_active {
+            ui.painter()
+                .rect_filled(viewport_rect, 0.0, ui.visuals().code_bg_color);
+        }
 
         if let Some(preview) = self.image_preview_buffers.get_mut(&active_id) {
             render_image_preview(ui, viewport_rect, active_id, preview, data.font_size);
@@ -114,6 +120,19 @@ impl KuroyaApp {
         let buffer = &self.buffers[buffer_index];
         let highlighter = &mut self.highlighter;
         let bracket_overlay_cache = &mut self.editor_bracket_overlay_cache;
+        let gpu_row_render_enabled =
+            crate::editor_row_render_cache::editor_row_render_cache_enabled(
+                self.settings.experimental_gpu_acceleration,
+            );
+        let gpu_row_theme_revision = gpu_row_render_enabled.then(|| {
+            crate::editor_row_render_cache::editor_row_theme_revision(&self.settings.theme.name)
+        });
+        let mut gpu_row_render_scope = gpu_row_theme_revision.map(|theme_revision| {
+            crate::editor_row_render_cache::GpuRowRenderScope {
+                cache: &mut self.editor_row_render_cache,
+                theme_revision,
+            }
+        });
         let minimap_width = editor_minimap_width(
             viewport_rect.width(),
             editor_minimap_visible(
@@ -285,6 +304,7 @@ impl KuroyaApp {
                             data.minimap_show_slider,
                             data.minimap_scale,
                             data.minimap_render_characters,
+                            background_image_active,
                             &data.minimap_section_headers,
                             data.minimap_section_header_font_size,
                             data.minimap_section_header_letter_spacing,
@@ -293,12 +313,14 @@ impl KuroyaApp {
                             &data.diagnostics_by_line,
                             find_match_lines,
                             cursor_lines,
+                            &data.visible_line_indices,
+                            data.visible_line_count,
                         )
                     },
                 )
                 .inner;
             if let Some(line) = minimap_jump {
-                pending_actions.minimap_jump = Some(line);
+                minimap_jump_pending_actions(&mut pending_actions, buffer, line);
             }
         }
 
@@ -412,7 +434,9 @@ impl KuroyaApp {
                                 buffer,
                                 highlighter,
                                 bracket_overlay_cache,
+                                gpu_row_render_scope.as_mut(),
                                 &data,
+                                background_image_active,
                                 active_find_match,
                                 &mut pending_actions,
                             );
@@ -460,6 +484,7 @@ impl KuroyaApp {
                     highlighter,
                     bracket_overlay_cache,
                     &data,
+                    background_image_active,
                     active_find_match,
                     sticky_line_idx,
                     sticky_row_index,
@@ -492,6 +517,7 @@ impl KuroyaApp {
                             data.minimap_show_slider,
                             data.minimap_scale,
                             data.minimap_render_characters,
+                            background_image_active,
                             &data.minimap_section_headers,
                             data.minimap_section_header_font_size,
                             data.minimap_section_header_letter_spacing,
@@ -500,12 +526,14 @@ impl KuroyaApp {
                             &data.diagnostics_by_line,
                             find_match_lines,
                             cursor_lines,
+                            &data.visible_line_indices,
+                            data.visible_line_count,
                         )
                     },
                 )
                 .inner;
             if let Some(line) = minimap_jump {
-                pending_actions.minimap_jump = Some(line);
+                minimap_jump_pending_actions(&mut pending_actions, buffer, line);
             }
         }
 
@@ -572,6 +600,20 @@ fn active_find_match_for_cursor(
         .iter()
         .position(|range| range.start <= cursor.char_idx && cursor.char_idx < range.end)
         .unwrap_or(usize::MAX)
+}
+
+fn minimap_jump_pending_actions(
+    pending_actions: &mut PendingEditorPaneActions,
+    buffer: &TextBuffer,
+    line: usize,
+) {
+    pending_actions.minimap_jump = Some(line);
+    // The cursor-surrounding-lines=All style scrolls back to the cursor line
+    // every frame while the pane is focused, so a jump that only moved the
+    // viewport would snap back one frame later. Move the cursor to the start
+    // of the target line instead, like a text click would, so the follow
+    // scroll and the jump agree.
+    pending_actions.cursor = Some((buffer.line_column_to_char(line, 0), false, false));
 }
 
 fn paint_editor_placeholder(
@@ -664,16 +706,54 @@ mod tests {
             editor_scrollbar_handle_colors, editor_scrollbar_rect_for_axes, editor_scrollbar_style,
             editor_scrollbar_width, editor_vertical_scrollbar_needed,
         },
-        minimap_decoration_line_sets, overview_ruler_border_rect, overview_ruler_cursor_lines,
-        overview_ruler_cursor_marker_rect, scm_diff_overview_marker_rect,
+        minimap_decoration_line_sets, minimap_jump_pending_actions, overview_ruler_border_rect,
+        overview_ruler_cursor_lines, overview_ruler_cursor_marker_rect,
+        scm_diff_overview_marker_rect,
     };
-    use eframe::egui::{Color32, Rect, pos2};
+    use eframe::egui::{Color32, Context, Rect, pos2};
     use egui::scroll_area::ScrollBarVisibility;
     use kuroya_core::{
         EditorMinimapAutohide, EditorMinimapSide, EditorMinimapSize, EditorScrollbarVisibility,
         GitLineChangeKind, MAX_EDITOR_LINE_HEIGHT, TextBuffer, buffer::CursorPosition,
     };
     use std::{collections::HashSet, ops::Range};
+
+    #[test]
+    fn minimap_jump_pending_actions_move_cursor_to_target_line_start() {
+        let buffer = TextBuffer::from_text(1, None, "alpha\nbeta\ngamma\n".to_owned());
+        let mut actions = crate::editor_pane_actions::PendingEditorPaneActions::default();
+
+        minimap_jump_pending_actions(&mut actions, &buffer, 2);
+
+        assert_eq!(actions.minimap_jump, Some(2));
+        assert_eq!(actions.cursor, Some((11, false, false)));
+    }
+
+    #[test]
+    fn applied_minimap_jump_moves_cursor_and_keeps_pending_scroll() {
+        let mut app = viewport_app_for_test();
+        app.buffers.push(TextBuffer::from_text(
+            1,
+            None,
+            "alpha\nbeta\ngamma\n".to_owned(),
+        ));
+        app.panes[0].active = Some(1);
+
+        let mut actions = crate::editor_pane_actions::PendingEditorPaneActions::default();
+        minimap_jump_pending_actions(&mut actions, app.buffer(1).expect("buffer"), 2);
+        app.apply_editor_pane_actions(&Context::default(), 1, 1, actions);
+
+        let buffer = app.buffer(1).expect("buffer");
+        let cursor = buffer
+            .cursor_positions()
+            .first()
+            .copied()
+            .expect("cursor position");
+        assert_eq!(cursor.line, 2);
+        assert_eq!(cursor.column, 0);
+        assert_eq!(app.pending_scroll_lines.get(&1), Some(&2));
+        assert_eq!(app.focused_pane, Some(1));
+    }
 
     #[test]
     fn active_find_match_for_cursor_follows_current_match() {
@@ -1374,5 +1454,33 @@ mod tests {
         assert!(buffer.len_bytes() > DIFF_PATCH_OVERVIEW_MAX_SCAN_BYTES);
         assert_eq!(buffer.len_lines(), 1);
         assert!(diff_patch_overview_lines(&buffer).is_empty());
+    }
+
+    fn viewport_app_for_test() -> crate::KuroyaApp {
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let settings = kuroya_core::EditorSettings::default();
+        crate::KuroyaApp::from_startup_context(crate::app_startup_context::AppStartupContext {
+            runtime: tokio::runtime::Runtime::new().expect("test runtime"),
+            tx,
+            rx,
+            workspace: kuroya_core::Workspace::new(std::path::PathBuf::from("workspace")),
+            settings: settings.clone(),
+            settings_panel_draft: settings,
+            settings_editor_font_path: String::new(),
+            settings_ui_font_path: String::new(),
+            theme_picker_selected: 0,
+            saved_session: None,
+            terminal: crate::terminal::TerminalPane::new(
+                std::path::PathBuf::from("workspace"),
+                100,
+                12.0,
+                1.2,
+            ),
+            watcher: None,
+            recent_projects: Vec::new(),
+            trusted_workspaces: vec![std::path::PathBuf::from("workspace")],
+            now: std::time::Instant::now() - std::time::Duration::from_secs(1),
+            startup_timings: Vec::new(),
+        })
     }
 }

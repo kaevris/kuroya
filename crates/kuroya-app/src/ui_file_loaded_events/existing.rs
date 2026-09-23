@@ -20,7 +20,7 @@ impl KuroyaApp {
     pub(super) fn apply_existing_loaded_file(
         &mut self,
         path: &Path,
-        elapsed: Duration,
+        _elapsed: Duration,
         activate: bool,
         existing_id: BufferId,
         mut targets: LoadedFileTargets,
@@ -133,25 +133,25 @@ impl KuroyaApp {
             plugin_language_id.as_deref(),
         );
         if let Some(jump) = targets.pending_jump {
-            self.apply_file_jump_with_encoding(
+            self.apply_file_jump_with_encoding_and_selection(
                 existing_id,
                 jump.line,
                 jump.column,
                 jump.column_encoding,
+                jump.selection_length,
             );
             self.status = append_plugin_language_activation_status(
                 format!(
-                    "Opened {} at {}:{} in {:.1?}",
+                    "Opened {} at {}:{}",
                     display_path_label_cow(path),
                     jump.line,
-                    jump.column,
-                    elapsed
+                    jump.column
                 ),
                 &language_activations,
             );
         } else {
             self.status = append_plugin_language_activation_status(
-                format!("Opened {} in {:.1?}", display_path_label_cow(path), elapsed),
+                format!("Opened {}", display_path_label_cow(path)),
                 &language_activations,
             );
         }

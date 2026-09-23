@@ -1,4 +1,4 @@
-use crate::lsp_event_handler::{lsp_status_event_matches, unavailable_lsp_status_language};
+use crate::lsp_event_handler::lsp_status_event_matches;
 use crate::workspace_state::{
     active_buffer_path_matches, active_buffer_path_version_matches, buffer_id_path_version_matches,
     lsp_event_path_is_current,
@@ -69,25 +69,4 @@ fn lsp_status_events_must_belong_to_current_workspace() {
         Path::new("workspace/current/src/..")
     ));
     assert!(!lsp_status_event_matches(root, Path::new("workspace/old")));
-}
-
-#[test]
-fn unavailable_lsp_status_language_requires_exact_unavailable_shape() {
-    assert_eq!(
-        unavailable_lsp_status_language("rust LSP unavailable: could not spawn"),
-        Some("rust")
-    );
-    assert_eq!(
-        unavailable_lsp_status_language("rust LSP unavailable: missing stdout"),
-        Some("rust")
-    );
-    assert_eq!(
-        unavailable_lsp_status_language("rust LSP read error: unavailable socket"),
-        None
-    );
-    assert_eq!(
-        unavailable_lsp_status_language("rust LSP initialize failed: timed out"),
-        None
-    );
-    assert_eq!(unavailable_lsp_status_language("Starting rust LSP"), None);
 }

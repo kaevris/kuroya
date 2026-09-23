@@ -6,6 +6,7 @@ use crate::{
         sanitized_display_label_cow,
     },
     persistence::PersistedSession,
+    preferences::load_app_settings,
     transient_state::PendingWorkspaceSwitch,
     workspace_state::paths_match_lexically,
     workspace_trust::workspace_is_trusted,
@@ -32,6 +33,17 @@ impl KuroyaApp {
         if !path.is_dir() {
             self.pending_workspace_switch = None;
             self.status = workspace_path_not_folder_status(&path);
+            return;
+        }
+        if is_home_directory(
+            &path,
+            crate::app_startup_context::home_dir_from_env().as_deref(),
+        ) {
+            self.pending_workspace_switch =
+                Some(PendingWorkspaceSwitch::ConfirmHomeDirectory { target: path });
+            self.command_palette = false;
+            self.open_workspace_open = false;
+            self.status = home_directory_open_needs_confirmation_status();
             return;
         }
 
@@ -61,6 +73,30 @@ impl KuroyaApp {
             self.status = workspace_path_not_folder_status(&path);
             return;
         }
+
+        let mut warnings: Vec<String> = Vec::new();
+        let watcher = match FileWatcher::new(&path) {
+            Ok(watcher) => Some(watcher),
+            Err(error) => {
+                warnings.push(workspace_watcher_failure_warning(error));
+                self.watcher_rebuild_attempts = 0;
+                self.note_watcher_build_failure();
+                None
+            }
+        };
+        let session = match PersistedSession::load(&path) {
+            Ok(Some(session)) => Some(session),
+            Ok(None) => None,
+            Err(error) => {
+                warnings.push(workspace_session_load_warning(error));
+                None
+            }
+        };
+        if let Err(error) = load_app_settings(&path) {
+            warnings.push(workspace_settings_load_warning(error));
+        }
+        let workspace = Workspace::new(path);
+
         let previous_workspace_placeholder = self.workspace_placeholder;
         if !previous_workspace_placeholder {
             self.request_session_save(
@@ -73,29 +109,45 @@ impl KuroyaApp {
             client.shutdown();
         }
         self.reset_workspace_lsp_clients();
-        self.workspace = Workspace::new(path);
+
+        self.workspace = workspace;
         self.workspace_placeholder = false;
         self.workspace_trusted =
             workspace_is_trusted(&self.trusted_workspaces, &self.workspace.root);
         self.record_recent_project(self.workspace.root.clone());
-        self.watcher = FileWatcher::new(&self.workspace.root).ok();
-        self.reset_open_workspace_state();
+        self.watcher = watcher;
+        warnings.extend(self.reset_open_workspace_state());
         self.reload_settings();
-        if let Ok(Some(session)) = PersistedSession::load(&self.workspace.root) {
+        if let Some(session) = session {
             self.restore_session(session);
         }
         if let Err(error) = self.save_app_state() {
-            self.status = recent_projects_save_failure_status(error);
+            warnings.push(recent_projects_save_failure_status(error));
         }
         self.spawn_index();
         self.spawn_git_scan();
         self.spawn_workspace_task_load();
         self.spawn_plugin_discovery();
+        self.arm_workspace_trust_prompt();
+
+        if !warnings.is_empty() {
+            self.status = warnings.join("; ");
+        }
     }
 }
 
 pub(crate) fn already_in_workspace_status(path: &Path) -> String {
     format!("Already in {}", display_path_label_cow(path))
+}
+
+/// True when `path` is exactly the user's home directory (never for paths
+/// inside or above it). Pure so the guard is testable without the environment.
+pub(crate) fn is_home_directory(path: &Path, home: Option<&Path>) -> bool {
+    home.is_some_and(|home| paths_match_lexically(path, home))
+}
+
+pub(crate) fn home_directory_open_needs_confirmation_status() -> String {
+    "Confirm opening your home directory".to_owned()
 }
 
 pub(crate) fn workspace_path_not_folder_status(path: &Path) -> String {
@@ -112,6 +164,30 @@ fn recent_projects_save_failure_status(error: impl Display) -> String {
     let error = error.to_string();
     format!(
         "Could not save recent projects: {}",
+        display_error_label_cow(&error)
+    )
+}
+
+fn workspace_watcher_failure_warning(error: impl Display) -> String {
+    let error = error.to_string();
+    format!(
+        "Could not watch workspace files: {}",
+        display_error_label_cow(&error)
+    )
+}
+
+fn workspace_session_load_warning(error: impl Display) -> String {
+    let error = error.to_string();
+    format!(
+        "Could not load saved session: {}",
+        display_error_label_cow(&error)
+    )
+}
+
+fn workspace_settings_load_warning(error: impl Display) -> String {
+    let error = error.to_string();
+    format!(
+        "Could not load workspace settings: {}",
         display_error_label_cow(&error)
     )
 }
@@ -136,9 +212,9 @@ fn workspace_switch_dirty_buffer_count(buffers: &[TextBuffer]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        already_in_workspace_status, recent_projects_save_failure_status,
-        workspace_path_not_folder_status, workspace_switch_dirty_buffer_count,
-        workspace_switch_unsaved_status,
+        already_in_workspace_status, home_directory_open_needs_confirmation_status,
+        is_home_directory, recent_projects_save_failure_status, workspace_path_not_folder_status,
+        workspace_switch_dirty_buffer_count, workspace_switch_unsaved_status,
     };
     use crate::{
         KuroyaApp,
@@ -159,6 +235,46 @@ mod tests {
         time::{Instant, SystemTime, UNIX_EPOCH},
     };
     use tokio::runtime::Runtime;
+
+    #[test]
+    fn is_home_directory_matches_only_exact_home_root() {
+        let home = if cfg!(windows) {
+            Path::new(r"C:\Users\kuroya")
+        } else {
+            Path::new("/home/kuroya")
+        };
+
+        assert!(is_home_directory(home, Some(home)));
+        assert!(is_home_directory(
+            &home.join("child").join(".."),
+            Some(home)
+        ));
+        assert!(is_home_directory(&home.join("."), Some(home)));
+        assert!(!is_home_directory(&home.join("child"), Some(home)));
+        assert!(!is_home_directory(
+            home.parent().unwrap_or(home),
+            Some(home)
+        ));
+        assert!(!is_home_directory(home, None));
+        assert!(!is_home_directory(Path::new(""), Some(home)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn is_home_directory_matches_case_insensitively_on_windows() {
+        assert!(is_home_directory(
+            Path::new(r"c:\USERS\KUROYA"),
+            Some(Path::new(r"C:\Users\kuroya"))
+        ));
+    }
+
+    #[test]
+    fn home_directory_open_status_asks_for_confirmation() {
+        assert_eq!(
+            home_directory_open_needs_confirmation_status(),
+            "Confirm opening your home directory"
+        );
+    }
 
     #[test]
     fn already_in_workspace_status_sanitizes_and_bounds_compact_path() {
@@ -275,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn open_workspace_now_does_not_create_missing_trusted_workspace_settings() {
+    fn open_workspace_now_does_not_create_missing_app_settings() {
         let root = temp_workspace("no-settings-open-root");
         let target = temp_workspace("no-settings-open-target");
         fs::create_dir_all(&root).unwrap();
@@ -292,6 +408,74 @@ mod tests {
         drop(app);
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn open_workspace_now_arms_trust_prompt_only_for_untrusted_workspace() {
+        let root = temp_workspace("trust-arm-root");
+        let target = temp_workspace("trust-arm-target");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        let mut app = app_for_test(root.clone());
+
+        app.open_workspace_now(target.clone());
+
+        assert_eq!(app.workspace.root, target);
+        assert!(!app.workspace_trusted);
+        assert_eq!(app.pending_workspace_trust_prompt, Some(target.clone()));
+
+        app.trust_current_workspace();
+        assert!(app.pending_workspace_trust_prompt.is_none());
+
+        app.request_open_workspace(root.clone());
+
+        assert_eq!(app.workspace.root, root);
+        assert!(app.workspace_trusted);
+        assert!(app.pending_workspace_trust_prompt.is_none());
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn open_workspace_now_does_not_arm_trust_prompt_for_trusted_workspace() {
+        let root = temp_workspace("trust-arm-trusted-root");
+        let target = temp_workspace("trust-arm-trusted-target");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        let mut app = app_for_test(root.clone());
+        app.trusted_workspaces.push(target.clone());
+
+        app.open_workspace_now(target.clone());
+
+        assert_eq!(app.workspace.root, target);
+        assert!(app.workspace_trusted);
+        assert!(app.pending_workspace_trust_prompt.is_none());
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn open_workspace_now_preflight_failure_leaves_current_state_untouched() {
+        let root = temp_workspace("atomic-preflight-root");
+        fs::create_dir_all(&root).unwrap();
+        let mut app = app_for_test(root.clone());
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(root.join("src/main.rs")),
+            "fn main() {}\n".to_owned(),
+        ));
+        let generation_before = app.workspace_event_generation;
+
+        app.open_workspace_now(root.join("missing-target"));
+
+        assert_eq!(app.workspace.root, root);
+        assert_eq!(app.workspace_event_generation, generation_before);
+        assert_eq!(app.buffers.len(), 1);
+        assert!(app.status.starts_with("Workspace path is not a folder: "));
+        drop(app);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

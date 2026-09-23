@@ -38,6 +38,9 @@ impl KuroyaApp {
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_TOP, [0.0, 72.0])
+        .max_size(crate::layout::popup_window_max_size_with_top_margin(
+            ctx, 96.0,
+        ))
         .fixed_size([520.0, 360.0])
         .show(ctx, |ui| {
             let renaming = rename_from.as_deref();

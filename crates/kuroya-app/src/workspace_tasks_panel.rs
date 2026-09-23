@@ -27,6 +27,9 @@ impl KuroyaApp {
         );
 
         egui::Window::new("Workspace Tasks")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 120.0,
+            ))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 96.0])

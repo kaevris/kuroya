@@ -163,6 +163,9 @@ impl KuroyaApp {
         let mut close = false;
 
         egui::Window::new("Themes")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 96.0,
+            ))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 72.0])

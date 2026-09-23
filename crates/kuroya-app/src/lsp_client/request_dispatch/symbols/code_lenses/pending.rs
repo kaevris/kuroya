@@ -1,13 +1,13 @@
-use crate::lsp_client::pending::{PendingLspRequest, register_pending_request};
+use crate::lsp_client::pending::{PendingLspRequest, PendingLspRequests, register_pending_request};
 use kuroya_core::BufferId;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 pub(super) fn register_code_lenses_request(
     request_id: u64,
     id: BufferId,
     path: PathBuf,
     version: u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) {
     register_pending_request(
         pending_requests,
@@ -21,7 +21,7 @@ pub(super) fn register_code_lens_resolve_request(
     id: BufferId,
     path: PathBuf,
     version: u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) {
     register_pending_request(
         pending_requests,
@@ -37,7 +37,7 @@ pub(super) fn register_execute_command_request(
     version: u64,
     title: String,
     command: String,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) {
     register_pending_request(
         pending_requests,
@@ -58,12 +58,12 @@ mod tests {
         register_code_lens_resolve_request, register_code_lenses_request,
         register_execute_command_request,
     };
-    use crate::lsp_client::pending::PendingLspRequest;
-    use std::{collections::HashMap, path::Path};
+    use crate::lsp_client::pending::{PendingLspRequest, PendingLspRequests};
+    use std::path::Path;
 
     #[test]
     fn code_lens_resolve_pending_request_keeps_buffer_identity() {
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
         let path = Path::new("src/main.rs");
         let request_id = 1;
 
@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn code_lenses_pending_request_keeps_buffer_identity() {
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
         let path = Path::new("src/main.rs");
         let request_id = 1;
 
@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn execute_command_pending_request_keeps_command_context() {
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
         let path = Path::new("src/main.rs");
         let request_id = 1;
 

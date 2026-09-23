@@ -1,0 +1,58 @@
+# example kuroya plugin manifest
+#
+# plugins are discovered per workspace at:
+#   <workspace>/.kuroya/plugins/<folder>/plugin.toml
+# copy this whole folder there to install it. see ./README.md for the full
+# walkthrough and ../../README.md ("plugins") for the system overview.
+
+api_version = "1"
+id = "example.hello"
+name = "Example Plugin"
+version = "0.1.0"
+
+# wasm module to run when one of this plugin's commands fires. relative to
+# this folder and confined to it by discovery and the sandbox runner.
+entry = "plugin.wasm"
+
+activation_events = [
+    # activate when this command runs. note: every contributed command under
+    # [capabilities] commands = true activates on itself automatically, so
+    # listing it here is optional but explicit.
+    "onCommand:example.hello",
+]
+
+[capabilities]
+# required for the contributed command below to register and run.
+commands = true
+# required for [[contributes.languages]] below to register.
+languages = true
+# workspace_read enables the host functions active_buffer_path, open_buffer,
+# and read_file inside the sandbox. it does not affect runnability: a plugin
+# that declares it still shows up in the command palette. left off here only
+# because this example does not read the workspace.
+workspace_read = false
+# workspace_write enables the buffer-mutation host functions buffer_get_text
+# and buffer_set_text inside the sandbox (host api v2). it also does not
+# affect runnability. left off here because this example does not touch
+# buffers.
+workspace_write = false
+# these two fail closed: unsupported_runtime_capabilities rejects them at
+# load time and validate_plugin_command_capabilities rejects them at run time.
+process_spawn = false
+network = false
+
+[[contributes.commands]]
+# the runner looks for a wasm export named exactly this id with signature
+# () -> i32 (falling back to a default export named kuroya_plugin_command),
+# which is why plugin.wasm exports "example.hello".
+id = "example.hello"
+title = "Say hello"
+category = "Example"
+
+[[contributes.languages]]
+# maps files ending in .example to language id "example". leading dots and
+# uppercase letters in extensions are normalized away/lowercased by core, so
+# ".example" here registers as "example".
+id = "example"
+extensions = [".example"]
+aliases = ["Example"]

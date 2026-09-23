@@ -22,9 +22,27 @@ thread_local! {
     pub(in crate::editor_vim_key_events) static VIM_SEARCHES: RefCell<Vec<EditorVimBufferSearch>> = const { RefCell::new(Vec::new()) };
 }
 
-#[cfg(test)]
-pub(crate) fn vim_clear_searches_for_test() {
+pub(crate) fn vim_clear_searches() {
     VIM_SEARCHES.with(|searches| searches.borrow_mut().clear());
+}
+
+pub(crate) fn vim_forget_searches_for_buffer(buffer_id: BufferId) {
+    VIM_SEARCHES.with(|searches| {
+        searches
+            .borrow_mut()
+            .retain(|entry| entry.buffer_id != buffer_id);
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn vim_last_search_word_for_test(buffer_id: BufferId) -> Option<String> {
+    VIM_SEARCHES.with(|searches| {
+        searches
+            .borrow()
+            .iter()
+            .find(|entry| entry.buffer_id == buffer_id)
+            .map(|entry| entry.search.word.clone())
+    })
 }
 
 #[cfg(test)]

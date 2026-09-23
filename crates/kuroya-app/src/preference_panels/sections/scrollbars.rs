@@ -1,6 +1,7 @@
 use crate::preference_panels::sections::{
     SETTINGS_TARGET_SCROLLBARS, SettingsHighlightState, settings_target_block,
 };
+use crate::ui_switch::ui_switch;
 use eframe::egui;
 use kuroya_core::{
     EditorScrollbarVisibility, EditorSettings, MAX_EDITOR_SCROLLBAR_SIZE, MIN_EDITOR_SCROLLBAR_SIZE,
@@ -57,10 +58,11 @@ pub(super) fn render_scrollbar_settings_with_highlight(
                 ui.end_row();
 
                 ui.label("Horizontal layout");
-                ui.checkbox(
+                ui_switch(
+                    ui,
                     &mut draft.scrollbar_ignore_horizontal_scrollbar_in_content_height,
-                    "Do not reserve editor height",
-                );
+                )
+                .on_hover_text("Do not reserve editor height");
                 ui.end_row();
             });
     });

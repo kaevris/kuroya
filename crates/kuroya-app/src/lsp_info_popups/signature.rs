@@ -37,6 +37,9 @@ impl KuroyaApp {
         let mut selected_signature = None;
 
         egui::Window::new("Signature Help")
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 172.0,
+            ))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 148.0])

@@ -1,4 +1,4 @@
-use kuroya_core::{TextSnapshot, lsp::path_to_file_uri};
+use kuroya_core::{ContentChange, TextSnapshot, lsp::path_to_file_uri};
 use serde_json::Value;
 use std::{
     io::{self, IoSlice},
@@ -50,6 +50,26 @@ pub(in crate::lsp_client) async fn write_did_change_full_document(
     write_full_document_text_message(stdin, prefix.as_bytes(), text, suffix.as_bytes()).await
 }
 
+/// Writes an incremental `textDocument/didChange` carrying a single ranged
+/// content change (`rangeLength` is omitted; it is optional and redundant).
+pub(in crate::lsp_client) async fn write_did_change_incremental(
+    stdin: &mut ChildStdin,
+    path: &Path,
+    version: i32,
+    change: &ContentChange,
+) -> anyhow::Result<()> {
+    let uri = path_to_file_uri(path);
+    let (prefix, suffix) = did_change_incremental_body_parts(&uri, version, change);
+    write_json_escaped_text_message(
+        stdin,
+        prefix.as_bytes(),
+        json_escaped_str_content_len(&change.text),
+        std::iter::once(change.text.as_str()),
+        suffix.as_bytes(),
+    )
+    .await
+}
+
 async fn write_full_document_text_message<W>(
     writer: &mut W,
     prefix: &[u8],
@@ -59,14 +79,36 @@ async fn write_full_document_text_message<W>(
 where
     W: AsyncWrite + Unpin + ?Sized,
 {
-    let text_len = json_escaped_snapshot_content_len(text)?;
+    write_json_escaped_text_message(
+        writer,
+        prefix,
+        json_escaped_snapshot_content_len(text)?,
+        text.chunks(),
+        suffix,
+    )
+    .await
+}
+
+/// Streams a frame whose body is `prefix` + JSON-escaped text chunks +
+/// `suffix`, with a Content-Length header matching the exact byte count.
+async fn write_json_escaped_text_message<'a, W, I>(
+    writer: &mut W,
+    prefix: &[u8],
+    text_len: usize,
+    chunks: I,
+    suffix: &[u8],
+) -> anyhow::Result<()>
+where
+    W: AsyncWrite + Unpin + ?Sized,
+    I: Iterator<Item = &'a str>,
+{
     let content_length = checked_content_length_add(prefix.len(), text_len)?;
     let content_length = checked_content_length_add(content_length, suffix.len())?;
     let (header, header_len) = content_length_header(content_length);
 
     write_frame(writer, &header[..header_len], prefix).await?;
     let mut text_scratch = Vec::with_capacity(JSON_TEXT_WRITE_BUFFER_CAPACITY);
-    for chunk in text.chunks() {
+    for chunk in chunks {
         write_json_escaped_str_content(writer, chunk, &mut text_scratch).await?;
     }
     flush_json_text_scratch(writer, &mut text_scratch).await?;
@@ -174,6 +216,32 @@ fn did_change_full_document_body_parts(uri: &str, version: i32) -> (String, Stri
     let prefix = String::from(
         "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{\"contentChanges\":[{\"text\":\"",
     );
+
+    let mut suffix = String::from("\"}],\"textDocument\":{\"uri\":");
+    push_json_string_literal(&mut suffix, uri);
+    suffix.push_str(",\"version\":");
+    suffix.push_str(&version.to_string());
+    suffix.push_str("}}}");
+
+    (prefix, suffix)
+}
+
+fn did_change_incremental_body_parts(
+    uri: &str,
+    version: i32,
+    change: &ContentChange,
+) -> (String, String) {
+    let mut prefix = String::from(
+        "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didChange\",\"params\":{\"contentChanges\":[{\"range\":{\"start\":{\"line\":",
+    );
+    prefix.push_str(&change.start_line.to_string());
+    prefix.push_str(",\"character\":");
+    prefix.push_str(&change.start_character.to_string());
+    prefix.push_str("},\"end\":{\"line\":");
+    prefix.push_str(&change.end_line.to_string());
+    prefix.push_str(",\"character\":");
+    prefix.push_str(&change.end_character.to_string());
+    prefix.push_str("}},\"text\":\"");
 
     let mut suffix = String::from("\"}],\"textDocument\":{\"uri\":");
     push_json_string_literal(&mut suffix, uri);
@@ -393,10 +461,12 @@ mod tests {
     use super::{
         HEADER_SUFFIX, JSON_TEXT_WRITE_BUFFER_CAPACITY, advance_frame_offsets,
         content_length_header, did_change_full_document_body_parts,
-        did_open_full_document_body_parts, flush_json_text_scratch, json_escaped_str_content_len,
-        write_frame, write_full_document_text_message, write_json_escaped_str_content,
+        did_change_incremental_body_parts, did_open_full_document_body_parts,
+        flush_json_text_scratch, json_escaped_str_content_len, write_frame,
+        write_full_document_text_message, write_json_escaped_str_content,
+        write_json_escaped_text_message,
     };
-    use kuroya_core::{TextBuffer, TextSnapshot};
+    use kuroya_core::{ContentChange, TextBuffer, TextSnapshot};
     use serde_json::{Value, json};
     use std::{
         io::{self, IoSlice},
@@ -594,6 +664,58 @@ mod tests {
         );
         assert_eq!(value["params"]["textDocument"]["version"], 13);
         assert_eq!(value["params"]["contentChanges"][0]["text"], text);
+    }
+
+    #[tokio::test]
+    async fn did_change_incremental_body_parts_write_valid_ranged_notification() {
+        let change = ContentChange {
+            start_line: 1,
+            start_character: 6,
+            end_line: 2,
+            end_character: 0,
+            text: "brave \"world\"\n".to_owned(),
+        };
+        let (prefix, suffix) =
+            did_change_incremental_body_parts("file:///workspace/src/main.rs", 14, &change);
+        let mut writer = recording_writer(9, true);
+
+        write_json_escaped_text_message(
+            &mut writer,
+            prefix.as_bytes(),
+            json_escaped_str_content_len(&change.text),
+            std::iter::once(change.text.as_str()),
+            suffix.as_bytes(),
+        )
+        .await
+        .expect("incremental didChange message should write");
+
+        let (_, body) = frame_body(&writer.bytes);
+        let value: Value = serde_json::from_slice(body).expect("body should be valid JSON");
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["method"], "textDocument/didChange");
+        assert_eq!(
+            value["params"]["textDocument"]["uri"],
+            "file:///workspace/src/main.rs"
+        );
+        assert_eq!(value["params"]["textDocument"]["version"], 14);
+        assert_eq!(
+            value["params"]["contentChanges"][0]["range"]["start"],
+            json!({"line": 1, "character": 6})
+        );
+        assert_eq!(
+            value["params"]["contentChanges"][0]["range"]["end"],
+            json!({"line": 2, "character": 0})
+        );
+        assert_eq!(
+            value["params"]["contentChanges"][0]["text"],
+            "brave \"world\"\n"
+        );
+        // rangeLength is optional and intentionally omitted.
+        assert!(
+            value["params"]["contentChanges"][0]
+                .get("rangeLength")
+                .is_none()
+        );
     }
 
     #[tokio::test]

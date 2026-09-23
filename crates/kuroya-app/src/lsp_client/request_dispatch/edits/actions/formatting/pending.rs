@@ -1,6 +1,7 @@
+use crate::lsp_client::pending::PendingLspRequests;
 use crate::lsp_client::pending::{PendingLspRequest, register_pending_request};
 use kuroya_core::BufferId;
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 pub(super) fn register_formatting_request(
     lsp_request_id: u64,
@@ -8,7 +9,7 @@ pub(super) fn register_formatting_request(
     id: BufferId,
     path: PathBuf,
     version: u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) {
     register_pending_request(
         pending_requests,

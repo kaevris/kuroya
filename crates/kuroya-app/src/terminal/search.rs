@@ -39,6 +39,9 @@ pub(super) struct TerminalVisibleSearchSpan {
     pub(super) row: u16,
     pub(super) start_col: u16,
     pub(super) end_col: u16,
+    /// True for the match the search cursor is currently on, painted with a
+    /// brighter fill than the other matches.
+    pub(super) active: bool,
 }
 
 impl TerminalVisibleSearchSpan {

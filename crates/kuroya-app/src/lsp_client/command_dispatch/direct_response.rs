@@ -20,6 +20,12 @@ pub(super) async fn handle_direct_response_command(
             );
             write_message(writer, &message).await.is_ok()
         }
+        LspClientCommand::DidChangeWatchedFiles { changes } => write_message(
+            writer,
+            &LspWireMessage::did_change_watched_files(&changes).to_json(),
+        )
+        .await
+        .is_ok(),
         _ => true,
     }
 }

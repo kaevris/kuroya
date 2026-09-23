@@ -1,3 +1,4 @@
+use crate::lsp_client::pending::PendingLspRequests;
 mod call_hierarchy;
 mod family;
 mod info;
@@ -5,16 +6,15 @@ mod references;
 mod rename;
 mod type_hierarchy;
 
-use crate::lsp_client::{commands::LspClientCommand, pending::PendingLspRequest};
+use crate::lsp_client::commands::LspClientCommand;
 use family::{NavigationRequestFamily, navigation_request_family};
-use std::collections::HashMap;
 use tokio::process::ChildStdin;
 
 pub(super) async fn handle_navigation_request_command(
     command: LspClientCommand,
     writer: &mut ChildStdin,
     next_request_id: &mut u64,
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
 ) -> bool {
     let Some(family) = navigation_request_family(&command) else {
         return true;

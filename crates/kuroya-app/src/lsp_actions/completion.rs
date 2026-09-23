@@ -111,7 +111,7 @@ impl KuroyaApp {
                 ) {
                     let groups = group_inserted_tabstops(&snippet_tabstop_groups, tabstops);
                     if let Some(group) = groups.first() {
-                        buffer.set_selections(group.iter().cloned().map(|range| Selection {
+                        buffer.set_selections(group.iter().map(|range| Selection {
                             anchor: range.start,
                             cursor: range.end,
                         }));

@@ -5,10 +5,6 @@ pub(crate) const EXPLORER_DEFAULT_WIDTH: f32 = 260.0;
 pub(crate) const EXPLORER_MIN_WIDTH: f32 = 180.0;
 pub(crate) const EXPLORER_MAX_WIDTH: f32 = 420.0;
 
-pub(crate) const PROJECT_SEARCH_DEFAULT_WIDTH: f32 = 330.0;
-pub(crate) const PROJECT_SEARCH_MIN_WIDTH: f32 = 240.0;
-pub(crate) const PROJECT_SEARCH_MAX_WIDTH: f32 = 520.0;
-
 pub(crate) const SYMBOLS_PANEL_DEFAULT_WIDTH: f32 = 300.0;
 pub(crate) const SYMBOLS_PANEL_MIN_WIDTH: f32 = 220.0;
 pub(crate) const SYMBOLS_PANEL_MAX_WIDTH: f32 = 460.0;
@@ -55,15 +51,6 @@ pub(crate) fn clamp_explorer_width(width: f32) -> f32 {
         EXPLORER_DEFAULT_WIDTH,
         EXPLORER_MIN_WIDTH,
         EXPLORER_MAX_WIDTH,
-    )
-}
-
-pub(crate) fn clamp_project_search_width(width: f32) -> f32 {
-    clamp_panel_width(
-        width,
-        PROJECT_SEARCH_DEFAULT_WIDTH,
-        PROJECT_SEARCH_MIN_WIDTH,
-        PROJECT_SEARCH_MAX_WIDTH,
     )
 }
 
@@ -153,5 +140,26 @@ pub(crate) fn terminal_open_height(available_height: f32) -> f32 {
     target.clamp(
         TERMINAL_MIN_HEIGHT,
         responsive_terminal_max_height(available_height),
+    )
+}
+
+/// Largest sensible size for a floating popup window: the viewport minus
+/// margins, floored at a usable minimum so the window can never grow past
+/// the screen (egui persists window sizes, and anchored windows that
+/// overflow the screen leave no reachable resize handle).
+pub(crate) fn popup_window_max_size(ctx: &eframe::egui::Context) -> eframe::egui::Vec2 {
+    popup_window_max_size_with_top_margin(ctx, 24.0)
+}
+
+/// Same as [`popup_window_max_size`] for windows anchored near the top of
+/// the screen: `top_margin` reserves the anchor offset plus a bottom margin.
+pub(crate) fn popup_window_max_size_with_top_margin(
+    ctx: &eframe::egui::Context,
+    top_margin: f32,
+) -> eframe::egui::Vec2 {
+    let available = ctx.content_rect().size();
+    eframe::egui::vec2(
+        (available.x - 32.0).max(320.0),
+        (available.y - top_margin - 48.0).max(240.0),
     )
 }

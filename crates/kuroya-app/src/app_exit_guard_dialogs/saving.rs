@@ -23,6 +23,9 @@ pub(super) fn render_exit_saving_guard(app: &mut KuroyaApp, ctx: &Context) {
     let restart = app.pending_update_install.is_some();
 
     egui::Window::new(exit_saving_window_title(restart))
+        .max_size(crate::layout::popup_window_max_size_with_top_margin(
+            ctx, 24.0,
+        ))
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])

@@ -1,5 +1,6 @@
 use crate::{
     KuroyaApp,
+    editor_row_render_cache::{editor_render_cache_hits, editor_render_cache_misses},
     plugin_command_runtime::{PluginCommandModuleCacheStats, plugin_command_module_cache_stats},
     terminal::TerminalDiagnosticsStats,
     ui_text::count_label,
@@ -30,6 +31,9 @@ pub(crate) struct BufferMemoryDiagnostics {
     pub(crate) read_only_buffers: usize,
     pub(crate) diff_cache_entries: usize,
     pub(crate) merge_conflict_cache_entries: usize,
+    pub(crate) row_render_cache_entries: usize,
+    pub(crate) row_render_cache_hits: u64,
+    pub(crate) row_render_cache_misses: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -106,6 +110,9 @@ impl KuroyaApp {
                 read_only_buffers: self.manual_read_only_buffers.len(),
                 diff_cache_entries: self.diff_cache.len(),
                 merge_conflict_cache_entries: self.merge_conflict_cache.len(),
+                row_render_cache_entries: self.editor_row_render_cache.len(),
+                row_render_cache_hits: editor_render_cache_hits(),
+                row_render_cache_misses: editor_render_cache_misses(),
             },
             terminal: self.terminal.diagnostics_stats(),
             project: ProjectMemoryDiagnostics {
@@ -190,6 +197,21 @@ pub(crate) fn render_memory_diagnostics_panel(
             ui,
             "Conflict cache",
             summary.buffers.merge_conflict_cache_entries.to_string(),
+        );
+        memory_row(
+            ui,
+            "Row render cache",
+            summary.buffers.row_render_cache_entries.to_string(),
+        );
+        memory_row(
+            ui,
+            "Row cache hits",
+            summary.buffers.row_render_cache_hits.to_string(),
+        );
+        memory_row(
+            ui,
+            "Row cache misses",
+            summary.buffers.row_render_cache_misses.to_string(),
         );
     });
 

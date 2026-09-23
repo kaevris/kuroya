@@ -15,14 +15,21 @@ use super::keys::{
     vim_visual_character_outdent_key, vim_visual_character_replace_key,
     vim_visual_character_swap_key, vim_visual_character_toggle_key, vim_visual_character_yank_key,
 };
+use super::line::vim_visual_line_pending_after_key;
 use super::motion::vim_visual_character_motion_key;
-use super::selection::vim_visual_character_clamped_cursor;
+use super::selection::vim_exit_visual_selection;
 pub(in crate::editor_vim_key_events) fn vim_visual_pending_after_key(
     pending: Option<EditorVimPendingKey>,
     key: Key,
     modifiers: Modifiers,
     printable_key_char: Option<char>,
 ) -> Option<Option<EditorVimPendingKey>> {
+    if matches!(
+        pending,
+        Some(EditorVimPendingKey::VisualLine { .. } | EditorVimPendingKey::VisualLineGo { .. })
+    ) {
+        return vim_visual_line_pending_after_key(pending, key, modifiers, printable_key_char);
+    }
     let base =
         match vim_visual_pending_substate_after_key(pending, key, modifiers, printable_key_char) {
             VisualPendingStateAfterKey::Base(base) => base,
@@ -141,16 +148,19 @@ pub(in crate::editor_vim_key_events) fn vim_cancel_pending_visual_character(
     pending: Option<EditorVimPendingKey>,
 ) {
     if let Some(
-        EditorVimPendingKey::VisualCharacter { cursor, .. }
-        | EditorVimPendingKey::VisualCharacterCount { cursor, .. }
-        | EditorVimPendingKey::VisualCharacterGo { cursor, .. }
-        | EditorVimPendingKey::VisualCharacterReplace { cursor, .. }
-        | EditorVimPendingKey::VisualCharacterCharFind { cursor, .. }
-        | EditorVimPendingKey::VisualCharacterTextObject { cursor, .. }
-        | EditorVimPendingKey::VisualCharacterRegisterPrefix { cursor, .. }
-        | EditorVimPendingKey::VisualCharacterRegisterCommand { cursor, .. },
+        EditorVimPendingKey::VisualCharacter { anchor, cursor, .. }
+        | EditorVimPendingKey::VisualCharacterCount { anchor, cursor, .. }
+        | EditorVimPendingKey::VisualCharacterGo { anchor, cursor, .. }
+        | EditorVimPendingKey::VisualCharacterReplace { anchor, cursor }
+        | EditorVimPendingKey::VisualLineReplace { anchor, cursor }
+        | EditorVimPendingKey::VisualCharacterCharFind { anchor, cursor, .. }
+        | EditorVimPendingKey::VisualCharacterTextObject { anchor, cursor, .. }
+        | EditorVimPendingKey::VisualCharacterRegisterPrefix { anchor, cursor, .. }
+        | EditorVimPendingKey::VisualCharacterRegisterCommand { anchor, cursor, .. }
+        | EditorVimPendingKey::VisualLine { anchor, cursor, .. }
+        | EditorVimPendingKey::VisualLineGo { anchor, cursor, .. },
     ) = pending
     {
-        buffer.set_single_cursor(vim_visual_character_clamped_cursor(buffer, cursor));
+        vim_exit_visual_selection(buffer, anchor, cursor);
     }
 }

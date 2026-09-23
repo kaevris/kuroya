@@ -202,6 +202,103 @@ fn single_cursor_plain_delete_run_entry_matches(
         }
 }
 
+/// Outcome of merging a closed undo group into a single history entry.
+pub(super) enum MergedUndoGroup {
+    /// The group's edits cancel out; drop it entirely.
+    Unchanged,
+    /// The group collapsed into one replayable entry.
+    Merged(Box<HistoryEntry>),
+    /// The group's entries could not be replayed backwards; keep them as-is.
+    ReplayFailed,
+}
+
+/// Merges the consecutive entries pushed while an undo group was open into a
+/// single entry covering the same text transformation. The merged entry is a
+/// single replace edit spanning the changed region, so undo/redo replay it in
+/// one step.
+pub(super) fn merge_undo_history_group(
+    entries: &[HistoryEntry],
+    current: &Rope,
+) -> MergedUndoGroup {
+    if entries.len() < 2 {
+        return MergedUndoGroup::ReplayFailed;
+    }
+
+    let mut replay = current.clone();
+    for entry in entries.iter().rev() {
+        if !apply_history_inverses_checked(&mut replay, entry) {
+            return MergedUndoGroup::ReplayFailed;
+        }
+    }
+    if !selections_replayable_at_len(&entries[0].selections_before, replay.len_chars())
+        || !selections_replayable_at_len(
+            entries
+                .last()
+                .map(|entry| entry.selections_after.as_slice())
+                .unwrap_or(&[]),
+            current.len_chars(),
+        )
+    {
+        return MergedUndoGroup::ReplayFailed;
+    }
+
+    let edit = rope_pair_diff_edit(&replay, current);
+    if edit.range.start == edit.range.end && edit.inserted.is_empty() {
+        return MergedUndoGroup::Unchanged;
+    }
+
+    let inserted_len = edit.inserted.chars().count();
+    let removed = replay.slice(edit.range.clone()).to_string();
+    MergedUndoGroup::Merged(Box::new(HistoryEntry {
+        edits: vec![edit.clone()],
+        inverses: vec![TextEdit {
+            range: edit.range.start..edit.range.start + inserted_len,
+            inserted: removed,
+        }],
+        selections_before: entries[0].selections_before.clone(),
+        selections_after: entries
+            .last()
+            .map(|entry| entry.selections_after.clone())
+            .unwrap_or_default(),
+        coalescible_typing: false,
+        coalescible_delete: None,
+    }))
+}
+
+/// Minimal prefix/suffix diff between two ropes, expressed as a single edit in
+/// `old` coordinates.
+fn rope_pair_diff_edit(old: &Rope, new: &Rope) -> TextEdit {
+    let old_len = old.len_chars();
+    let new_len = new.len_chars();
+    let mut prefix = 0;
+    for (old_ch, new_ch) in old.chars().zip(new.chars()) {
+        if old_ch != new_ch {
+            break;
+        }
+        prefix += 1;
+    }
+
+    let max_suffix = old_len
+        .saturating_sub(prefix)
+        .min(new_len.saturating_sub(prefix));
+    let mut suffix = 0;
+    let old_suffix = old.chars_at(old_len).reversed();
+    let new_suffix = new.chars_at(new_len).reversed();
+    for (old_ch, new_ch) in old_suffix.zip(new_suffix) {
+        if suffix >= max_suffix || old_ch != new_ch {
+            break;
+        }
+        suffix += 1;
+    }
+
+    TextEdit {
+        range: prefix..old_len.saturating_sub(suffix),
+        inserted: new
+            .slice(prefix..new_len.saturating_sub(suffix))
+            .to_string(),
+    }
+}
+
 pub(super) fn history_entries_snapshot(
     entries: &[HistoryEntry],
     max_entries: usize,

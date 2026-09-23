@@ -148,31 +148,6 @@ pub(super) fn unified_diff_for_texts(
     Ok(diff)
 }
 
-pub fn unified_diff_between_texts(
-    old_display: &str,
-    new_display: &str,
-    old_text: &str,
-    new_text: &str,
-) -> String {
-    unified_diff_between_texts_with_options(
-        old_display,
-        new_display,
-        old_text,
-        new_text,
-        DiffOptions::default(),
-    )
-}
-
-pub fn unified_diff_between_texts_with_options(
-    old_display: &str,
-    new_display: &str,
-    old_text: &str,
-    new_text: &str,
-    options: DiffOptions,
-) -> String {
-    unified_diff_between_texts_unchecked(old_display, new_display, old_text, new_text, options)
-}
-
 pub fn try_unified_diff_between_texts_with_options(
     old_display: &str,
     new_display: &str,
@@ -191,17 +166,6 @@ pub fn try_unified_diff_between_texts_with_options(
     Ok(unified_diff_between_texts_with_labels(
         labels, old_text, new_text, options,
     ))
-}
-
-fn unified_diff_between_texts_unchecked(
-    old_display: &str,
-    new_display: &str,
-    old_text: &str,
-    new_text: &str,
-    options: DiffOptions,
-) -> String {
-    let labels = GitDiffLabels::for_displays(old_display, new_display);
-    unified_diff_between_texts_with_labels(labels, old_text, new_text, options)
 }
 
 fn unified_diff_between_texts_with_labels(
@@ -224,16 +188,38 @@ fn unified_diff_between_texts_with_labels(
     diff
 }
 
-pub(super) fn diff_to_patch_text(diff: &Diff<'_>) -> anyhow::Result<String> {
+/// Appended once the rendered patch text outgrows the caller's byte budget
+/// so downstream views can tell a complete diff from a clipped one.
+const PATCH_TRUNCATION_MARKER: &str = "\n… (diff truncated: exceeds size limit)\n";
+
+/// Renders `diff` in patch format, stopping once the text would exceed
+/// `max_bytes` and appending [`PATCH_TRUNCATION_MARKER`] in that case. The
+/// diff itself is still fully generated line by line, but the returned
+/// string is bounded by `max_bytes` plus the marker, so committing a tree
+/// that regenerates huge files cannot balloon the patch into gigabytes.
+pub(super) fn diff_to_patch_text(diff: &Diff<'_>, max_bytes: usize) -> anyhow::Result<String> {
     let mut patch = String::new();
+    let mut truncated = false;
     diff.print(DiffFormat::Patch, |_delta, _hunk, line| {
+        if truncated {
+            return true;
+        }
+        let mut chunk = String::new();
         match line.origin() {
-            ' ' | '+' | '-' => patch.push(line.origin()),
+            ' ' | '+' | '-' => chunk.push(line.origin()),
             _ => {}
         }
-        patch.push_str(&String::from_utf8_lossy(line.content()));
+        chunk.push_str(&String::from_utf8_lossy(line.content()));
+        if patch.len() + chunk.len() > max_bytes {
+            truncated = true;
+            return true;
+        }
+        patch.push_str(&chunk);
         true
     })?;
+    if truncated {
+        patch.push_str(PATCH_TRUNCATION_MARKER);
+    }
     Ok(patch)
 }
 
@@ -599,25 +585,17 @@ pub(super) fn apply_hunk_to_old_text(
     hunk_index: usize,
     expected_fingerprint: Option<u64>,
 ) -> anyhow::Result<String> {
-    let hunk = diff_hunks(old, new)
-        .into_iter()
-        .nth(hunk_index)
-        .ok_or_else(|| anyhow!("git hunk {hunk_index} was not found"))?;
-    if expected_fingerprint.is_some_and(|fingerprint| hunk.fingerprint() != fingerprint) {
-        return Err(anyhow!("git hunk no longer matches the selected hunk"));
-    }
-    let mut lines = old.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
-    replace_hunk_lines(
-        &mut lines,
+    let hunk = selected_hunk(old, new, hunk_index, expected_fingerprint)?;
+    apply_hunk_with_original_endings(
+        old,
         hunk.old_range()
             .ok_or_else(|| anyhow!("git hunk range is invalid"))?,
         &hunk.old_text,
-        hunk.new_text.clone(),
-    )?;
-    Ok(join_lines_preserving_newline(
-        &lines,
-        text_ends_with_newline(old, new),
-    ))
+        new,
+        hunk.new_range()
+            .ok_or_else(|| anyhow!("git hunk range is invalid"))?,
+        &hunk.new_text,
+    )
 }
 
 pub(super) fn apply_hunk_to_new_text(
@@ -626,6 +604,25 @@ pub(super) fn apply_hunk_to_new_text(
     hunk_index: usize,
     expected_fingerprint: Option<u64>,
 ) -> anyhow::Result<String> {
+    let hunk = selected_hunk(old, new, hunk_index, expected_fingerprint)?;
+    apply_hunk_with_original_endings(
+        new,
+        hunk.new_range()
+            .ok_or_else(|| anyhow!("git hunk range is invalid"))?,
+        &hunk.new_text,
+        old,
+        hunk.old_range()
+            .ok_or_else(|| anyhow!("git hunk range is invalid"))?,
+        &hunk.old_text,
+    )
+}
+
+fn selected_hunk(
+    old: &str,
+    new: &str,
+    hunk_index: usize,
+    expected_fingerprint: Option<u64>,
+) -> anyhow::Result<DiffHunk> {
     let hunk = diff_hunks(old, new)
         .into_iter()
         .nth(hunk_index)
@@ -633,17 +630,92 @@ pub(super) fn apply_hunk_to_new_text(
     if expected_fingerprint.is_some_and(|fingerprint| hunk.fingerprint() != fingerprint) {
         return Err(anyhow!("git hunk no longer matches the selected hunk"));
     }
-    let mut lines = new.lines().map(ToOwned::to_owned).collect::<Vec<_>>();
+    Ok(hunk)
+}
+
+/// One line of a source text together with its original terminator.
+///
+/// `raw` keeps the exact bytes of the line including its terminator
+/// (`"\r\n"`, `"\n"`, a bare trailing `"\r"` at EOF, or nothing at EOF)
+/// so rebuilt texts never rewrite the endings of untouched lines.
+struct SourceLine<'a> {
+    raw: &'a str,
+    content: &'a str,
+}
+
+fn split_source_lines(text: &str) -> Vec<SourceLine<'_>> {
+    let mut lines = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let (raw, remainder) = match rest.find('\n') {
+            Some(newline) => rest.split_at(newline + 1),
+            None => (rest, ""),
+        };
+        lines.push(SourceLine {
+            raw,
+            content: source_line_content(raw),
+        });
+        rest = remainder;
+    }
+    lines
+}
+
+fn source_line_content(raw: &str) -> &str {
+    raw.strip_suffix("\r\n")
+        .or_else(|| raw.strip_suffix('\n'))
+        .or_else(|| raw.strip_suffix('\r'))
+        .unwrap_or(raw)
+}
+
+/// Applies `replacement_expected` in place of `source_expected` inside
+/// `source`, rebuilding the text with every line's original terminator.
+///
+/// Untouched lines keep their own raw bytes, replacement lines keep the raw
+/// bytes they have in `replacement_source` (so pure inserts at EOF and pure
+/// deletes carry no invented terminators), and the final line keeps the
+/// source text's EOF-newline convention.
+fn apply_hunk_with_original_endings(
+    source: &str,
+    source_range: std::ops::Range<usize>,
+    source_expected: &[String],
+    replacement_source: &str,
+    replacement_range: std::ops::Range<usize>,
+    replacement_expected: &[String],
+) -> anyhow::Result<String> {
+    let source_lines = split_source_lines(source);
+    // The equality/range checks operate on terminator-stripped content (the
+    // same convention as `str::lines()` used by `diff_hunks`), so they stay
+    // valid regardless of each line's original ending.
+    let mut contents = source_lines
+        .iter()
+        .map(|line| line.content.to_owned())
+        .collect::<Vec<_>>();
     replace_hunk_lines(
-        &mut lines,
-        hunk.new_range()
-            .ok_or_else(|| anyhow!("git hunk range is invalid"))?,
-        &hunk.new_text,
-        hunk.old_text.clone(),
+        &mut contents,
+        source_range.clone(),
+        source_expected,
+        replacement_expected.to_vec(),
     )?;
-    Ok(join_lines_preserving_newline(
-        &lines,
-        text_ends_with_newline(new, old),
+
+    let replacement_lines = split_source_lines(replacement_source);
+    let mut raw_lines = Vec::with_capacity(
+        source_lines
+            .len()
+            .saturating_sub(source_range.len())
+            .saturating_add(replacement_range.len()),
+    );
+    raw_lines.extend(source_lines[..source_range.start].iter().map(|l| l.raw));
+    raw_lines.extend(
+        replacement_lines
+            .get(replacement_range)
+            .into_iter()
+            .flatten()
+            .map(|l| l.raw),
+    );
+    raw_lines.extend(source_lines[source_range.end..].iter().map(|l| l.raw));
+    Ok(join_source_lines_with_endings(
+        &raw_lines,
+        text_ends_with_newline(source, replacement_source),
     ))
 }
 
@@ -669,14 +741,19 @@ pub(super) fn replace_hunk_lines(
     Ok(())
 }
 
-fn join_lines_preserving_newline(lines: &[String], final_newline: bool) -> String {
-    if lines.is_empty() {
+fn join_source_lines_with_endings(raw_lines: &[&str], final_newline: bool) -> String {
+    let mut text = raw_lines.concat();
+    let Some(last) = raw_lines.last() else {
         return String::new();
-    }
-
-    let mut text = lines.join("\n");
+    };
     if final_newline {
-        text.push('\n');
+        if !last.ends_with('\n') {
+            text.push('\n');
+        }
+    } else if last.ends_with("\r\n") {
+        text.truncate(text.len() - "\r\n".len());
+    } else if last.ends_with('\n') {
+        text.truncate(text.len() - 1);
     }
     text
 }

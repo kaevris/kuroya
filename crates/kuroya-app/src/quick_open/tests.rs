@@ -10,7 +10,6 @@ use super::{
     normalize_quick_open_workspace_path, quick_open_attach_navigation_line_columns,
     quick_open_candidate_beats_result, quick_open_empty_query_index_scan_limit,
     quick_open_empty_query_ranked_results, quick_open_for_each_candidate_path,
-    quick_open_index_file_identity, quick_open_index_identity_sample_indices,
     quick_open_lowercase_match_kind, quick_open_lowercase_word_start_match,
     quick_open_open_file_candidates, quick_open_paths_match, quick_open_relative_label,
     quick_open_result_label_with_navigation_line_column,
@@ -98,29 +97,9 @@ fn lowercase_word_start_match_respects_file_name_segments() {
 }
 
 #[test]
-fn index_file_identity_samples_are_bounded_and_include_edges() {
-    let files = (0..200)
-        .map(|index| PathBuf::from(format!("workspace/src/file_{index:03}.rs")))
-        .collect::<Vec<_>>();
-
-    let sample_indices = quick_open_index_identity_sample_indices(files.len());
-    let identity = quick_open_index_file_identity(&files);
-
-    assert_eq!(identity.files_len(), files.len());
-    assert_eq!(sample_indices.len(), 16);
-    assert_eq!(sample_indices.first().copied(), Some(0));
-    assert_eq!(sample_indices.last().copied(), Some(files.len() - 1));
-}
-
-#[test]
 fn results_cache_matches_current_inputs_without_rebuilt_vectors() {
     let recent_files = VecDeque::from([PathBuf::from("workspace/src/main.rs")]);
     let open_files = vec![PathBuf::from("workspace/src/lib.rs")];
-    let index_files = vec![
-        PathBuf::from("workspace/src/main.rs"),
-        PathBuf::from("workspace/src/lib.rs"),
-    ];
-    let index_file_identity = quick_open_index_file_identity(&index_files);
     let query_memory = VecDeque::from([QuickOpenQueryMemoryEntry {
         query: "lib".to_owned(),
         path: PathBuf::from("workspace/src/lib.rs"),
@@ -141,7 +120,6 @@ fn results_cache_matches_current_inputs_without_rebuilt_vectors() {
     let cache = QuickOpenResultsCache {
         query_input: "lib".to_owned(),
         index_generation: 7,
-        index_file_identity: index_file_identity.clone(),
         recent_files: recent_files.clone(),
         open_files: open_files.clone(),
         query_memory: query_memory.clone(),
@@ -155,12 +133,14 @@ fn results_cache_matches_current_inputs_without_rebuilt_vectors() {
         },
         result_labels: Vec::new(),
         results: Vec::new(),
+        background_rank: None,
+        last_query_changed_at: None,
+        completed_ranking: None,
     };
 
     assert!(cache.matches(
         "lib",
         7,
-        &index_file_identity,
         &recent_files,
         open_files.iter().map(PathBuf::as_path),
         &query_memory,
@@ -174,7 +154,6 @@ fn results_cache_matches_current_inputs_without_rebuilt_vectors() {
     assert!(!cache.matches(
         "lib",
         7,
-        &index_file_identity,
         &recent_files,
         open_files.iter().map(PathBuf::as_path),
         &query_memory,
@@ -187,7 +166,6 @@ fn results_cache_matches_current_inputs_without_rebuilt_vectors() {
     assert!(!cache.matches(
         "lib",
         7,
-        &index_file_identity,
         &recent_files,
         changed_open_files.iter().map(PathBuf::as_path),
         &query_memory,
@@ -196,14 +174,11 @@ fn results_cache_matches_current_inputs_without_rebuilt_vectors() {
         Some(&current_navigation_location),
     ));
 
-    let changed_index_files = vec![
-        PathBuf::from("workspace/src/main.rs"),
-        PathBuf::from("workspace/src/renamed.rs"),
-    ];
+    // The index generation is the results cache's index identity: any accepted
+    // index update bumps it and must invalidate the cache.
     assert!(!cache.matches(
         "lib",
-        7,
-        &quick_open_index_file_identity(&changed_index_files),
+        8,
         &recent_files,
         open_files.iter().map(PathBuf::as_path),
         &query_memory,
@@ -219,12 +194,9 @@ fn results_cache_ranking_inputs_match_equivalent_navigation_paths_without_line_c
     let open_files: Vec<PathBuf> = Vec::new();
     let query_memory = VecDeque::new();
     let main = PathBuf::from("workspace/src/main.rs");
-    let index_files = vec![main.clone(), PathBuf::from("workspace/src/lib.rs")];
-    let index_file_identity = quick_open_index_file_identity(&index_files);
     let cache = QuickOpenResultsCache {
         query_input: "main".to_owned(),
         index_generation: 7,
-        index_file_identity: index_file_identity.clone(),
         recent_files: recent_files.clone(),
         open_files: open_files.clone(),
         query_memory: query_memory.clone(),
@@ -238,6 +210,9 @@ fn results_cache_ranking_inputs_match_equivalent_navigation_paths_without_line_c
         },
         result_labels: Vec::new(),
         results: Vec::new(),
+        background_rank: None,
+        last_query_changed_at: None,
+        completed_ranking: None,
     };
 
     let same_rank_inputs = vec![NavigationLocation::new(
@@ -248,7 +223,6 @@ fn results_cache_ranking_inputs_match_equivalent_navigation_paths_without_line_c
     assert!(cache.ranking_inputs_match(
         "main",
         7,
-        &index_file_identity,
         &recent_files,
         open_files.iter().map(PathBuf::as_path),
         &query_memory,
@@ -263,18 +237,16 @@ fn results_cache_ranking_inputs_match_equivalent_navigation_paths_without_line_c
     assert!(!cache.ranking_inputs_match(
         "main",
         7,
-        &index_file_identity,
         &recent_files,
         open_files.iter().map(PathBuf::as_path),
         &query_memory,
         &changed_rank_inputs,
     ));
 
-    let changed_index_files = vec![main, PathBuf::from("workspace/src/renamed.rs")];
+    // A bumped index generation invalidates cached ranking inputs.
     assert!(!cache.ranking_inputs_match(
         "main",
-        7,
-        &quick_open_index_file_identity(&changed_index_files),
+        8,
         &recent_files,
         open_files.iter().map(PathBuf::as_path),
         &query_memory,
@@ -288,7 +260,6 @@ fn results_cache_refreshes_navigation_metadata_without_rebuilding_results() {
     let mut cache = QuickOpenResultsCache {
         query_input: "main".to_owned(),
         index_generation: 7,
-        index_file_identity: quick_open_index_file_identity(std::slice::from_ref(&path)),
         recent_files: VecDeque::new(),
         open_files: Vec::new(),
         query_memory: VecDeque::new(),
@@ -308,6 +279,9 @@ fn results_cache_refreshes_navigation_metadata_without_rebuilding_results() {
             rel: "src/main.rs".to_owned(),
             navigation_line_column: Some((3, 2)),
         }],
+        background_rank: None,
+        last_query_changed_at: None,
+        completed_ranking: None,
     };
     let navigation_back = VecDeque::new();
     let navigation_forward = VecDeque::new();

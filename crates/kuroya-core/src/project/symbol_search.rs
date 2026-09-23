@@ -220,6 +220,13 @@ fn project_symbol_term_score<'a>(
         Some(100)
     } else if let Some(start) = term.matcher.find_from(&symbol.name, 0) {
         Some(if start == 0 { 80 } else { 50 })
+    } else if let Some(subsequence_score) =
+        project_symbol_subsequence_score(&symbol.name, term.text)
+    {
+        // Fuzzy tier: the query characters appear in order across the name's
+        // word boundaries ("liveindex" matches "LiveIndexProbe"). Ranked
+        // below substring matches, above path-only matches.
+        Some(subsequence_score)
     } else {
         let path_text = match path_text {
             Some(path_text) => path_text,
@@ -233,6 +240,34 @@ fn project_symbol_term_score<'a>(
         };
         path_text.contains(term.path_text.as_ref()).then_some(20)
     }
+}
+
+/// Scores a case-insensitive in-order subsequence match of `query` against a
+/// symbol name. Returns `Some(45)` when every query character lands on a
+/// camelCase/snake_case word start ("lip" on "LiveIndexProbe"), `Some(30)`
+/// for a plain subsequence ("liveindex" on "LiveIndexProbe"), and `None`
+/// when the query is not a subsequence.
+fn project_symbol_subsequence_score(name: &str, query: &str) -> Option<i32> {
+    let mut query_chars = query.chars().peekable();
+    let mut all_on_word_starts = true;
+    let mut previous_was_separator = true;
+    for (index, name_char) in name.chars().enumerate() {
+        let Some(query_char) = query_chars.peek() else {
+            break;
+        };
+        let matches_query = name_char.eq_ignore_ascii_case(query_char);
+        if matches_query {
+            if index > 0 && !previous_was_separator && !name_char.is_ascii_uppercase() {
+                all_on_word_starts = false;
+            }
+            query_chars.next();
+        }
+        previous_was_separator = matches!(name_char, '_' | '-' | ' ' | '.');
+    }
+    if query_chars.peek().is_some() {
+        return None;
+    }
+    Some(if all_on_word_starts { 45 } else { 30 })
 }
 
 pub(super) fn project_symbol_search_paths(symbols: &[ProjectSymbol]) -> Vec<Arc<str>> {
@@ -320,5 +355,80 @@ fn project_symbol_kind_score(kind: ProjectSymbolKind) -> i32 {
         ProjectSymbolKind::Enum | ProjectSymbolKind::Interface | ProjectSymbolKind::Type => 6,
         ProjectSymbolKind::Module => 4,
         ProjectSymbolKind::Constant | ProjectSymbolKind::Variable => 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::workspace_symbols;
+    use crate::{ProjectSymbol, ProjectSymbolKind};
+    use std::{path::PathBuf, sync::Arc};
+
+    fn symbol(name: &str, relative_path: &str) -> ProjectSymbol {
+        ProjectSymbol {
+            name: name.to_owned(),
+            kind: ProjectSymbolKind::Function,
+            path: PathBuf::from(relative_path),
+            relative_path: PathBuf::from(relative_path),
+            line: 1,
+            column: 1,
+        }
+    }
+
+    fn names(results: &[ProjectSymbol]) -> Vec<&str> {
+        results.iter().map(|symbol| symbol.name.as_str()).collect()
+    }
+
+    #[test]
+    fn fuzzy_query_matches_across_word_boundaries() {
+        let symbols = vec![
+            symbol("LiveIndexProbe", "src/live.rs"),
+            symbol("unrelated", "src/other.rs"),
+        ];
+        let paths = vec![Arc::from("src/live.rs"), Arc::from("src/other.rs")];
+
+        let results = workspace_symbols(&symbols, &paths, "liveindex", 10);
+
+        assert_eq!(names(&results), vec!["LiveIndexProbe"]);
+    }
+
+    #[test]
+    fn word_start_fuzzy_ranks_above_plain_subsequence() {
+        let symbols = vec![
+            symbol("sLoopImp", "src/a.rs"),
+            symbol("LiveIndexProbe", "src/b.rs"),
+        ];
+        let paths = vec![Arc::from("src/a.rs"), Arc::from("src/b.rs")];
+
+        // "lip" lands on L/I/P word starts in LiveIndexProbe (45) and only
+        // on a plain subsequence in sLoopImp (30).
+        let results = workspace_symbols(&symbols, &paths, "lip", 10);
+
+        assert_eq!(names(&results), vec!["LiveIndexProbe", "sLoopImp"]);
+    }
+
+    #[test]
+    fn substring_matches_still_rank_above_fuzzy() {
+        let symbols = vec![
+            symbol("LiveIndexProbe", "src/a.rs"),
+            symbol("IndexBar", "src/b.rs"),
+        ];
+        let paths = vec![Arc::from("src/a.rs"), Arc::from("src/b.rs")];
+
+        // "index" is a prefix substring of IndexBar (80) and only a fuzzy
+        // match in LiveIndexProbe (30).
+        let results = workspace_symbols(&symbols, &paths, "index", 10);
+
+        assert_eq!(names(&results), vec!["IndexBar", "LiveIndexProbe"]);
+    }
+
+    #[test]
+    fn impossible_queries_still_return_nothing() {
+        let symbols = vec![symbol("LiveIndexProbe", "src/a.rs")];
+        let paths = vec![Arc::from("src/a.rs")];
+
+        assert!(workspace_symbols(&symbols, &paths, "zzz", 10).is_empty());
+        // Reversed order is not a subsequence.
+        assert!(workspace_symbols(&symbols, &paths, "xedit", 10).is_empty());
     }
 }

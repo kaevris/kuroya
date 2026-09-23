@@ -1,13 +1,16 @@
 use eframe::egui::{Key, Modifiers};
 use kuroya_core::TextBuffer;
 
+use super::super::state::vim_visual_bounds_marks;
+use super::super::visual::vim_visual_character_clamped_cursor;
 use super::super::{
     EditorVimCaseConversion, EditorVimCharFind, EditorVimCharFindMotion, EditorVimLastChange,
     EditorVimPendingKey, EditorVimRepeatAction, VIM_MAX_COUNT, VimKeyResult, vim_apply_char_find,
-    vim_go_to_line, vim_indent_lines, vim_join_lines_without_whitespace, vim_jump_to_mark,
-    vim_mark_name_for_key, vim_move_previous_big_word_end, vim_outdent_lines,
-    vim_printable_key_char, vim_repeatable_change_result, vim_replace_forward_chars,
-    vim_replacement_key_char, vim_search_match_range, vim_search_word_under_cursor, vim_set_mark,
+    vim_go_to_line, vim_indent_lines, vim_join_lines_without_whitespace,
+    vim_jump_mark_name_for_key, vim_jump_to_mark, vim_mark_name_for_key,
+    vim_move_previous_big_word_end, vim_outdent_lines, vim_printable_key_char,
+    vim_repeatable_change_result, vim_replace_forward_chars, vim_replacement_key_char,
+    vim_search_match_range, vim_search_word_under_cursor, vim_set_mark,
     vim_set_visual_character_selection,
 };
 
@@ -69,7 +72,7 @@ pub(super) fn handle_vim_simple_pending_key_event(
             suppress_text,
         ),
         EditorVimPendingKey::JumpMark { linewise } => {
-            let mark = vim_mark_name_for_key(key, modifiers)?;
+            let mark = vim_jump_mark_name_for_key(key, modifiers)?;
             vim_jump_to_mark(buffer, mark, linewise);
             Some(VimKeyResult::handled(suppress_text))
         }
@@ -135,6 +138,21 @@ fn handle_vim_go_pending_key_event(
     suppress_text: Option<char>,
 ) -> Option<VimKeyResult> {
     match key {
+        Key::V if !modifiers.shift => {
+            let Some(((start_line, start_column), (end_line, end_column))) =
+                vim_visual_bounds_marks(buffer)
+            else {
+                return Some(VimKeyResult::handled(suppress_text));
+            };
+            let last_line = buffer.len_lines().saturating_sub(1);
+            let anchor = buffer.line_column_to_char(start_line.min(last_line), start_column);
+            let cursor = buffer.line_column_to_char(end_line.min(last_line), end_column);
+            let anchor = vim_visual_character_clamped_cursor(buffer, anchor);
+            let cursor = vim_visual_character_clamped_cursor(buffer, cursor);
+            vim_set_visual_character_selection(buffer, anchor, cursor);
+            *pending = Some(EditorVimPendingKey::VisualCharacter { anchor, cursor });
+            Some(VimKeyResult::handled(suppress_text))
+        }
         Key::G if !modifiers.shift => {
             vim_go_to_line(buffer, count.unwrap_or(1));
             Some(VimKeyResult::handled(suppress_text))

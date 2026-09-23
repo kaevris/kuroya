@@ -3,11 +3,14 @@ use super::content::{
     normalize_completion_selection,
 };
 use crate::{
-    KuroyaApp, editor_input::editor_text_input_from_event,
+    KuroyaApp,
+    editor_input::editor_text_input_from_event,
+    editor_suggest::completion_request_for_typed_text,
+    lsp_completion_ranking::{filter_completion_items_by_settings, selected_completion_index},
     lsp_edits::apply_completion_passthrough_events_with_editor_keys,
 };
 use eframe::egui::{Context, Event, Key};
-use kuroya_core::{LspCompletionItem, buffer::AutoPairSettings};
+use kuroya_core::{BufferId, EditorSettings, LspCompletionItem, buffer::AutoPairSettings};
 
 impl KuroyaApp {
     pub(super) fn apply_completion_passthrough_input(&mut self, ctx: &Context) -> bool {
@@ -76,6 +79,15 @@ impl KuroyaApp {
         };
         let tab = self.indent_options_for_buffer(id).unit;
         let auto_indent = self.settings.auto_indent;
+        // Snapshot the popup before editing: `mark_buffer_changed` below clears
+        // completion state for the edited path, so the refilter works from this
+        // snapshot instead of live state.
+        let popup_for_buffer = self.completion_buffer_id == Some(id);
+        let popup_items = if popup_for_buffer {
+            std::mem::take(&mut self.completion_items)
+        } else {
+            Vec::new()
+        };
         let changed = self.buffer_mut(id).is_some_and(|buffer| {
             apply_completion_passthrough_events_with_editor_keys(
                 buffer,
@@ -85,7 +97,6 @@ impl KuroyaApp {
                 auto_indent,
             )
         });
-        self.clear_completion_popup_state();
         if changed {
             self.mark_buffer_changed(id);
             if events
@@ -97,12 +108,126 @@ impl KuroyaApp {
                 let _ =
                     self.request_lsp_formatting_for_buffer(id, Some("Formatting paste in"), false);
             }
-            self.status = "Closed completions while editing".to_owned();
-        } else {
-            self.status = "Closed completions".to_owned();
         }
+        self.refresh_completion_popup_after_edit(
+            ctx,
+            id,
+            &events,
+            changed,
+            popup_for_buffer,
+            popup_items,
+        );
         true
     }
+
+    /// VS Code-style incremental completion update after a passthrough edit:
+    /// keep the popup open and narrow its items by the new cursor prefix, and
+    /// only close when the word context ended or nothing matches the prefix.
+    fn refresh_completion_popup_after_edit(
+        &mut self,
+        ctx: &Context,
+        id: BufferId,
+        events: &[Event],
+        changed: bool,
+        popup_for_buffer: bool,
+        popup_items: Vec<LspCompletionItem>,
+    ) {
+        if !popup_for_buffer {
+            self.clear_completion_popup_state();
+            self.status = completion_popup_closed_status(changed);
+            return;
+        }
+        let Some((prefix, origin)) = self
+            .completion_popup_refilter_prefix(id)
+            .zip(self.lsp_position_for_buffer(id))
+        else {
+            self.clear_completion_popup_state();
+            self.status = completion_popup_closed_status(changed);
+            return;
+        };
+        if prefix.is_empty() {
+            // The word context ended (space, bracket, newline, ...), so there
+            // is no prefix left to filter against.
+            self.clear_completion_popup_state();
+            self.status = completion_popup_closed_status(changed);
+            return;
+        }
+        let mut items = popup_items;
+        filter_completion_items_by_settings(&mut items, &self.settings, &prefix);
+        if items.is_empty() {
+            if completion_edit_requests_refresh(events, &self.settings) {
+                // Still typing inside a word past the end of the local item
+                // list: re-query the server like VS Code instead of closing.
+                // The request version/position stay cleared so the pending
+                // flush is not swallowed by the target-matches dedupe.
+                self.completion_open = true;
+                self.completion_buffer_id = Some(id);
+                self.completion_path = Some(origin.1);
+                self.completion_selected = 0;
+                self.completion_prefix = prefix;
+                self.completion_preview_resolve_in_flight.clear();
+                self.completion_preview_resolve_recent_attempts.clear();
+                self.schedule_lsp_completion_for_buffer(ctx, id);
+                self.status = "Requested completions while typing".to_owned();
+            } else {
+                self.clear_completion_popup_state();
+                self.status = completion_popup_closed_status(changed);
+            }
+            return;
+        }
+        let selected = selected_completion_index(
+            &items,
+            &prefix,
+            &self.settings,
+            &self.completion_recent_labels,
+            &self.completion_recent_prefix_labels,
+        );
+        self.completion_open = true;
+        self.completion_items = items;
+        self.completion_prefix = prefix;
+        self.completion_selected = selected;
+        self.completion_buffer_id = Some(id);
+        let (_, path, version, line, character) = origin;
+        self.completion_path = Some(path);
+        self.completion_version = Some(version);
+        self.completion_line = line + 1;
+        self.completion_column = character + 1;
+        self.completion_preview_resolve_in_flight.clear();
+        self.completion_preview_resolve_recent_attempts.clear();
+        self.status = "Refiltered completions while typing".to_owned();
+    }
+
+    /// Current word prefix at the cursor for the popup refilter.
+    fn completion_popup_refilter_prefix(&self, id: BufferId) -> Option<String> {
+        let buffer = self.buffer(id)?;
+        let range = buffer.completion_prefix_range()?;
+        buffer.text_range(range)
+    }
+}
+
+fn completion_popup_closed_status(changed: bool) -> String {
+    if changed {
+        "Closed completions while editing".to_owned()
+    } else {
+        "Closed completions".to_owned()
+    }
+}
+
+/// Whether the just-typed text still asks for completions, mirroring the
+/// typing-driven trigger used by the editor input path.
+fn completion_edit_requests_refresh(events: &[Event], settings: &EditorSettings) -> bool {
+    events
+        .iter()
+        .filter_map(editor_text_input_from_event)
+        .next_back()
+        .is_some_and(|text| {
+            completion_request_for_typed_text(
+                text,
+                settings.quick_suggestions,
+                settings.suggest_on_trigger_characters,
+                false,
+            )
+        })
 }
 
 struct CompletionPassthroughInput {
@@ -184,12 +309,22 @@ fn completion_passthrough_edit_event(
 #[cfg(test)]
 mod tests {
     use super::{
-        completion_passthrough_edit_events, completion_passthrough_selected_item, tab_focus_event,
+        completion_edit_requests_refresh, completion_passthrough_edit_events,
+        completion_passthrough_selected_item, completion_popup_closed_status, tab_focus_event,
     };
-    use eframe::egui::{Event, Key, Modifiers};
-    use kuroya_core::LspCompletionItem;
+    use crate::{
+        KuroyaApp, app_startup_context::AppStartupContext, lsp_client::LspClientHandle,
+        terminal::TerminalPane,
+    };
+    use eframe::egui::{Context, Event, Key, Modifiers};
+    use kuroya_core::{EditorSettings, LanguageId, LspCompletionItem, TextBuffer, Workspace};
     use serde_json::json;
-    use std::sync::Arc;
+    use std::{
+        path::PathBuf,
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+    use tokio::runtime::Runtime;
 
     #[test]
     fn completion_passthrough_selection_clamps_and_snapshots_raw_item() {
@@ -251,6 +386,208 @@ mod tests {
     fn completion_passthrough_tab_focus_ignores_modified_tab() {
         assert!(tab_focus_event(&[key_event(Key::Tab, Modifiers::NONE)]));
         assert!(!tab_focus_event(&[key_event(Key::Tab, Modifiers::CTRL)]));
+    }
+
+    #[test]
+    fn completion_edit_requests_refresh_follows_typed_trigger_settings() {
+        let mut settings = EditorSettings::default();
+        let typing = [text_event("n")];
+        let trigger = [text_event(".")];
+        let backspace = [Event::Key {
+            key: Key::Backspace,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }];
+
+        assert!(!completion_edit_requests_refresh(&typing, &settings));
+        settings.quick_suggestions = true;
+        assert!(completion_edit_requests_refresh(&typing, &settings));
+        settings.quick_suggestions = false;
+        assert!(completion_edit_requests_refresh(&trigger, &settings));
+        assert!(!completion_edit_requests_refresh(&backspace, &settings));
+
+        assert_eq!(
+            completion_popup_closed_status(true),
+            "Closed completions while editing"
+        );
+        assert_eq!(completion_popup_closed_status(false), "Closed completions");
+    }
+
+    #[test]
+    fn passthrough_text_edit_keeps_popup_open_and_refilters_by_prefix() {
+        let root = std::env::temp_dir().join("kuroya-passthrough-refilter-test");
+        let (mut app, _, _) = popup_app_for_test(root, "fn main() {\n    pri\n}\n", 1, 7);
+        app.completion_items = vec![
+            completion_item("Vec"),
+            completion_item("println!"),
+            completion_item("print"),
+        ];
+        let ctx = Context::default();
+        ctx.input_mut(|input| input.events.push(text_event("n")));
+
+        assert!(app.apply_completion_passthrough_input(&ctx));
+
+        assert!(app.completion_open);
+        let (text, version) = {
+            let buffer = app.buffer(7).expect("buffer");
+            (buffer.text(), buffer.version())
+        };
+        assert_eq!(text, "fn main() {\n    prin\n}\n");
+        let labels = app
+            .completion_items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["println!", "print"]);
+        assert_eq!(app.completion_prefix, "prin");
+        assert_eq!(app.completion_version, Some(version));
+        assert_eq!(app.completion_line, 2);
+        assert_eq!(app.completion_column, 9);
+        assert!(app.pending_completion_requests.is_empty());
+    }
+
+    #[test]
+    fn passthrough_edit_without_matching_word_context_closes_popup() {
+        let root = std::env::temp_dir().join("kuroya-passthrough-word-end-close-test");
+        let (mut app, _, _) = popup_app_for_test(root, "fn main() {\n    pri\n}\n", 1, 7);
+        app.completion_items = vec![completion_item("println!")];
+        let ctx = Context::default();
+        ctx.input_mut(|input| input.events.push(text_event(" ")));
+
+        assert!(app.apply_completion_passthrough_input(&ctx));
+
+        assert!(!app.completion_open);
+        assert!(app.completion_items.is_empty());
+        assert_eq!(app.completion_buffer_id, None);
+        assert_eq!(app.completion_prefix, "");
+        assert_eq!(app.status, "Closed completions while editing");
+        assert_eq!(
+            app.buffer(7).map(|buffer| buffer.text()),
+            Some("fn main() {\n    pri \n}\n".to_owned())
+        );
+        assert!(app.pending_completion_requests.is_empty());
+    }
+
+    #[test]
+    fn passthrough_word_edit_past_local_items_schedules_fresh_completion_request() {
+        let root = std::env::temp_dir().join("kuroya-passthrough-requery-test");
+        let (mut app, _, _) = popup_app_for_test(root, "fn main() {\n    pri\n}\n", 1, 7);
+        app.settings.quick_suggestions = true;
+        app.completion_items = vec![completion_item("Vec")];
+        let ctx = Context::default();
+        ctx.input_mut(|input| input.events.push(text_event("n")));
+
+        assert!(app.apply_completion_passthrough_input(&ctx));
+
+        // The popup stays open and the fresh LSP request is scheduled instead
+        // of closing; the request version/position stay cleared so the flush
+        // is not swallowed by the request target dedupe.
+        assert!(app.completion_open);
+        assert!(app.completion_items.is_empty());
+        assert_eq!(app.completion_prefix, "prin");
+        assert_eq!(app.completion_version, None);
+        assert_eq!(app.completion_buffer_id, Some(7));
+        assert!(app.pending_completion_requests.contains_key(&7));
+        assert_eq!(app.status, "Requested completions while typing");
+        assert_eq!(
+            app.buffer(7).map(|buffer| buffer.text()),
+            Some("fn main() {\n    prin\n}\n".to_owned())
+        );
+
+        // Once due, the scheduled request reaches the LSP client and refreshes
+        // the popup origin to the typing position.
+        app.pending_completion_requests
+            .insert(7, Instant::now() - Duration::from_millis(50));
+        app.lsp_clients
+            .insert("rust".to_owned(), LspClientHandle::accepting_for_test());
+
+        assert_eq!(app.flush_pending_completion_requests(), 1);
+
+        let version = app.buffer(7).map(|buffer| buffer.version());
+        assert!(app.completion_open);
+        assert_eq!(app.completion_version, version);
+        assert_eq!(app.completion_line, 2);
+        assert_eq!(app.completion_column, 9);
+        assert!(app.completion_prefix.is_empty());
+        assert!(app.pending_completion_requests.is_empty());
+    }
+
+    #[test]
+    fn passthrough_commit_character_still_accepts_item_and_closes() {
+        let root = std::env::temp_dir().join("kuroya-passthrough-commit-char-test");
+        let (mut app, _, _) = popup_app_for_test(root, "fn main() {\n    pri\n}\n", 1, 7);
+        let mut item = completion_item("println!");
+        item.commit_characters = vec![".".to_owned()];
+        app.completion_items = vec![item];
+        let ctx = Context::default();
+        ctx.input_mut(|input| input.events.push(text_event(".")));
+
+        assert!(app.apply_completion_passthrough_input(&ctx));
+
+        assert!(!app.completion_open);
+        assert!(app.completion_items.is_empty());
+        assert_eq!(
+            app.buffer(7).map(|buffer| buffer.text()),
+            Some("fn main() {\n    println!.\n}\n".to_owned())
+        );
+        assert_eq!(app.status, "Inserted completion `println!` and `.`");
+    }
+
+    fn text_event(text: &str) -> Event {
+        Event::Text(text.to_owned())
+    }
+
+    fn popup_app_for_test(
+        root: PathBuf,
+        text: &str,
+        line: usize,
+        column: usize,
+    ) -> (KuroyaApp, PathBuf, u64) {
+        let path = root.join("src/main.rs");
+        let mut app = app_for_test(root);
+        let mut buffer = TextBuffer::from_text_with_language(
+            7,
+            Some(path.clone()),
+            text.to_owned(),
+            LanguageId::Rust,
+        );
+        buffer.set_single_cursor(buffer.line_column_to_char(line, column));
+        let version = buffer.version();
+        app.active = Some(7);
+        app.buffers.push(buffer);
+        app.completion_open = true;
+        app.completion_selected = 0;
+        app.completion_buffer_id = Some(7);
+        app.completion_path = Some(path.clone());
+        app.completion_version = Some(version);
+        app.completion_line = line + 1;
+        app.completion_column = column + 1;
+        (app, path, version)
+    }
+
+    fn app_for_test(root: PathBuf) -> KuroyaApp {
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let settings = EditorSettings::default();
+        KuroyaApp::from_startup_context(AppStartupContext {
+            runtime: Runtime::new().expect("test runtime"),
+            tx,
+            rx,
+            workspace: Workspace::new(root.clone()),
+            settings: settings.clone(),
+            settings_panel_draft: settings,
+            settings_editor_font_path: String::new(),
+            settings_ui_font_path: String::new(),
+            theme_picker_selected: 0,
+            saved_session: None,
+            terminal: TerminalPane::new(root.clone(), 100, 12.0, 1.2),
+            watcher: None,
+            recent_projects: Vec::new(),
+            trusted_workspaces: vec![root],
+            now: Instant::now(),
+            startup_timings: Vec::new(),
+        })
     }
 
     fn key_event(key: Key, modifiers: Modifiers) -> Event {

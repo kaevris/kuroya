@@ -26,7 +26,9 @@ pub(super) fn navigation_request_family(
             Some(NavigationRequestFamily::TypeHierarchy)
         }
         LspClientCommand::References { .. } => Some(NavigationRequestFamily::References),
-        LspClientCommand::Rename { .. } => Some(NavigationRequestFamily::Rename),
+        LspClientCommand::PrepareRename { .. } | LspClientCommand::Rename { .. } => {
+            Some(NavigationRequestFamily::Rename)
+        }
         _ => None,
     }
 }

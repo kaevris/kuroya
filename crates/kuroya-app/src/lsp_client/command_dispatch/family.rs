@@ -30,6 +30,9 @@ pub(super) fn client_command_family(command: Option<LspClientCommand>) -> Client
         Some(command @ LspClientCommand::ApplyWorkspaceEditResponse { .. }) => {
             ClientCommandFamily::DirectResponse(command)
         }
+        Some(command @ LspClientCommand::DidChangeWatchedFiles { .. }) => {
+            ClientCommandFamily::DirectResponse(command)
+        }
         Some(LspClientCommand::Shutdown) => ClientCommandFamily::Shutdown,
         Some(command) => ClientCommandFamily::Request(command),
         None => ClientCommandFamily::Closed,

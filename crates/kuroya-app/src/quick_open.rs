@@ -2,6 +2,11 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
     path::{Component, Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+    },
+    time::Instant,
 };
 
 #[cfg(not(windows))]
@@ -15,7 +20,7 @@ mod labels;
 #[path = "quick_open/query.rs"]
 mod query;
 #[path = "quick_open/ranking.rs"]
-mod ranking;
+pub(crate) mod ranking;
 
 #[cfg(test)]
 pub(crate) use labels::quick_open_relative_label;
@@ -58,8 +63,60 @@ pub(crate) use ranking::{
 pub(crate) const MAX_QUICK_OPEN_RECENT_FILES: usize = 80;
 pub(crate) const MAX_QUICK_OPEN_QUERY_MEMORY: usize = 128;
 pub(crate) const QUICK_OPEN_RESULT_LIMIT: usize = 80;
+/// Matches retained for prefix-extension reuse. The displayed list is the
+/// top [`QUICK_OPEN_RESULT_LIMIT`], but reuse needs the wider matched set:
+/// narrowing to the displayed rows would silently drop files that ranked
+/// below the cut yet are the best matches for the extended query.
+pub(crate) const QUICK_OPEN_REUSE_LIMIT: usize = 4_096;
 pub(crate) const QUICK_OPEN_RESULT_LABEL_MAX_CHARS: usize = 160;
-const QUICK_OPEN_INDEX_IDENTITY_SAMPLE_LIMIT: usize = 16;
+
+static NEXT_QUICK_OPEN_RANK_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn next_quick_open_rank_request_id() -> u64 {
+    NEXT_QUICK_OPEN_RANK_REQUEST_ID.fetch_add(1, AtomicOrdering::Relaxed)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QuickOpenRankKey {
+    pub(crate) query_input: String,
+    pub(crate) index_generation: u64,
+    pub(crate) recent_files: VecDeque<PathBuf>,
+    pub(crate) open_files: Vec<PathBuf>,
+    pub(crate) query_memory: VecDeque<QuickOpenQueryMemoryEntry>,
+    pub(crate) navigation_back: VecDeque<NavigationLocation>,
+    pub(crate) navigation_forward: VecDeque<NavigationLocation>,
+    pub(crate) current_navigation_location: Option<NavigationLocation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QuickOpenBackgroundRank {
+    pub(crate) request_id: u64,
+    pub(crate) key: Arc<QuickOpenRankKey>,
+}
+
+impl QuickOpenBackgroundRank {
+    pub(crate) fn matches(&self, request_id: u64, key: &QuickOpenRankKey) -> bool {
+        self.request_id == request_id && *self.key == *key
+    }
+}
+
+/// A completed background ranking, kept per overlay session so a strict query
+/// extension can narrow the next candidate set to the paths that already
+/// matched (see `candidates_for_query` in `quick_open_overlay.rs`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QuickOpenCompletedRanking {
+    /// Sanitized query pattern the ranking was run for.
+    pub(crate) query: String,
+    /// Project index generation the ranking was computed against.
+    pub(crate) generation: u64,
+    /// Ranked match paths retained for prefix-extension reuse, bounded by
+    /// [`QUICK_OPEN_REUSE_LIMIT`] (wider than the displayed result list).
+    pub(crate) matched_paths: Vec<PathBuf>,
+    /// True when the ranking hit the reuse limit, meaning `matched_paths` is
+    /// a truncated subset of the real match set and must not be used to
+    /// narrow a longer query.
+    pub(crate) matched_paths_truncated: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QuickOpenResult {
@@ -90,43 +147,6 @@ impl PartialOrd for QuickOpenResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct QuickOpenIndexFileIdentity {
-    files_len: usize,
-    samples: Vec<(usize, QuickOpenPathKey)>,
-}
-
-impl QuickOpenIndexFileIdentity {
-    #[cfg(test)]
-    pub(crate) fn files_len(&self) -> usize {
-        self.files_len
-    }
-}
-
-pub(crate) fn quick_open_index_file_identity(files: &[PathBuf]) -> QuickOpenIndexFileIdentity {
-    let files_len = files.len();
-    let mut samples = Vec::with_capacity(files_len.min(QUICK_OPEN_INDEX_IDENTITY_SAMPLE_LIMIT));
-    for index in quick_open_index_identity_sample_indices(files_len) {
-        samples.push((index, quick_open_path_key(&files[index])));
-    }
-    QuickOpenIndexFileIdentity { files_len, samples }
-}
-
-fn quick_open_index_identity_sample_indices(files_len: usize) -> Vec<usize> {
-    let sample_count = files_len.min(QUICK_OPEN_INDEX_IDENTITY_SAMPLE_LIMIT);
-    let mut samples = Vec::with_capacity(sample_count);
-    if files_len <= QUICK_OPEN_INDEX_IDENTITY_SAMPLE_LIMIT {
-        samples.extend(0..files_len);
-        return samples;
-    }
-
-    let max_index = files_len - 1;
-    for sample in 0..QUICK_OPEN_INDEX_IDENTITY_SAMPLE_LIMIT {
-        samples.push(sample * max_index / (QUICK_OPEN_INDEX_IDENTITY_SAMPLE_LIMIT - 1));
-    }
-    samples
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QuickOpenQueryMemoryEntry {
     pub query: String,
@@ -139,7 +159,6 @@ pub struct QuickOpenQueryMemoryEntry {
 pub(crate) struct QuickOpenResultsCache {
     pub(crate) query_input: String,
     pub(crate) index_generation: u64,
-    pub(crate) index_file_identity: QuickOpenIndexFileIdentity,
     pub(crate) recent_files: VecDeque<PathBuf>,
     pub(crate) open_files: Vec<PathBuf>,
     pub(crate) query_memory: VecDeque<QuickOpenQueryMemoryEntry>,
@@ -149,6 +168,12 @@ pub(crate) struct QuickOpenResultsCache {
     pub(crate) parsed_query: QuickOpenQuery,
     pub(crate) result_labels: Vec<String>,
     pub(crate) results: Vec<QuickOpenResult>,
+    pub(crate) background_rank: Option<QuickOpenBackgroundRank>,
+    /// When the query text was last edited while the overlay is open; ranking
+    /// re-runs are debounced until `QUICK_OPEN_RANK_DEBOUNCE` has elapsed.
+    pub(crate) last_query_changed_at: Option<Instant>,
+    /// Last accepted background ranking, kept for prefix candidate reuse.
+    pub(crate) completed_ranking: Option<QuickOpenCompletedRanking>,
 }
 
 impl QuickOpenResultsCache {
@@ -156,14 +181,12 @@ impl QuickOpenResultsCache {
         &self,
         query_input: &str,
         index_generation: u64,
-        index_file_identity: &QuickOpenIndexFileIdentity,
         recent_files: &VecDeque<PathBuf>,
         open_files: impl IntoIterator<Item = &'a Path>,
         query_memory: &VecDeque<QuickOpenQueryMemoryEntry>,
     ) -> bool {
         self.query_input == query_input
             && self.index_generation == index_generation
-            && self.index_file_identity == *index_file_identity
             && self.recent_files.iter().eq(recent_files.iter())
             && self.open_files.iter().map(PathBuf::as_path).eq(open_files)
             && self.query_memory.iter().eq(query_memory.iter())
@@ -173,7 +196,6 @@ impl QuickOpenResultsCache {
         &self,
         query_input: &str,
         index_generation: u64,
-        index_file_identity: &QuickOpenIndexFileIdentity,
         recent_files: &VecDeque<PathBuf>,
         open_files: impl IntoIterator<Item = &'a Path>,
         query_memory: &VecDeque<QuickOpenQueryMemoryEntry>,
@@ -184,7 +206,6 @@ impl QuickOpenResultsCache {
         self.non_navigation_inputs_match(
             query_input,
             index_generation,
-            index_file_identity,
             recent_files,
             open_files,
             query_memory,
@@ -197,7 +218,6 @@ impl QuickOpenResultsCache {
         &self,
         query_input: &str,
         index_generation: u64,
-        index_file_identity: &QuickOpenIndexFileIdentity,
         recent_files: &VecDeque<PathBuf>,
         open_files: impl IntoIterator<Item = &'a Path>,
         query_memory: &VecDeque<QuickOpenQueryMemoryEntry>,
@@ -206,7 +226,6 @@ impl QuickOpenResultsCache {
         self.non_navigation_inputs_match(
             query_input,
             index_generation,
-            index_file_identity,
             recent_files,
             open_files,
             query_memory,

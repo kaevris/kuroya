@@ -5,8 +5,9 @@ use kuroya_core::{
     clamp_diff_hide_unchanged_regions_reveal_line_count, clamp_diff_max_computation_time_ms,
     clamp_diff_max_file_size_mb, clamp_diff_render_side_by_side_inline_breakpoint,
     clamp_diff_split_view_default_ratio, clamp_editor_accessibility_page_size,
-    clamp_editor_code_lens_font_size, clamp_editor_color_decorators_limit,
-    clamp_editor_cursor_height, clamp_editor_cursor_surrounding_lines, clamp_editor_cursor_width,
+    clamp_editor_background_image_dim, clamp_editor_code_lens_font_size,
+    clamp_editor_color_decorators_limit, clamp_editor_cursor_height,
+    clamp_editor_cursor_surrounding_lines, clamp_editor_cursor_width,
     clamp_editor_folding_maximum_regions, clamp_editor_inlay_hints_font_size,
     clamp_editor_inlay_hints_maximum_length, clamp_editor_letter_spacing, clamp_editor_line_height,
     clamp_editor_line_numbers_min_chars, clamp_editor_minimap_max_column,
@@ -22,10 +23,12 @@ use kuroya_core::{
     clamp_git_input_validation_length, clamp_git_repository_scan_max_depth,
     clamp_git_similarity_threshold, clamp_git_status_limit, clamp_hover_delay_ms,
     clamp_hover_hiding_delay_ms, clamp_inline_suggest_min_show_delay_ms,
-    clamp_quick_suggestions_delay_ms, clamp_scm_diff_decorations_gutter_width,
-    clamp_scm_graph_page_size, clamp_scm_input_font_size, clamp_scm_input_line_count,
-    clamp_scm_repositories_visible, clamp_suggest_font_size, clamp_suggest_line_height,
-    normalize_editor_font_ligatures, normalize_editor_font_variations, sanitize_editor_font_weight,
+    clamp_project_index_max_files, clamp_project_search_max_file_size_mb,
+    clamp_project_search_max_results, clamp_quick_suggestions_delay_ms,
+    clamp_scm_diff_decorations_gutter_width, clamp_scm_graph_page_size, clamp_scm_input_font_size,
+    clamp_scm_input_line_count, clamp_scm_repositories_visible, clamp_suggest_font_size,
+    clamp_suggest_line_height, normalize_editor_font_ligatures, normalize_editor_font_variations,
+    sanitize_editor_font_weight,
 };
 use std::collections::BTreeMap;
 
@@ -54,6 +57,12 @@ pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: 
         MAX_SETTINGS_PANEL_UI_FONT_SIZE,
         DEFAULT_SETTINGS_PANEL_UI_FONT_SIZE,
     );
+    settings.background_image_enabled = draft.background_image_enabled;
+    settings.background_image_path = draft.background_image_path.clone();
+    settings.background_image_scope = draft.background_image_scope;
+    settings.background_image_dim = clamp_editor_background_image_dim(draft.background_image_dim);
+    settings.background_image_fit = draft.background_image_fit;
+    settings.background_image_position = draft.background_image_position;
     settings.font_family =
         raw_setting_text_or_default(&draft.font_family, kuroya_core::DEFAULT_EDITOR_FONT_FAMILY);
     settings.font_weight = sanitize_editor_font_weight(&draft.font_weight);
@@ -252,6 +261,7 @@ pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: 
     settings.parameter_hints_on_trigger_characters = draft.parameter_hints_on_trigger_characters;
     settings.parameter_hints_cycle = draft.parameter_hints_cycle;
     settings.lsp_servers = normalized_lsp_server_configs(&draft.lsp_servers);
+    settings.lsp_suggest_missing_servers = draft.lsp_suggest_missing_servers;
     settings.comments_insert_space = draft.comments_insert_space;
     settings.comments_ignore_empty_lines = draft.comments_ignore_empty_lines;
     settings.format_on_save = draft.format_on_save;
@@ -428,6 +438,16 @@ pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: 
     settings.diff_word_wrap = draft.diff_word_wrap;
     settings.diff_only_show_accessible_viewer = draft.diff_only_show_accessible_viewer;
     settings.diff_is_in_embedded_editor = draft.diff_is_in_embedded_editor;
+    settings.project_index_max_files = clamp_project_index_max_files(draft.project_index_max_files);
+    settings.project_index_exclude_globs =
+        raw_non_empty_string_list(&draft.project_index_exclude_globs);
+    settings.project_index_include_hidden_dirs = draft.project_index_include_hidden_dirs;
+    settings.project_search_exclude_globs =
+        raw_non_empty_string_list(&draft.project_search_exclude_globs);
+    settings.project_search_max_file_size_mb =
+        clamp_project_search_max_file_size_mb(draft.project_search_max_file_size_mb);
+    settings.project_search_max_results =
+        clamp_project_search_max_results(draft.project_search_max_results);
     settings.git_enabled = draft.git_enabled;
     settings.git_add_ai_co_author = draft.git_add_ai_co_author;
     settings.git_allow_force_push = draft.git_allow_force_push;
@@ -478,7 +498,6 @@ pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: 
     settings.git_rebase_when_sync = draft.git_rebase_when_sync;
     settings.git_remember_post_commit_command = draft.git_remember_post_commit_command;
     settings.git_replace_tags_when_pull = draft.git_replace_tags_when_pull;
-    settings.git_scan_repositories = raw_non_empty_string_list(&draft.git_scan_repositories);
     settings.git_support_cancellation = draft.git_support_cancellation;
     settings.git_terminal_authentication = draft.git_terminal_authentication;
     settings.git_terminal_git_editor = draft.git_terminal_git_editor;
@@ -655,14 +674,12 @@ fn normalized_lsp_server_configs(servers: &[LspServerConfig]) -> Vec<LspServerCo
             args: normalized_trimmed_non_empty_string_list(&server.args, false),
             extensions: normalized_lsp_extensions(&server.extensions),
             root_markers: normalized_trimmed_non_empty_string_list(&server.root_markers, true),
+            enabled: server.enabled,
         };
 
-        if let Some(index) = normalized
-            .iter()
-            .position(|existing: &LspServerConfig| existing.language == config.language)
-        {
-            normalized[index] = config;
-        } else {
+        // Multiple servers per language are allowed; only exact duplicates
+        // of an already-normalized entry collapse.
+        if !normalized.contains(&config) {
             normalized.push(config);
         }
     }

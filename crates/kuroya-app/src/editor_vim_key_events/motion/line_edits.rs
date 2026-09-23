@@ -1,12 +1,22 @@
 use kuroya_core::TextBuffer;
 
-use super::super::vim_line_range_for_count;
+use super::super::state::vim_adjust_marks_for_edit;
+use super::super::{VIM_MAX_COUNT, vim_line_range_for_count};
 
 pub(in crate::editor_vim_key_events) fn vim_open_line_below(buffer: &mut TextBuffer) {
     let line = buffer.cursor_position().line;
     let indent = vim_line_indent(buffer, line);
+    let insert_at = buffer.line_content_end_char(line);
+    let insert_column = buffer.char_position(insert_at).column;
     buffer.move_line_end();
-    buffer.insert_at_cursors(&vim_open_line_below_text(&indent));
+    let inserted = vim_open_line_below_text(&indent);
+    buffer.insert_at_cursors(&inserted);
+    vim_adjust_marks_for_edit(
+        buffer.id(),
+        (line, insert_column),
+        (line, insert_column),
+        &inserted,
+    );
 }
 
 pub(in crate::editor_vim_key_events) fn vim_open_line_above(buffer: &mut TextBuffer) {
@@ -15,8 +25,10 @@ pub(in crate::editor_vim_key_events) fn vim_open_line_above(buffer: &mut TextBuf
     let indent = vim_line_indent(buffer, line);
     let cursor = line_start.saturating_add(indent.chars().count());
     buffer.set_single_cursor(line_start);
-    buffer.insert_at_cursors(&vim_open_line_above_text(&indent));
+    let inserted = vim_open_line_above_text(&indent);
+    buffer.insert_at_cursors(&inserted);
     buffer.set_single_cursor(cursor);
+    vim_adjust_marks_for_edit(buffer.id(), (line, 0), (line, 0), &inserted);
 }
 
 pub(in crate::editor_vim_key_events) fn vim_open_line_below_text(indent: &str) -> String {
@@ -54,12 +66,17 @@ pub(in crate::editor_vim_key_events) fn vim_indent_lines(
     let Some(range) = vim_line_range_for_count(buffer, count) else {
         return false;
     };
+    let first_line = buffer.char_position(range.start).line;
+    let last_exclusive = (first_line + count.clamp(1, VIM_MAX_COUNT)).min(buffer.len_lines());
 
     buffer.set_selection(range.start, range.end);
     let changed = buffer.indent_lines(indent_unit);
     if changed {
         let column = position.column.saturating_add(indent_unit.chars().count());
         buffer.set_single_cursor(buffer.line_column_to_char(position.line, column));
+        for line in first_line..last_exclusive {
+            vim_adjust_marks_for_edit(buffer.id(), (line, 0), (line, 0), indent_unit);
+        }
     }
     changed
 }
@@ -70,16 +87,34 @@ pub(in crate::editor_vim_key_events) fn vim_outdent_lines(
     indent_unit: &str,
 ) -> bool {
     let position = buffer.cursor_position();
-    let remove_len = vim_line_outdent_len(buffer, position.line, indent_unit);
     let Some(range) = vim_line_range_for_count(buffer, count) else {
         return false;
     };
+    let first_line = buffer.char_position(range.start).line;
+    let last_exclusive = (first_line + count.clamp(1, VIM_MAX_COUNT)).min(buffer.len_lines());
+    let removed_widths = (first_line..last_exclusive)
+        .map(|line| vim_line_outdent_len(buffer, line, indent_unit))
+        .collect::<Vec<_>>();
 
     buffer.set_selection(range.start, range.end);
     let changed = buffer.outdent_lines(indent_unit);
     if changed {
-        let column = position.column.saturating_sub(remove_len);
+        let cursor_remove_len = removed_widths
+            .get(position.line.saturating_sub(first_line))
+            .copied()
+            .unwrap_or(0);
+        let column = position.column.saturating_sub(cursor_remove_len);
         buffer.set_single_cursor(buffer.line_column_to_char(position.line, column));
+        for (offset, removed) in removed_widths.iter().enumerate() {
+            if *removed > 0 {
+                vim_adjust_marks_for_edit(
+                    buffer.id(),
+                    (first_line + offset, 0),
+                    (first_line + offset, *removed),
+                    "",
+                );
+            }
+        }
     }
     changed
 }

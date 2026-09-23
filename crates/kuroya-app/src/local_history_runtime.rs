@@ -214,7 +214,7 @@ fn local_history_path_hash(path: &Path) -> u64 {
     hasher.finish()
 }
 
-fn local_history_display_path(path: &Path) -> Cow<'_, str> {
+pub(crate) fn local_history_display_path(path: &Path) -> Cow<'_, str> {
     local_history_display_label(
         local_history_compact_path_text(path),
         LOCAL_HISTORY_PATH_DISPLAY_MAX_CHARS,

@@ -14,9 +14,10 @@ use eframe::egui::{
 };
 use kuroya_core::{
     Command, EditorSettings, GitChangeStage, GitFileStatus, GitSmartCommitChanges, GitStatusEntry,
-    ScmProviderCountBadge, TextBuffer,
+    GitUntrackedChanges, ScmProviderCountBadge, TextBuffer,
 };
 use std::{
+    borrow::Cow,
     collections::HashMap,
     ffi::OsStr,
     path::{Component, Path, PathBuf},
@@ -92,8 +93,8 @@ pub(crate) use labels::SOURCE_CONTROL_REF_LABEL_MAX_CHARS;
 pub(crate) use labels::source_control_display_path_label;
 pub(crate) use labels::{
     source_control_branch_display_label, source_control_empty_changes_label,
-    source_control_filter_empty_label, source_control_repository_label,
-    source_control_result_count_label,
+    source_control_filter_empty_label, source_control_git_error_label,
+    source_control_repository_label, source_control_result_count_label,
 };
 #[cfg(test)]
 use labels::{
@@ -132,7 +133,7 @@ impl KuroyaApp {
             .iter()
             .any(|task| task.name == "Git Scan");
 
-        if self.git.root().is_none() && git_scan_in_progress {
+        if !self.git.has_repository() && git_scan_in_progress {
             render_empty_source_control_state(ui, "Loading git status");
             return;
         }
@@ -146,6 +147,10 @@ impl KuroyaApp {
                 ui,
                 source_control_stale_git_state_label(git_scan_in_progress),
             );
+            return;
+        }
+        if let Some(error) = self.git.scan_error() {
+            render_empty_source_control_state(ui, &source_control_git_error_label(error));
             return;
         }
 
@@ -267,24 +272,25 @@ impl KuroyaApp {
             selection_changed = true;
         }
 
-        let entries = source_control_sorted_entries(
-            &root,
-            source_control_filter_visible_entries(
-                &root,
-                visible_entries,
-                &self.source_control_query,
-            ),
-            self.source_control_sort,
+        let cached_rows = source_control_rows_cache_entry(
+            SourceControlRowsCacheInputs {
+                git_revision: self.git.revision(),
+                root: &root,
+                query: &self.source_control_query,
+                sort: self.source_control_sort,
+                untracked_changes: self.settings.git_untracked_changes,
+                always_show_staged: self.settings.git_always_show_staged_changes_resource_group,
+                unstaged_collapsed: self.source_control_unstaged_collapsed,
+                untracked_collapsed: self.source_control_untracked_collapsed,
+                staged_collapsed: self.source_control_staged_collapsed,
+            },
+            visible_entries,
+            &mut self.source_control_rows_cache,
         );
-        let rows = source_control_visible_rows(
-            &entries,
-            self.settings.git_always_show_staged_changes_resource_group,
-            self.settings.git_untracked_changes,
-            self.source_control_unstaged_collapsed,
-            self.source_control_untracked_collapsed,
-            self.source_control_staged_collapsed,
-        );
-        let visible_entry_count = source_control_visible_entry_count(&rows);
+        let entries: &[GitStatusEntry] = &cached_rows.entries;
+        let rows: &[SourceControlVisibleRow] = &cached_rows.rows;
+        let render_rows: &[SourceControlRenderRow] = &cached_rows.render_rows;
+        let visible_entry_count = source_control_visible_entry_count(rows);
         clamp_selection(&mut self.source_control_selected, visible_entry_count);
         let viewport_height = ui.available_height();
         let change_list_focus_id = ui.make_persistent_id("source-control-change-list");
@@ -292,8 +298,8 @@ impl KuroyaApp {
         let mut path_exists_cache = HashMap::new();
         selection_changed |= handle_source_control_keyboard(
             ui,
-            &entries,
-            &rows,
+            entries,
+            rows,
             visible_entry_count,
             &self.buffers,
             self.index.files(),
@@ -330,9 +336,8 @@ impl KuroyaApp {
             return;
         }
 
-        let render_rows = source_control_prepare_render_rows(&entries, &rows);
         let selected_row = source_control_render_row_index_for_selection(
-            &render_rows,
+            render_rows,
             self.source_control_selected,
         );
         let mut scroll_area = ScrollArea::vertical().auto_shrink([false, false]);
@@ -1502,6 +1507,113 @@ fn source_control_render_row_index_for_selection(
             SourceControlRenderRow::Entry { visible_index, .. } if *visible_index == selected
         )
     })
+}
+
+/// Filter+sort+row-build output for the source control change list, cached on
+/// [`KuroyaApp`] so the panel can reuse the previous frame's rows whenever the
+/// inputs are unchanged instead of re-filtering, re-sorting, and rebuilding
+/// rows every frame. Selection and hover state are intentionally not keyed:
+/// rows never depend on them, and view mode only affects per-row display
+/// labels, which are built per visible row at render time.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SourceControlRowsCache {
+    key: SourceControlRowsCacheKey,
+    entries: Vec<GitStatusEntry>,
+    rows: Vec<SourceControlVisibleRow>,
+    render_rows: Vec<SourceControlRenderRow>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SourceControlRowsCacheKey {
+    git_revision: u64,
+    root: PathBuf,
+    query: String,
+    sort: SourceControlSortMode,
+    untracked_changes: GitUntrackedChanges,
+    always_show_staged: bool,
+    unstaged_collapsed: bool,
+    untracked_collapsed: bool,
+    staged_collapsed: bool,
+}
+
+/// Per-frame borrow-only view of the [`SourceControlRowsCacheKey`] inputs so
+/// hit-testing never clones the query or the repository root.
+#[derive(Debug, Clone, Copy)]
+struct SourceControlRowsCacheInputs<'a> {
+    git_revision: u64,
+    root: &'a Path,
+    query: &'a str,
+    sort: SourceControlSortMode,
+    untracked_changes: GitUntrackedChanges,
+    always_show_staged: bool,
+    unstaged_collapsed: bool,
+    untracked_collapsed: bool,
+    staged_collapsed: bool,
+}
+
+impl SourceControlRowsCacheKey {
+    fn matches(&self, inputs: SourceControlRowsCacheInputs<'_>) -> bool {
+        self.git_revision == inputs.git_revision
+            && self.root == inputs.root
+            && self.query == inputs.query
+            && self.sort == inputs.sort
+            && self.untracked_changes == inputs.untracked_changes
+            && self.always_show_staged == inputs.always_show_staged
+            && self.unstaged_collapsed == inputs.unstaged_collapsed
+            && self.untracked_collapsed == inputs.untracked_collapsed
+            && self.staged_collapsed == inputs.staged_collapsed
+    }
+}
+
+/// Returns the cached change-list rows for `inputs`, rebuilding the filter,
+/// sort, and row build from `visible_entries` when any input changed. The
+/// git revision input covers full scans and scoped merges, and the query,
+/// sort, untracked-changes, and collapse inputs cover the panel-local state.
+/// The returned rows borrow `cache`, so callers may keep them while mutating
+/// other `KuroyaApp` fields.
+fn source_control_rows_cache_entry<'cache>(
+    inputs: SourceControlRowsCacheInputs<'_>,
+    visible_entries: Cow<'_, [GitStatusEntry]>,
+    cache: &'cache mut Option<SourceControlRowsCache>,
+) -> &'cache SourceControlRowsCache {
+    let rebuild = !cache
+        .as_ref()
+        .is_some_and(|cached| cached.key.matches(inputs));
+    if rebuild {
+        let entries = source_control_sorted_entries(
+            inputs.root,
+            source_control_filter_visible_entries(inputs.root, visible_entries, inputs.query),
+            inputs.sort,
+        );
+        let rows = source_control_visible_rows(
+            &entries,
+            inputs.always_show_staged,
+            inputs.untracked_changes,
+            inputs.unstaged_collapsed,
+            inputs.untracked_collapsed,
+            inputs.staged_collapsed,
+        );
+        let render_rows = source_control_prepare_render_rows(&entries, &rows);
+        *cache = Some(SourceControlRowsCache {
+            key: SourceControlRowsCacheKey {
+                git_revision: inputs.git_revision,
+                root: inputs.root.to_path_buf(),
+                query: inputs.query.to_owned(),
+                sort: inputs.sort,
+                untracked_changes: inputs.untracked_changes,
+                always_show_staged: inputs.always_show_staged,
+                unstaged_collapsed: inputs.unstaged_collapsed,
+                untracked_collapsed: inputs.untracked_collapsed,
+                staged_collapsed: inputs.staged_collapsed,
+            },
+            entries,
+            rows,
+            render_rows,
+        });
+    }
+    cache
+        .as_ref()
+        .expect("source control rows cache is populated")
 }
 
 #[cfg(test)]

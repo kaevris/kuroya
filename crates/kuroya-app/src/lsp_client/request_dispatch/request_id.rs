@@ -1,11 +1,10 @@
-use crate::lsp_client::pending::PendingLspRequest;
-use std::collections::HashMap;
+use crate::lsp_client::pending::PendingLspRequests;
 
 const FIRST_DISPATCHED_REQUEST_ID: u64 = 3;
 
 pub(super) fn reserve_request_id(
     next_request_id: &mut u64,
-    pending_requests: &HashMap<u64, PendingLspRequest>,
+    pending_requests: &PendingLspRequests,
 ) -> u64 {
     for _ in 0..=pending_requests.len() {
         let request_id = reserve_next_request_id(next_request_id);
@@ -32,8 +31,8 @@ fn reserve_next_request_id(next_request_id: &mut u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{FIRST_DISPATCHED_REQUEST_ID, reserve_request_id};
-    use crate::lsp_client::pending::PendingLspRequest;
-    use std::{collections::HashMap, path::PathBuf};
+    use crate::lsp_client::pending::{PendingLspRequest, PendingLspRequests};
+    use std::path::PathBuf;
 
     fn hover(version: u64) -> PendingLspRequest {
         PendingLspRequest::Hover {
@@ -48,7 +47,7 @@ mod tests {
     #[test]
     fn request_ids_advance_monotonically_for_normal_dispatch() {
         let mut next_request_id = 7;
-        let pending_requests = HashMap::new();
+        let pending_requests = PendingLspRequests::default();
 
         assert_eq!(
             reserve_request_id(&mut next_request_id, &pending_requests),
@@ -65,7 +64,7 @@ mod tests {
     #[test]
     fn request_id_rollover_skips_reserved_startup_ids() {
         let mut next_request_id = u64::MAX;
-        let pending_requests = HashMap::new();
+        let pending_requests = PendingLspRequests::default();
 
         assert_eq!(
             reserve_request_id(&mut next_request_id, &pending_requests),
@@ -82,7 +81,7 @@ mod tests {
     #[test]
     fn reserved_startup_request_id_state_recovers_to_dispatched_range() {
         let mut next_request_id = 0;
-        let pending_requests = HashMap::new();
+        let pending_requests = PendingLspRequests::default();
 
         assert_eq!(
             reserve_request_id(&mut next_request_id, &pending_requests),
@@ -104,7 +103,7 @@ mod tests {
     #[test]
     fn request_id_reservation_skips_active_pending_ids() {
         let mut next_request_id = 7;
-        let pending_requests = HashMap::from([(7, hover(1)), (8, hover(2))]);
+        let pending_requests = PendingLspRequests::from([(7, hover(1)), (8, hover(2))]);
 
         assert_eq!(
             reserve_request_id(&mut next_request_id, &pending_requests),
@@ -116,7 +115,7 @@ mod tests {
     #[test]
     fn request_id_rollover_skips_active_pending_startup_range_ids() {
         let mut next_request_id = u64::MAX;
-        let pending_requests = HashMap::from([
+        let pending_requests = PendingLspRequests::from([
             (u64::MAX, hover(1)),
             (FIRST_DISPATCHED_REQUEST_ID, hover(2)),
         ]);

@@ -11,6 +11,7 @@ mod selection;
 mod text;
 mod types;
 
+pub(crate) use self::find::regex_query_is_line_local;
 pub use self::find::validate_find_regex;
 pub use self::save::clean_text_for_save;
 pub use self::types::{
@@ -31,13 +32,13 @@ use self::edits::{
     transform_line_move_position, transform_selection_after_edits,
 };
 #[cfg(test)]
-use self::find::{find_result_capacity, regex_match_ranges, regex_query_is_line_local};
+use self::find::{find_result_capacity, regex_match_ranges};
 use self::history::{
-    apply_history_edits_checked, apply_history_inverses_checked, coalesce_delete_history_entries,
-    coalesce_typing_history_entries, history_entries_snapshot, history_entry_from_snapshot,
-    history_stack_can_replay_redo, history_stack_can_replay_undo, identifier_insert_entry,
-    rope_checksum, rope_diff_to_edit, selections_replayable_at_len,
-    single_cursor_plain_delete_entry_matches,
+    MergedUndoGroup, apply_history_edits_checked, apply_history_inverses_checked,
+    coalesce_delete_history_entries, coalesce_typing_history_entries, history_entries_snapshot,
+    history_entry_from_snapshot, history_stack_can_replay_redo, history_stack_can_replay_undo,
+    identifier_insert_entry, merge_undo_history_group, rope_checksum, rope_diff_to_edit,
+    selections_replayable_at_len, single_cursor_plain_delete_entry_matches,
 };
 #[cfg(test)]
 use self::text::rope_slice_text;
@@ -65,11 +66,23 @@ pub struct TextBuffer {
     rope: Rope,
     version: u64,
     dirty: bool,
+    /// FNV checksum of the rope content at the last point the buffer was known
+    /// to match its persisted source (construction, `mark_saved`, or a disk
+    /// replacement). See `recompute_dirty_after_mutation`.
+    baseline_checksum: u64,
+    /// Buffer version at the moment `baseline_checksum` was captured. Every
+    /// content mutation bumps `version`, so `version == baseline_version`
+    /// proves the content still matches the baseline without hashing.
+    baseline_version: u64,
     selections: Vec<Selection>,
     word_separators: String,
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     read_only: bool,
+    /// Undo stack index where the currently open undo group started, if any.
+    /// Entries pushed while a group is open are merged into a single entry by
+    /// `end_undo_group` (used to make a vim insert session undo in one step).
+    undo_group_start: Option<usize>,
 }
 
 impl TextBuffer {
@@ -91,18 +104,23 @@ impl TextBuffer {
         text: String,
         language: LanguageId,
     ) -> Self {
+        let rope = Rope::from_str(&text);
+        let baseline_checksum = rope_checksum(&rope);
         Self {
             id,
             path,
             language,
-            rope: Rope::from_str(&text),
+            rope,
             version: 0,
             dirty: false,
+            baseline_checksum,
+            baseline_version: 0,
             selections: vec![Selection::caret(0)],
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
             undo: Vec::new(),
             redo: Vec::new(),
             read_only: false,
+            undo_group_start: None,
         }
     }
 
@@ -135,12 +153,44 @@ impl TextBuffer {
         self.read_only = read_only;
     }
 
+    /// Captures the current content and version as the saved baseline and
+    /// marks the buffer clean. Dirty is content-derived from that point on:
+    /// the buffer only reports dirty again once its content differs from this
+    /// baseline (undoing back to the saved text becomes clean again).
     pub fn mark_saved(&mut self) {
+        self.baseline_checksum = rope_checksum(&self.rope);
+        self.baseline_version = self.version;
         self.dirty = false;
     }
 
+    /// Forces the dirty flag without touching the saved baseline.
+    ///
+    /// Dirty is normally content-derived (see
+    /// `recompute_dirty_after_mutation`), so this override exists for
+    /// provenance-based dirtiness: a session-restored buffer must be treated
+    /// as modified even when its text happens to equal what was persisted.
+    /// The forced flag persists until the next content mutation recomputes
+    /// the content-derived value.
+    ///
+    /// VS Code treats a recovered buffer whose text matches disk as clean; to
+    /// get that behavior, call `mark_saved_if_text_matches` with the on-disk
+    /// text instead of this method.
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Adopts the current content as the saved baseline when it is identical
+    /// to `disk_text`, marking the buffer clean and returning `true`. Returns
+    /// `false` and leaves the buffer untouched (including any forced
+    /// `mark_dirty` state) when the text differs. This is the hook for
+    /// session restore to keep recovered buffers clean when their text equals
+    /// what is on disk.
+    pub fn mark_saved_if_text_matches(&mut self, disk_text: &str) -> bool {
+        if !self.text_equals(disk_text) {
+            return false;
+        }
+        self.mark_saved();
+        true
     }
 
     pub fn replace_from_disk(&mut self, text: String) {
@@ -155,11 +205,12 @@ impl TextBuffer {
 
     fn finish_disk_replacement(&mut self) {
         self.version = self.version.saturating_add(1);
-        self.dirty = false;
         self.undo.clear();
         self.redo.clear();
+        self.undo_group_start = None;
         self.selections =
             normalize_selections(std::mem::take(&mut self.selections), self.len_chars());
+        self.mark_saved();
     }
 
     pub fn version(&self) -> u64 {
@@ -257,6 +308,7 @@ impl TextBuffer {
 
         self.undo = undo;
         self.redo = redo;
+        self.undo_group_start = None;
         self.prune_undo();
         true
     }
@@ -264,6 +316,49 @@ impl TextBuffer {
     pub fn clear_history(&mut self) {
         self.undo.clear();
         self.redo.clear();
+        self.undo_group_start = None;
+    }
+
+    /// Opens an undo group. History entries pushed until the matching
+    /// `end_undo_group` call are merged into a single undo step. Nested calls
+    /// keep the outermost group.
+    pub fn begin_undo_group(&mut self) {
+        if self.undo_group_start.is_none() {
+            self.undo_group_start = Some(self.undo.len());
+        }
+    }
+
+    /// Closes the most recent undo group, merging every entry pushed since
+    /// `begin_undo_group` into one entry. A group without entries (or with a
+    /// single entry) is closed as-is. A group whose edits cancel out is
+    /// dropped entirely.
+    ///
+    /// The closed group's end state is the buffer's live selections at this
+    /// moment: a session may rest the cursor after its last edit (vim rests
+    /// the cursor on the last typed char when insert mode is left), and
+    /// undo/redo must restore that resting position.
+    pub fn end_undo_group(&mut self) {
+        let Some(start) = self.undo_group_start.take() else {
+            return;
+        };
+        if start >= self.undo.len() {
+            return;
+        }
+        if self.undo.len() - start == 1 {
+            self.undo[start].selections_after = self.selections.clone();
+            return;
+        }
+
+        let entries = self.undo.split_off(start);
+        match merge_undo_history_group(&entries, &self.rope) {
+            MergedUndoGroup::ReplayFailed => self.undo.extend(entries),
+            MergedUndoGroup::Unchanged => {}
+            MergedUndoGroup::Merged(mut entry) => {
+                entry.selections_after = self.selections.clone();
+                self.undo.push(*entry);
+                self.prune_undo();
+            }
+        }
     }
 
     pub fn apply_edit(&mut self, edit: TextEdit) {
@@ -490,6 +585,7 @@ impl TextBuffer {
         language_config: LanguageConfiguration,
         indent_overrides: &[Option<String>],
     ) {
+        let newline = self.preferred_line_ending();
         let edits = self
             .selections
             .iter()
@@ -513,19 +609,19 @@ impl TextBuffer {
                 let (inserted, cursor_offset) = if should_split_pair {
                     let inner_indent = format!("{base_indent}{indent_unit}");
                     (
-                        format!("\n{inner_indent}\n{base_indent}"),
-                        1 + inner_indent.chars().count(),
+                        format!("{newline}{inner_indent}{newline}{base_indent}"),
+                        newline.chars().count() + inner_indent.chars().count(),
                     )
                 } else if should_indent {
-                    let inserted = format!("\n{base_indent}{indent_unit}");
+                    let inserted = format!("{newline}{base_indent}{indent_unit}");
                     let cursor_offset = inserted.chars().count();
                     (inserted, cursor_offset)
                 } else if let Some(indent) = override_indent {
-                    let inserted = format!("\n{indent}");
+                    let inserted = format!("{newline}{indent}");
                     let cursor_offset = inserted.chars().count();
                     (inserted, cursor_offset)
                 } else {
-                    let inserted = format!("\n{base_indent}");
+                    let inserted = format!("{newline}{base_indent}");
                     let cursor_offset = inserted.chars().count();
                     (inserted, cursor_offset)
                 };
@@ -947,7 +1043,7 @@ impl TextBuffer {
 
         self.rope = replay;
         self.version = self.version.saturating_add(1);
-        self.dirty = true;
+        self.recompute_dirty_after_mutation();
         self.selections = entry.selections_before.clone();
         self.redo.push(entry);
         self.prune_undo();
@@ -977,7 +1073,7 @@ impl TextBuffer {
 
         self.rope = replay;
         self.version = self.version.saturating_add(1);
-        self.dirty = true;
+        self.recompute_dirty_after_mutation();
         self.selections = entry.selections_after.clone();
         self.undo.push(entry);
         self.prune_undo();
@@ -1014,9 +1110,10 @@ impl TextBuffer {
 
         let selections_before = self.selections.clone();
         let inverses = self.apply_edits_inner(&edits);
-        let selections_after = inverses
+        let selections_after = selections_before
             .iter()
-            .map(|inverse| Selection::caret(inverse.range.end))
+            .copied()
+            .map(|selection| transform_selection_after_edits(selection, &edits))
             .collect::<Vec<_>>();
         self.selections = normalize_selections(selections_after, self.len_chars());
         let entry = HistoryEntry {
@@ -1054,9 +1151,10 @@ impl TextBuffer {
 
         let selections_before = self.selections.clone();
         let inverses = self.apply_edits_inner(&edits);
-        let selections_after = inverses
+        let selections_after = selections_before
             .iter()
-            .map(|inverse| Selection::caret(inverse.range.end))
+            .copied()
+            .map(|selection| transform_selection_after_edits(selection, &edits))
             .collect::<Vec<_>>();
         self.selections = normalize_selections(selections_after, self.len_chars());
         let entry = HistoryEntry {
@@ -1077,7 +1175,12 @@ impl TextBuffer {
     }
 
     fn push_undo_history_entry(&mut self, entry: HistoryEntry) {
-        if entry.coalescible_typing
+        // While an undo group is open the entries it collects stay separate so
+        // `end_undo_group` can merge exactly the group's own edits; otherwise
+        // the first grouped entry could coalesce into a pre-group entry.
+        let grouping = self.undo_group_start.is_some();
+        if !grouping
+            && entry.coalescible_typing
             && self
                 .undo
                 .last_mut()
@@ -1087,7 +1190,8 @@ impl TextBuffer {
             return;
         }
 
-        if entry.coalescible_delete.is_some()
+        if !grouping
+            && entry.coalescible_delete.is_some()
             && self
                 .undo
                 .last_mut()
@@ -1156,7 +1260,7 @@ impl TextBuffer {
         }
 
         self.version = self.version.saturating_add(1);
-        self.dirty = true;
+        self.recompute_dirty_after_mutation();
         self.selections = normalize_selections(selections_after, self.len_chars());
         self.push_undo_history_entry_without_coalescing(
             edits
@@ -1282,8 +1386,22 @@ impl TextBuffer {
         }
 
         self.version = self.version.saturating_add(1);
-        self.dirty = true;
+        self.recompute_dirty_after_mutation();
         inverses
+    }
+
+    /// Recomputes the cached dirty flag from the saved baseline after a
+    /// content mutation.
+    ///
+    /// Dirty is content-derived: the buffer is dirty exactly when its content
+    /// differs from the content captured at the last save point. Every
+    /// mutation bumps `version`, so an unchanged version proves the content
+    /// still matches the baseline without hashing the rope; when the version
+    /// has moved, the rope checksum decides. The result is stored in
+    /// `self.dirty` so `is_dirty` stays a constant-time read.
+    fn recompute_dirty_after_mutation(&mut self) {
+        self.dirty = self.version != self.baseline_version
+            && rope_checksum(&self.rope) != self.baseline_checksum;
     }
 }
 

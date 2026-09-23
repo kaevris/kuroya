@@ -13,11 +13,27 @@ use std::path::PathBuf;
 
 impl KuroyaApp {
     pub(crate) fn split_buffer_right(&mut self, id: BufferId) {
-        let source_pane = self.pane_id_for_buffer(id).unwrap_or(self.active_pane);
+        // Prefer the active pane showing the buffer so the split inherits the
+        // viewport the user is actually looking at, not the first pane that
+        // happens to hold the same buffer.
+        let source_pane = self
+            .active_pane_holding_buffer(id)
+            .or_else(|| self.pane_id_for_buffer(id))
+            .unwrap_or(self.active_pane);
         let pane_id = self.insert_editor_pane_right(Some(id));
         self.copy_pane_viewport_state(source_pane, pane_id, id);
         self.set_active_buffer_in_pane(pane_id, id);
         self.status = format!("Split editor into {} panes", self.panes.len());
+    }
+
+    pub(crate) fn split_buffer_right_from_tab_menu(&mut self, id: BufferId) {
+        // The tab menu is invoked from the tab bar, so the pane showing that
+        // tab is not necessarily the active pane; focus it first so the split
+        // is inserted next to it (mirroring the pane context menu).
+        if let Some(pane_id) = self.pane_id_for_buffer(id) {
+            self.active_pane = pane_id;
+        }
+        self.split_buffer_right(id);
     }
 
     pub(crate) fn insert_editor_pane_right(
@@ -95,6 +111,58 @@ impl KuroyaApp {
         }
         self.normalize_pane_weights();
         self.status = format!("Closed pane {}", removed.id);
+    }
+
+    /// Closes panes that are still waiting for a pending load (`active: None`)
+    /// and can therefore never be focused. Panes that already show a buffer
+    /// are left untouched.
+    pub(crate) fn close_orphaned_panes(&mut self, pane_ids: &[crate::workspace_state::PaneId]) {
+        for pane_id in pane_ids {
+            self.close_orphaned_pane(*pane_id);
+        }
+    }
+
+    fn close_orphaned_pane(&mut self, pane_id: crate::workspace_state::PaneId) {
+        let Some(position) = self.panes.iter().position(|pane| pane.id == pane_id) else {
+            return;
+        };
+        if self.panes[position].active.is_some() {
+            return;
+        }
+        let removed = self.panes.remove(position);
+        clear_editor_scroll_state_for_pane(
+            &mut self.editor_scroll_offsets,
+            &mut self.editor_scroll_targets,
+            removed.id,
+        );
+        clear_editor_horizontal_scroll_offsets_for_pane(
+            &mut self.editor_horizontal_scroll_offsets,
+            removed.id,
+        );
+        clear_editor_inertial_scrolls_for_pane(&mut self.editor_inertial_scrolls, removed.id);
+        clear_editor_middle_click_scroll_for_pane(&mut self.editor_middle_click_scroll, removed.id);
+        self.pending_pane_paths.remove(&removed.id);
+        self.pending_pane_view_states.remove(&removed.id);
+        self.pending_pane_scroll_lines
+            .retain(|(pane_id, _), _| *pane_id != removed.id);
+        self.pending_pane_horizontal_scroll_offsets
+            .retain(|(pane_id, _), _| *pane_id != removed.id);
+        if self.panes.is_empty() {
+            self.panes.push(EditorPane {
+                id: 1,
+                active: self.active,
+                weight: 1.0,
+            });
+            self.active_pane = 1;
+            self.next_pane_id = self.next_pane_id.max(2);
+        } else if !self.panes.iter().any(|pane| pane.id == self.active_pane) {
+            let recipient = position.min(self.panes.len() - 1);
+            self.active_pane = self.panes[recipient].id;
+        }
+        if self.focused_pane == Some(removed.id) {
+            self.focused_pane = Some(self.active_pane);
+        }
+        self.normalize_pane_weights();
     }
 
     fn copy_pane_viewport_state(
@@ -282,6 +350,78 @@ mod tests {
             app.editor_horizontal_scroll_offsets.get(&(split_pane, 7)),
             Some(&32.0)
         );
+    }
+
+    #[test]
+    fn split_buffer_right_copies_viewport_from_active_pane_holding_buffer() {
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root.clone());
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(root.join("src/a.rs")),
+            "one\ntwo\nthree\nfour\nfive\n".to_owned(),
+        ));
+        app.panes[0].active = Some(7);
+        let second_pane = app.insert_editor_pane_right(Some(7));
+        app.active_pane = second_pane;
+        app.active = Some(7);
+        app.editor_scroll_offsets.insert((1, 7), 120.0);
+        app.editor_scroll_offsets.insert((second_pane, 7), 40.0);
+        app.editor_scroll_targets.insert((second_pane, 7), 200.0);
+
+        app.split_buffer_right(7);
+
+        let split_pane = app.active_pane;
+        assert_ne!(split_pane, 1);
+        assert_ne!(split_pane, second_pane);
+        assert_eq!(app.editor_scroll_offsets.get(&(split_pane, 7)), Some(&40.0));
+        assert_eq!(
+            app.editor_scroll_targets.get(&(split_pane, 7)),
+            Some(&200.0)
+        );
+    }
+
+    #[test]
+    fn split_from_tab_menu_splits_pane_showing_tab() {
+        let root = PathBuf::from("workspace");
+        let mut app = app_for_test(root.clone());
+        app.buffers.push(TextBuffer::from_text(
+            7,
+            Some(root.join("src/a.rs")),
+            "one\ntwo\nthree\nfour\nfive\n".to_owned(),
+        ));
+        app.buffers.push(TextBuffer::from_text(
+            8,
+            Some(root.join("src/b.rs")),
+            "alpha\nbeta\n".to_owned(),
+        ));
+        app.panes[0].active = Some(8);
+        let tab_pane = app.insert_editor_pane_right(Some(7));
+        app.editor_scroll_offsets.insert((tab_pane, 7), 33.0);
+        app.editor_scroll_targets.insert((tab_pane, 7), 90.0);
+        // The tab menu runs while a different pane is active.
+        app.active_pane = 1;
+        app.active = Some(8);
+
+        app.split_buffer_right_from_tab_menu(7);
+
+        let split_pane = app.active_pane;
+        assert_ne!(split_pane, 1);
+        assert_ne!(split_pane, tab_pane);
+        assert_eq!(app.editor_scroll_offsets.get(&(split_pane, 7)), Some(&33.0));
+        assert_eq!(app.editor_scroll_targets.get(&(split_pane, 7)), Some(&90.0));
+        let split_position = app
+            .panes
+            .iter()
+            .position(|pane| pane.id == split_pane)
+            .expect("split pane exists");
+        let tab_position = app
+            .panes
+            .iter()
+            .position(|pane| pane.id == tab_pane)
+            .expect("tab pane exists");
+        assert_eq!(split_position, tab_position + 1);
+        assert_eq!(app.active, Some(7));
     }
 
     #[test]

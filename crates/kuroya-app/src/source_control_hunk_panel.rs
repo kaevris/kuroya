@@ -4,7 +4,7 @@ use crate::{
     path_display::{display_path_label_cow, sanitized_display_label_cow},
     source_control_git_panel_ui::{
         SOURCE_CONTROL_GIT_HUNK_PANEL_DEFAULT_SIZE, SOURCE_CONTROL_GIT_ROW_HEIGHT,
-        apply_git_panel_spacing, render_git_panel_row,
+        apply_git_panel_spacing, git_panel_list_max_height, render_git_panel_row,
     },
     ui_state::{
         clamp_selection, handle_list_navigation_keys, plain_key_pressed,
@@ -27,6 +27,13 @@ impl KuroyaApp {
         );
 
         egui::Window::new("Git Hunks")
+            .id(egui::Id::new((
+                "git_hunks_panel",
+                self.git_panel_open_generation,
+            )))
+            .max_size(crate::layout::popup_window_max_size_with_top_margin(
+                ctx, 132.0,
+            ))
             .collapsible(false)
             .resizable(true)
             .anchor(egui::Align2::CENTER_TOP, [0.0, 108.0])
@@ -112,7 +119,9 @@ impl KuroyaApp {
                         SourceControlHunkRowActionSelection,
                         SourceControlHunkActionKind,
                     )> = None;
-                    let mut scroll_area = ScrollArea::vertical().auto_shrink([false, false]);
+                    let mut scroll_area = ScrollArea::vertical()
+                        .auto_shrink([false, true])
+                        .max_height(git_panel_list_max_height(ctx, 108.0));
                     if selection_changed {
                         scroll_area =
                             scroll_area.vertical_scroll_offset(selected_row_scroll_offset(

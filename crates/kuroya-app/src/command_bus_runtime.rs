@@ -38,17 +38,37 @@ impl ShortcutDispatchCache {
         self.bindings.reserve(bindings.len());
         self.terminal_binding_indices.clear();
         self.terminal_binding_indices.reserve(bindings.len());
-        for binding in bindings {
-            if let Some(shortcut) = parse_key_chord(&binding.chord) {
-                let binding_index = self.bindings.len();
-                if shortcut_available_when_terminal_focused(&shortcut, &binding.command) {
-                    self.terminal_binding_indices.push(binding_index);
-                }
-                self.bindings.push(ParsedShortcutBinding {
-                    shortcut,
-                    command: binding.command.clone(),
-                });
+
+        let mut parsed: Vec<(ParsedShortcutBinding, bool)> = bindings
+            .iter()
+            .filter_map(|binding| {
+                let shortcut = parse_key_chord(&binding.chord)?;
+                let terminal_ok =
+                    shortcut_available_when_terminal_focused(&shortcut, &binding.command);
+                Some((
+                    ParsedShortcutBinding {
+                        shortcut,
+                        command: binding.command.clone(),
+                    },
+                    terminal_ok,
+                ))
+            })
+            .collect();
+        // Dispatch consumes the first matching binding in list order, and
+        // egui's modifier matching treats a pressed Shift as satisfying a
+        // Ctrl-only pattern. Most-specific (most modifiers) first, so
+        // Ctrl+Shift+P is consumed before Ctrl+P can shadow it.
+        parsed.sort_by_key(|(binding, _)| {
+            let modifiers = binding.shortcut.modifiers;
+            let count =
+                u8::from(modifiers.ctrl) + u8::from(modifiers.alt) + u8::from(modifiers.shift);
+            std::cmp::Reverse(u32::from(count))
+        });
+        for (binding, terminal_ok) in parsed {
+            if terminal_ok {
+                self.terminal_binding_indices.push(self.bindings.len());
             }
+            self.bindings.push(binding);
         }
     }
 
@@ -418,5 +438,41 @@ mod tests {
         });
 
         command_bus.drain().collect()
+    }
+
+    #[test]
+    fn ctrl_shift_combo_is_consumed_before_its_ctrl_prefix_shadow() {
+        let mut cache = ShortcutDispatchCache::default();
+        cache.refresh(&[
+            KeyBinding {
+                chord: "Ctrl+P".to_owned(),
+                command: Command::ToggleQuickOpen,
+            },
+            KeyBinding {
+                chord: "Ctrl+Shift+P".to_owned(),
+                command: Command::ToggleCommandPalette,
+            },
+        ]);
+
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        input.events.push(egui::Event::Key {
+            key: egui::Key::P,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+        });
+        ctx.begin_pass(input);
+        let mut command_bus = CommandBus::default();
+        cache.push_consumed_shortcuts(&ctx, false, &mut command_bus);
+
+        let fired: Vec<Command> = command_bus.drain().collect();
+        assert_eq!(
+            fired,
+            vec![Command::ToggleCommandPalette],
+            "Ctrl+Shift+P must win over the Ctrl+P prefix shadow"
+        );
+        let _ = ctx.end_pass();
     }
 }

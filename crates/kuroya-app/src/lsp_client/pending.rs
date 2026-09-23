@@ -7,12 +7,100 @@ use std::{
     collections::HashMap,
     io::{self, Write},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 pub(super) const MAX_PENDING_LSP_REQUESTS: usize = 512;
 const MAX_PENDING_LSP_FORMATTING_REQUESTS: usize = 128;
 pub(super) const MAX_LSP_OUTBOUND_TEXT_PAYLOAD_CHARS: usize = 512;
 pub(super) const MAX_LSP_OUTBOUND_JSON_PAYLOAD_BYTES: usize = 64 * 1024;
+
+/// How long a dispatched request may stay unanswered before the runtime
+/// cancels it and fails the pending entry.
+pub(super) const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// All requests dispatched to one language server that are still awaiting a
+/// response, together with the deadline each one was registered with. The
+/// runtime uses the earliest deadline to arm its cancellation timer.
+#[derive(Debug, Default)]
+pub(super) struct PendingLspRequests {
+    requests: HashMap<u64, PendingLspRequest>,
+    deadlines: HashMap<u64, tokio::time::Instant>,
+}
+
+impl PendingLspRequests {
+    pub(super) fn insert(&mut self, request_id: u64, pending: PendingLspRequest) {
+        self.deadlines.insert(
+            request_id,
+            tokio::time::Instant::now() + LSP_REQUEST_TIMEOUT,
+        );
+        self.requests.insert(request_id, pending);
+    }
+
+    pub(super) fn remove(&mut self, request_id: &u64) -> Option<PendingLspRequest> {
+        self.deadlines.remove(request_id);
+        self.requests.remove(request_id)
+    }
+
+    #[cfg(test)]
+    pub(super) fn get(&self, request_id: &u64) -> Option<&PendingLspRequest> {
+        self.requests.get(request_id)
+    }
+
+    pub(super) fn contains_key(&self, request_id: &u64) -> bool {
+        self.requests.contains_key(request_id)
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.requests.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
+
+    pub(super) fn iter(&self) -> impl Iterator<Item = (u64, &PendingLspRequest)> {
+        self.requests
+            .iter()
+            .map(|(request_id, pending)| (*request_id, pending))
+    }
+
+    /// Drains every pending entry (request ids are not ordered).
+    pub(super) fn drain(
+        &mut self,
+    ) -> std::collections::hash_map::Drain<'_, u64, PendingLspRequest> {
+        self.deadlines.clear();
+        self.requests.drain()
+    }
+
+    /// Deadline that expires first, if any request is pending.
+    pub(super) fn earliest_deadline(&self) -> Option<tokio::time::Instant> {
+        self.deadlines.values().copied().min()
+    }
+
+    /// Removes and returns every entry whose deadline has passed, oldest
+    /// request id first.
+    pub(super) fn take_expired(
+        &mut self,
+        now: tokio::time::Instant,
+    ) -> Vec<(u64, PendingLspRequest)> {
+        let mut expired: Vec<u64> = self
+            .deadlines
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(request_id, _)| *request_id)
+            .collect();
+        expired.sort_unstable();
+        expired
+            .into_iter()
+            .filter_map(|request_id| {
+                self.remove(&request_id)
+                    .map(|pending| (request_id, pending))
+            })
+            .collect()
+    }
+}
 
 pub(super) fn lsp_request_target_is_valid(id: BufferId, path: &Path) -> bool {
     id != 0 && !path.as_os_str().is_empty()
@@ -127,6 +215,13 @@ pub(super) enum PendingLspRequest {
         line: usize,
         character: usize,
     },
+    PrepareRename {
+        id: BufferId,
+        path: PathBuf,
+        version: u64,
+        line: usize,
+        character: usize,
+    },
     Rename {
         id: BufferId,
         path: PathBuf,
@@ -225,7 +320,7 @@ pub(super) enum PendingLspRequest {
 }
 
 pub(super) fn register_pending_request(
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
+    pending_requests: &mut PendingLspRequests,
     request_id: u64,
     pending: PendingLspRequest,
 ) {
@@ -250,6 +345,7 @@ impl PendingLspRequest {
             | Self::TypeHierarchySupertypes { id, path, .. }
             | Self::TypeHierarchySubtypes { id, path, .. }
             | Self::References { id, path, .. }
+            | Self::PrepareRename { id, path, .. }
             | Self::Rename { id, path, .. }
             | Self::DocumentSymbols { id, path, .. }
             | Self::FoldingRanges { id, path, .. }
@@ -273,7 +369,7 @@ impl PendingLspRequest {
 
 #[cfg(test)]
 pub(super) fn superseded_pending_request_ids(
-    pending_requests: &HashMap<u64, PendingLspRequest>,
+    pending_requests: &PendingLspRequests,
     command: &LspClientCommand,
 ) -> Vec<u64> {
     pending_request_dispatch_plan(pending_requests, command).0
@@ -281,17 +377,17 @@ pub(super) fn superseded_pending_request_ids(
 
 #[cfg(test)]
 pub(super) fn pending_request_dispatch_plan(
-    pending_requests: &HashMap<u64, PendingLspRequest>,
+    pending_requests: &PendingLspRequests,
     command: &LspClientCommand,
 ) -> (Vec<u64>, bool) {
     let key = PendingLspRequestCoalescingKey::from_command(command);
     let mut has_exact_match = false;
     let mut request_ids = Vec::new();
-    for (request_id, pending) in pending_requests {
+    for (request_id, pending) in pending_requests.iter() {
         if pending_request_matches_command(pending, command) {
             has_exact_match = true;
         } else if key.is_some_and(|key| key.matches_pending(pending)) {
-            request_ids.push(*request_id);
+            request_ids.push(request_id);
         }
     }
     request_ids.sort_unstable();
@@ -300,12 +396,12 @@ pub(super) fn pending_request_dispatch_plan(
 
 #[cfg(test)]
 pub(super) fn has_exact_pending_request(
-    pending_requests: &HashMap<u64, PendingLspRequest>,
+    pending_requests: &PendingLspRequests,
     command: &LspClientCommand,
 ) -> bool {
     pending_requests
-        .values()
-        .any(|pending| pending_request_matches_command(pending, command))
+        .iter()
+        .any(|(_, pending)| pending_request_matches_command(pending, command))
 }
 
 #[cfg(test)]
@@ -450,10 +546,7 @@ fn pending_request_matches_command(
     }
 }
 
-fn prune_oldest_pending_requests(
-    pending_requests: &mut HashMap<u64, PendingLspRequest>,
-    max_len: usize,
-) {
+fn prune_oldest_pending_requests(pending_requests: &mut PendingLspRequests, max_len: usize) {
     let max_formatting_len = MAX_PENDING_LSP_FORMATTING_REQUESTS.min(max_len);
     while pending_formatting_request_count(pending_requests) > max_formatting_len {
         let Some(oldest) = oldest_matching_pending_request_id(pending_requests, |pending| {
@@ -475,20 +568,20 @@ fn prune_oldest_pending_requests(
     }
 }
 
-fn pending_formatting_request_count(pending_requests: &HashMap<u64, PendingLspRequest>) -> usize {
+fn pending_formatting_request_count(pending_requests: &PendingLspRequests) -> usize {
     pending_requests
-        .values()
-        .filter(|pending| matches!(pending, PendingLspRequest::Formatting { .. }))
+        .iter()
+        .filter(|(_, pending)| matches!(pending, PendingLspRequest::Formatting { .. }))
         .count()
 }
 
 fn oldest_matching_pending_request_id(
-    pending_requests: &HashMap<u64, PendingLspRequest>,
+    pending_requests: &PendingLspRequests,
     matches_pending: impl Fn(&PendingLspRequest) -> bool,
 ) -> Option<u64> {
     pending_requests
         .iter()
-        .filter_map(|(request_id, pending)| matches_pending(pending).then_some(*request_id))
+        .filter_map(|(request_id, pending)| matches_pending(pending).then_some(request_id))
         .min()
 }
 
@@ -596,15 +689,27 @@ impl<'a> PendingLspRequestCoalescingKey<'a> {
 }
 
 #[cfg(test)]
+impl<const N: usize> From<[(u64, PendingLspRequest); N]> for PendingLspRequests {
+    fn from(entries: [(u64, PendingLspRequest); N]) -> Self {
+        let mut pending_requests = Self::default();
+        for (request_id, pending) in entries {
+            pending_requests.insert(request_id, pending);
+        }
+        pending_requests
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{
-        MAX_LSP_OUTBOUND_TEXT_PAYLOAD_CHARS, MAX_PENDING_LSP_FORMATTING_REQUESTS,
-        MAX_PENDING_LSP_REQUESTS, PendingLspRequest, bounded_lsp_outbound_text,
-        has_exact_pending_request, lsp_json_payload_is_bounded, pending_formatting_request_count,
+        LSP_REQUEST_TIMEOUT, MAX_LSP_OUTBOUND_TEXT_PAYLOAD_CHARS,
+        MAX_PENDING_LSP_FORMATTING_REQUESTS, MAX_PENDING_LSP_REQUESTS, PendingLspRequest,
+        PendingLspRequests, bounded_lsp_outbound_text, has_exact_pending_request,
+        lsp_json_payload_is_bounded, pending_formatting_request_count,
         prune_oldest_pending_requests, register_pending_request, superseded_pending_request_ids,
     };
     use crate::lsp_client::commands::LspClientCommand;
-    use std::{collections::HashMap, path::PathBuf};
+    use std::{path::PathBuf, time::Duration};
 
     fn pending(version: u64) -> PendingLspRequest {
         PendingLspRequest::Formatting {
@@ -627,7 +732,7 @@ mod tests {
 
     #[test]
     fn pending_lsp_requests_are_bounded_by_registration() {
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
 
         for request_id in 1..=(MAX_PENDING_LSP_REQUESTS as u64 + 2) {
             register_pending_request(&mut pending_requests, request_id, hover(request_id));
@@ -641,7 +746,7 @@ mod tests {
 
     #[test]
     fn pending_lsp_request_registration_keeps_existing_duplicate_id() {
-        let mut pending_requests = HashMap::from([(7, hover(1))]);
+        let mut pending_requests = PendingLspRequests::from([(7, hover(1))]);
 
         register_pending_request(&mut pending_requests, 7, hover(2));
 
@@ -653,7 +758,7 @@ mod tests {
 
     #[test]
     fn pending_lsp_request_registration_rejects_invalid_target_state() {
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
 
         register_pending_request(
             &mut pending_requests,
@@ -709,7 +814,8 @@ mod tests {
 
     #[test]
     fn pending_lsp_request_pruning_removes_lowest_request_ids_first() {
-        let mut pending_requests = HashMap::from([(10, hover(10)), (5, hover(5)), (7, hover(7))]);
+        let mut pending_requests =
+            PendingLspRequests::from([(10, hover(10)), (5, hover(5)), (7, hover(7))]);
 
         prune_oldest_pending_requests(&mut pending_requests, 1);
 
@@ -719,7 +825,7 @@ mod tests {
 
     #[test]
     fn pending_lsp_request_pruning_preserves_formatting_requests() {
-        let mut pending_requests = HashMap::from([(1, pending(1)), (2, hover(2))]);
+        let mut pending_requests = PendingLspRequests::from([(1, pending(1)), (2, hover(2))]);
 
         prune_oldest_pending_requests(&mut pending_requests, 1);
 
@@ -732,7 +838,7 @@ mod tests {
 
     #[test]
     fn pending_lsp_request_pruning_bounds_all_formatting_requests() {
-        let mut pending_requests = HashMap::new();
+        let mut pending_requests = PendingLspRequests::default();
 
         for request_id in 1..=(MAX_PENDING_LSP_REQUESTS as u64 + 2) {
             register_pending_request(&mut pending_requests, request_id, pending(request_id));
@@ -751,7 +857,7 @@ mod tests {
     #[test]
     fn pending_lsp_request_pruning_enforces_formatting_cap_before_total_cap() {
         let newest_formatting = MAX_PENDING_LSP_FORMATTING_REQUESTS as u64 + 2;
-        let mut pending_requests = HashMap::from([(1_000, hover(1_000))]);
+        let mut pending_requests = PendingLspRequests::from([(1_000, hover(1_000))]);
         for request_id in 1..=newest_formatting {
             pending_requests.insert(request_id, pending(request_id));
         }
@@ -770,7 +876,7 @@ mod tests {
 
     #[test]
     fn pending_lsp_request_pruning_removes_oldest_formatting_when_only_formatting_remains() {
-        let mut pending_requests = HashMap::from([(1, pending(1)), (2, pending(2))]);
+        let mut pending_requests = PendingLspRequests::from([(1, pending(1)), (2, pending(2))]);
 
         prune_oldest_pending_requests(&mut pending_requests, 1);
 
@@ -785,7 +891,7 @@ mod tests {
     #[test]
     fn superseded_pending_lsp_requests_are_taken_for_ui_driven_request_family() {
         let path = PathBuf::from("src/main.rs");
-        let pending_requests = HashMap::from([
+        let pending_requests = PendingLspRequests::from([
             (
                 10,
                 PendingLspRequest::Hover {
@@ -849,7 +955,7 @@ mod tests {
     #[test]
     fn superseded_pending_lsp_requests_keep_exact_match_for_reuse() {
         let path = PathBuf::from("src/main.rs");
-        let pending_requests = HashMap::from([
+        let pending_requests = PendingLspRequests::from([
             (
                 10,
                 PendingLspRequest::Hover {
@@ -890,7 +996,7 @@ mod tests {
     #[test]
     fn explicit_lsp_actions_do_not_supersede_pending_requests() {
         let path = PathBuf::from("src/main.rs");
-        let pending_requests = HashMap::from([(
+        let pending_requests = PendingLspRequests::from([(
             10,
             PendingLspRequest::References {
                 id: 1,
@@ -920,7 +1026,7 @@ mod tests {
     #[test]
     fn exact_pending_lsp_request_matches_same_high_frequency_command() {
         let path = PathBuf::from("src/main.rs");
-        let pending_requests = HashMap::from([
+        let pending_requests = PendingLspRequests::from([
             (
                 10,
                 PendingLspRequest::Hover {
@@ -958,7 +1064,7 @@ mod tests {
     #[test]
     fn exact_pending_lsp_request_rejects_stale_same_document_command() {
         let path = PathBuf::from("src/main.rs");
-        let pending_requests = HashMap::from([(
+        let pending_requests = PendingLspRequests::from([(
             10,
             PendingLspRequest::Hover {
                 id: 1,
@@ -994,7 +1100,7 @@ mod tests {
     #[test]
     fn exact_pending_lsp_request_matches_inlay_hints_with_complete_inputs() {
         let path = PathBuf::from("src/main.rs");
-        let pending_requests = HashMap::from([(
+        let pending_requests = PendingLspRequests::from([(
             10,
             PendingLspRequest::InlayHints {
                 id: 1,
@@ -1020,7 +1126,7 @@ mod tests {
     #[test]
     fn exact_pending_lsp_request_rejects_stale_inlay_hint_inputs() {
         let path = PathBuf::from("src/main.rs");
-        let pending_requests = HashMap::from([(
+        let pending_requests = PendingLspRequests::from([(
             10,
             PendingLspRequest::InlayHints {
                 id: 1,
@@ -1056,7 +1162,7 @@ mod tests {
     #[test]
     fn exact_pending_lsp_request_matches_symbol_requests_with_complete_inputs() {
         let path = PathBuf::from("src/main.rs");
-        let pending_requests = HashMap::from([
+        let pending_requests = PendingLspRequests::from([
             (
                 10,
                 PendingLspRequest::CodeLenses {
@@ -1096,7 +1202,7 @@ mod tests {
     #[test]
     fn exact_pending_lsp_request_rejects_stale_symbol_requests() {
         let path = PathBuf::from("src/main.rs");
-        let pending_requests = HashMap::from([
+        let pending_requests = PendingLspRequests::from([
             (
                 10,
                 PendingLspRequest::CodeLenses {
@@ -1136,7 +1242,7 @@ mod tests {
     #[test]
     fn code_action_list_requests_supersede_older_code_action_lists_for_same_document() {
         let path = PathBuf::from("src/main.rs");
-        let pending_requests = HashMap::from([
+        let pending_requests = PendingLspRequests::from([
             (
                 10,
                 PendingLspRequest::CodeActions {
@@ -1200,5 +1306,80 @@ mod tests {
         assert!(pending_requests.contains_key(&11));
         assert!(pending_requests.contains_key(&12));
         assert!(pending_requests.contains_key(&13));
+    }
+
+    #[test]
+    fn pending_request_timeout_is_twenty_seconds() {
+        assert_eq!(LSP_REQUEST_TIMEOUT, Duration::from_secs(20));
+    }
+
+    #[test]
+    fn inserted_pending_requests_get_deadlines_at_registration() {
+        let before = tokio::time::Instant::now();
+        let mut pending_requests = PendingLspRequests::default();
+
+        pending_requests.insert(7, hover(7));
+
+        let deadline = pending_requests
+            .earliest_deadline()
+            .expect("registered request should carry a deadline");
+        assert!(deadline >= before + LSP_REQUEST_TIMEOUT);
+        assert!(deadline <= tokio::time::Instant::now() + LSP_REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn earliest_deadline_is_none_without_pending_requests_and_uses_the_minimum() {
+        let mut pending_requests = PendingLspRequests::default();
+        assert_eq!(pending_requests.earliest_deadline(), None);
+
+        pending_requests =
+            PendingLspRequests::from([(10, hover(10)), (5, hover(5)), (7, hover(7))]);
+        let base = tokio::time::Instant::now();
+        pending_requests.deadlines.insert(5, base);
+        pending_requests
+            .deadlines
+            .insert(7, base + LSP_REQUEST_TIMEOUT);
+        pending_requests
+            .deadlines
+            .insert(10, base + LSP_REQUEST_TIMEOUT * 2);
+
+        assert_eq!(pending_requests.earliest_deadline(), Some(base));
+    }
+
+    #[test]
+    fn take_expired_removes_only_due_entries_in_request_id_order() {
+        let now = tokio::time::Instant::now();
+        let mut pending_requests =
+            PendingLspRequests::from([(10, hover(10)), (5, hover(5)), (7, hover(7))]);
+        pending_requests
+            .deadlines
+            .insert(5, now - Duration::from_secs(1));
+        pending_requests
+            .deadlines
+            .insert(7, now - Duration::from_secs(2));
+        pending_requests
+            .deadlines
+            .insert(10, now + Duration::from_secs(30));
+
+        let expired = pending_requests.take_expired(now);
+        let expired_ids: Vec<u64> = expired
+            .into_iter()
+            .map(|(request_id, _)| request_id)
+            .collect();
+
+        assert_eq!(expired_ids, vec![5, 7]);
+        assert!(pending_requests.contains_key(&10));
+        assert_eq!(pending_requests.len(), 1);
+    }
+
+    #[test]
+    fn removing_a_pending_request_also_drops_its_deadline() {
+        let mut pending_requests = PendingLspRequests::from([(7, hover(7))]);
+        assert!(pending_requests.earliest_deadline().is_some());
+
+        assert!(pending_requests.remove(&7).is_some());
+
+        assert_eq!(pending_requests.earliest_deadline(), None);
+        assert!(pending_requests.is_empty());
     }
 }

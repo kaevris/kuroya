@@ -9,7 +9,7 @@ use crate::editor_vim_key_events::{
 use eframe::egui::{Key, Modifiers};
 use kuroya_core::TextBuffer;
 
-pub(in crate::editor_vim_key_events) fn vim_clear_search_input() {
+pub(crate) fn vim_clear_search_input() {
     vim_clear_input(&VIM_SEARCH_INPUT);
 }
 
