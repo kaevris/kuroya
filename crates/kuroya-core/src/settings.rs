@@ -1030,6 +1030,7 @@ pub struct EditorSettings {
     pub background_image_dim: f32,
     pub background_image_fit: EditorBackgroundImageFit,
     pub background_image_position: EditorBackgroundImagePosition,
+    pub background_image_loop: bool,
     pub project_index_max_files: usize,
     #[serde(
         default = "default_project_index_exclude_globs",

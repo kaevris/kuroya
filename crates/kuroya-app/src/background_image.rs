@@ -231,9 +231,10 @@ pub(crate) async fn load_background_image_preview(
 pub(crate) async fn load_background_image(
     path: &Path,
     repaint_context: Option<egui::Context>,
+    loop_enabled: bool,
 ) -> Result<LoadedBackgroundImage, String> {
     if path_is_animated_gif(path) {
-        load_animated_gif_background(path, repaint_context)
+        load_animated_gif_background(path, repaint_context, loop_enabled)
             .await
             .map(LoadedBackgroundImage::AnimatedGif)
     } else {

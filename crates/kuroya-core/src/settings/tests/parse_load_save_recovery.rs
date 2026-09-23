@@ -25,6 +25,7 @@ fn partial_settings_toml_uses_defaults() {
         settings.background_image_position,
         EditorBackgroundImagePosition::Center
     );
+    assert!(settings.background_image_loop);
     assert_eq!(settings.font_family, DEFAULT_EDITOR_FONT_FAMILY);
     assert_eq!(settings.font_weight, DEFAULT_EDITOR_FONT_WEIGHT);
     assert_eq!(settings.font_ligatures, DEFAULT_EDITOR_FONT_LIGATURES);
@@ -1081,7 +1082,8 @@ fn editor_background_image_settings_parse_with_named_enum_values() {
          background_image_scope = \"full_app\"\n\
          background_image_dim = 0.8\n\
          background_image_fit = \"contain\"\n\
-         background_image_position = \"bottom\"\n",
+         background_image_position = \"bottom\"\n\
+         background_image_loop = false\n",
     )
     .expect("editor background image settings should load");
 
@@ -1103,6 +1105,7 @@ fn editor_background_image_settings_parse_with_named_enum_values() {
         settings.background_image_position,
         EditorBackgroundImagePosition::Bottom
     );
+    assert!(!settings.background_image_loop);
 }
 
 #[test]
@@ -1116,6 +1119,7 @@ fn editor_background_image_settings_save_and_reload_preserves_values() {
         background_image_dim: 0.6,
         background_image_fit: EditorBackgroundImageFit::Stretch,
         background_image_position: EditorBackgroundImagePosition::Top,
+        background_image_loop: false,
         ..EditorSettings::default()
     };
 

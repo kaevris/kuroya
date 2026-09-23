@@ -927,6 +927,7 @@ fn editor_background_image_settings_have_expected_defaults_and_clamp_dim_amount(
         settings.background_image_position,
         EditorBackgroundImagePosition::Center
     );
+    assert!(settings.background_image_loop);
 
     assert_eq!(
         clamp_editor_background_image_dim(-1.0),

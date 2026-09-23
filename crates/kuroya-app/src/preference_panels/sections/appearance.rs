@@ -155,6 +155,19 @@ fn render_editor_background_settings(
             .on_hover_text("Editor background image");
             ui.end_row();
 
+            ui.label("Loop animated background");
+            ui.add_enabled_ui(controls_enabled, |ui| {
+                settings_switch(
+                    ui,
+                    &mut draft.background_image_loop,
+                    "Loop animated background",
+                )
+                .on_hover_text(
+                    "Replay animated GIF backgrounds from the beginning when they finish.",
+                );
+            });
+            ui.end_row();
+
             ui.label("Image");
             render_background_image_file_picker(
                 ui,

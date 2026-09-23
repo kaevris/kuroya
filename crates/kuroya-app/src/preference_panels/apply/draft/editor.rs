@@ -63,6 +63,7 @@ pub(super) fn apply_editor_settings_draft(settings: &mut EditorSettings, draft: 
     settings.background_image_dim = clamp_editor_background_image_dim(draft.background_image_dim);
     settings.background_image_fit = draft.background_image_fit;
     settings.background_image_position = draft.background_image_position;
+    settings.background_image_loop = draft.background_image_loop;
     settings.font_family =
         raw_setting_text_or_default(&draft.font_family, kuroya_core::DEFAULT_EDITOR_FONT_FAMILY);
     settings.font_weight = sanitize_editor_font_weight(&draft.font_weight);

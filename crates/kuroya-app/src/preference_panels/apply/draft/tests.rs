@@ -172,6 +172,7 @@ fn draft_apply_copy_fixture() -> EditorSettings {
         background_image_dim: 0.42,
         background_image_fit: kuroya_core::EditorBackgroundImageFit::Contain,
         background_image_position: kuroya_core::EditorBackgroundImagePosition::Bottom,
+        background_image_loop: false,
         editor_font_path: Some("fonts/editor.ttf".to_owned()),
         ui_font_path: Some("fonts/ui.ttf".to_owned()),
         font_family: " Cascadia Code ".to_owned(),
@@ -780,6 +781,7 @@ fn draft_apply_copies_word_separators() {
         settings.background_image_position,
         kuroya_core::EditorBackgroundImagePosition::Bottom
     );
+    assert!(!settings.background_image_loop);
     assert_eq!(settings.font_family, " Cascadia Code ");
     assert_eq!(settings.font_weight, "600");
     assert_eq!(settings.font_ligatures, EDITOR_FONT_LIGATURES_ON);

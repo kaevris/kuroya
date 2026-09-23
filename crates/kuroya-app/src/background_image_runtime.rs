@@ -193,6 +193,9 @@ impl KuroyaApp {
         let request_generation = Arc::clone(&self.background_image_runtime.request_generation);
         let decode_gate = Arc::clone(&self.background_image_runtime.decode_gate);
         let repaint_context = self.background_image_runtime.repaint_context.clone();
+        let loop_enabled = self
+            .effective_background_image_settings()
+            .background_image_loop;
         self.runtime.spawn(async move {
             let Ok(_permit) = decode_gate.acquire_owned().await else {
                 return;
@@ -201,7 +204,9 @@ impl KuroyaApp {
                 return;
             }
 
-            let result = load_background_image(&configured_path, repaint_context.clone()).await;
+            let result =
+                load_background_image(&configured_path, repaint_context.clone(), loop_enabled)
+                    .await;
             if request_generation.load(Ordering::Acquire) != request_id {
                 return;
             }
@@ -269,11 +274,14 @@ impl KuroyaApp {
             return;
         };
         let paused = ctx.input(|input| input.viewport().minimized.unwrap_or(false));
+        let loop_enabled = self
+            .effective_background_image_settings()
+            .background_image_loop;
         let update = self
             .background_image_runtime
             .animation
             .as_mut()
-            .and_then(|animation| animation.poll(&ctx, paused));
+            .and_then(|animation| animation.poll(&ctx, paused, loop_enabled));
         match update {
             Some(BackgroundGifAnimationUpdate::Frame(preview)) => {
                 if !self
@@ -292,9 +300,7 @@ impl KuroyaApp {
                 self.background_image_runtime.animation = None;
                 self.status = background_image_load_failure_status(&error);
             }
-            Some(BackgroundGifAnimationUpdate::Finished) => {
-                self.background_image_runtime.animation = None;
-            }
+            Some(BackgroundGifAnimationUpdate::Finished) => {}
             None => {}
         }
     }

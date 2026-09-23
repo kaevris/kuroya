@@ -4,10 +4,7 @@ use crate::{
 };
 use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError, bounded};
 use eframe::egui::Context;
-use image::{
-    AnimationDecoder, Delay, Frame, ImageDecoder, Limits, codecs::gif::GifDecoder,
-    metadata::LoopCount,
-};
+use image::{AnimationDecoder, Delay, Frame, ImageDecoder, Limits, codecs::gif::GifDecoder};
 use std::{
     io::BufReader,
     path::{Path, PathBuf},
@@ -17,6 +14,7 @@ use std::{
 use tokio::sync::oneshot;
 
 const GIF_FRAME_CHANNEL_CAPACITY: usize = 1;
+const GIF_REQUEST_CHANNEL_CAPACITY: usize = 2;
 const MAX_ANIMATED_BACKGROUND_PIXELS: u64 = 1920 * 1080;
 const GIF_RGBA_BYTES_PER_PIXEL: u64 = 4;
 const GIF_DECODER_LIVE_CANVAS_COUNT: u64 = 3;
@@ -34,13 +32,23 @@ pub(crate) struct LoadedGifBackground {
     pub(crate) animation: BackgroundGifAnimation,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackgroundGifAnimationRequest {
+    Advance,
+    SetLooping(bool),
+}
+
 #[derive(Debug)]
 pub(crate) struct BackgroundGifAnimation {
-    requests: Sender<()>,
+    requests: Sender<BackgroundGifAnimationRequest>,
     frames: Receiver<BackgroundGifAnimationEvent>,
     next_frame_at: Option<Instant>,
     frame_delay: Duration,
     request_in_flight: bool,
+    loop_enabled: bool,
+    loop_change_pending: bool,
+    holding_last_frame: bool,
+    worker_exited: bool,
 }
 
 #[derive(Debug)]
@@ -77,25 +85,42 @@ impl BackgroundGifAnimation {
         &mut self,
         ctx: &Context,
         paused: bool,
+        loop_enabled: bool,
     ) -> Option<BackgroundGifAnimationUpdate> {
+        if self.worker_exited {
+            return None;
+        }
         match self.frames.try_recv() {
             Ok(BackgroundGifAnimationEvent::Frame(frame)) => {
                 self.request_in_flight = false;
+                self.holding_last_frame = false;
                 self.schedule_next_frame(frame.delay, Some(ctx), paused);
                 return Some(BackgroundGifAnimationUpdate::Frame(frame.preview));
             }
             Ok(BackgroundGifAnimationEvent::Finished) => {
+                self.request_in_flight = false;
+                self.next_frame_at = None;
+                self.holding_last_frame = true;
                 return Some(BackgroundGifAnimationUpdate::Finished);
             }
             Ok(BackgroundGifAnimationEvent::Failed(error)) => {
                 return Some(BackgroundGifAnimationUpdate::Failed(error));
             }
             Err(TryRecvError::Disconnected) => {
+                self.request_in_flight = false;
+                self.next_frame_at = None;
+                self.holding_last_frame = true;
+                self.worker_exited = true;
                 return Some(BackgroundGifAnimationUpdate::Finished);
             }
             Err(TryRecvError::Empty) => {}
         }
 
+        self.sync_loop_setting(loop_enabled);
+
+        if self.holding_last_frame {
+            return None;
+        }
         if paused {
             self.next_frame_at = None;
             return None;
@@ -118,14 +143,47 @@ impl BackgroundGifAnimation {
             return None;
         }
 
-        match self.requests.try_send(()) {
+        match self
+            .requests
+            .try_send(BackgroundGifAnimationRequest::Advance)
+        {
             Ok(()) => self.request_in_flight = true,
-            Err(TrySendError::Full(())) => self.request_in_flight = true,
-            Err(TrySendError::Disconnected(())) => {
+            Err(TrySendError::Full(BackgroundGifAnimationRequest::Advance)) => {
+                self.request_in_flight = true;
+            }
+            Err(TrySendError::Full(BackgroundGifAnimationRequest::SetLooping(_))) => {}
+            Err(TrySendError::Disconnected(_)) => {
                 return Some(BackgroundGifAnimationUpdate::Finished);
             }
         }
         None
+    }
+
+    fn sync_loop_setting(&mut self, loop_enabled: bool) {
+        if loop_enabled != self.loop_enabled {
+            self.loop_enabled = loop_enabled;
+            self.loop_change_pending = true;
+        }
+        if !self.loop_change_pending {
+            return;
+        }
+        match self
+            .requests
+            .try_send(BackgroundGifAnimationRequest::SetLooping(self.loop_enabled))
+        {
+            Ok(()) => {
+                self.loop_change_pending = false;
+                if self.loop_enabled {
+                    self.holding_last_frame = false;
+                }
+            }
+            Err(TrySendError::Full(_)) => {}
+            Err(TrySendError::Disconnected(_)) => {
+                self.loop_change_pending = false;
+                self.holding_last_frame = true;
+                self.worker_exited = true;
+            }
+        }
     }
 
     fn schedule_next_frame(&mut self, delay: Duration, ctx: Option<&Context>, paused: bool) {
@@ -159,8 +217,9 @@ pub(crate) fn path_is_animated_gif(path: &Path) -> bool {
 pub(crate) async fn load_animated_gif_background(
     path: &Path,
     repaint_context: Option<Context>,
+    loop_enabled: bool,
 ) -> Result<LoadedGifBackground, String> {
-    let (requests_tx, requests_rx) = bounded(GIF_FRAME_CHANNEL_CAPACITY);
+    let (requests_tx, requests_rx) = bounded(GIF_REQUEST_CHANNEL_CAPACITY);
     let (frames_tx, frames_rx) = bounded(GIF_FRAME_CHANNEL_CAPACITY);
     let (first_frame_tx, first_frame_rx) = oneshot::channel();
     let worker_path = path.to_path_buf();
@@ -174,6 +233,7 @@ pub(crate) async fn load_animated_gif_background(
                 requests_rx,
                 frames_tx,
                 repaint_context,
+                loop_enabled,
             );
         })
         .map_err(|error| format!("could not start animated GIF decoder: {error}"))?;
@@ -190,6 +250,10 @@ pub(crate) async fn load_animated_gif_background(
             next_frame_at: None,
             frame_delay: MIN_GIF_FRAME_DELAY,
             request_in_flight: false,
+            loop_enabled,
+            loop_change_pending: false,
+            holding_last_frame: false,
+            worker_exited: false,
         },
     })
 }
@@ -197,17 +261,22 @@ pub(crate) async fn load_animated_gif_background(
 fn run_gif_worker(
     path: PathBuf,
     first_frame_tx: oneshot::Sender<Result<DecodedGifFrame, String>>,
-    requests: Receiver<()>,
+    requests: Receiver<BackgroundGifAnimationRequest>,
     frames: Sender<BackgroundGifAnimationEvent>,
     repaint_context: Option<Context>,
+    initial_loop_enabled: bool,
 ) {
     let mut first_frame_tx = Some(first_frame_tx);
     let mut first_frame_sent = false;
-    let mut carry_advance_request = true;
-    let mut completed_plays = 0_u32;
-    let mut finite_plays = None;
+    let mut loop_enabled = initial_loop_enabled;
+    let mut await_replay_request = false;
 
     loop {
+        if await_replay_request && !wait_for_replay_request(&requests, &mut loop_enabled) {
+            return;
+        }
+        await_replay_request = false;
+
         let (decoder, source_byte_len) = match open_gif_decoder(&path) {
             Ok(loaded) => loaded,
             Err(error) => {
@@ -220,15 +289,21 @@ fn run_gif_worker(
                 return;
             }
         };
-        finite_plays.get_or_insert_with(|| finite_loop_count(decoder.loop_count()));
         let mut decoded_frames = decoder.into_frames();
+        let mut first_frame_of_play = true;
         let mut frames_in_play = 0_u64;
 
         loop {
-            if first_frame_sent && !carry_advance_request && requests.recv().is_err() {
-                return;
+            if first_frame_sent && !first_frame_of_play {
+                match requests.recv() {
+                    Ok(BackgroundGifAnimationRequest::SetLooping(enabled)) => {
+                        loop_enabled = enabled;
+                        continue;
+                    }
+                    Ok(BackgroundGifAnimationRequest::Advance) => {}
+                    Err(_) => return,
+                }
             }
-            carry_advance_request = false;
 
             let frame = match decoded_frames.next() {
                 Some(Ok(frame)) => frame,
@@ -241,11 +316,9 @@ fn run_gif_worker(
                     );
                     return;
                 }
-                None => {
-                    carry_advance_request = true;
-                    break;
-                }
+                None => break,
             };
+            first_frame_of_play = false;
             frames_in_play = frames_in_play.saturating_add(1);
             let frame = match decoded_gif_frame(frame, source_byte_len) {
                 Ok(frame) => frame,
@@ -280,17 +353,45 @@ fn run_gif_worker(
             }
         }
 
-        completed_plays = completed_plays.saturating_add(1);
-        let play_limit_reached = finite_plays
-            .flatten()
-            .is_some_and(|play_limit| completed_plays >= play_limit);
-        if frames_in_play <= 1 || play_limit_reached {
+        let replayable = frames_in_play > 1;
+        if !first_frame_sent || !replayable {
             send_animation_event(
                 &frames,
                 repaint_context.as_ref(),
                 BackgroundGifAnimationEvent::Finished,
             );
             return;
+        }
+        if !loop_enabled {
+            send_animation_event(
+                &frames,
+                repaint_context.as_ref(),
+                BackgroundGifAnimationEvent::Finished,
+            );
+            await_replay_request = true;
+            continue;
+        }
+    }
+}
+
+fn wait_for_replay_request(
+    requests: &Receiver<BackgroundGifAnimationRequest>,
+    loop_enabled: &mut bool,
+) -> bool {
+    loop {
+        match requests.recv() {
+            Ok(BackgroundGifAnimationRequest::SetLooping(enabled)) => {
+                *loop_enabled = enabled;
+                if enabled {
+                    return true;
+                }
+            }
+            Ok(BackgroundGifAnimationRequest::Advance) => {
+                if *loop_enabled {
+                    return true;
+                }
+            }
+            Err(_) => return false,
         }
     }
 }
@@ -352,13 +453,6 @@ fn bounded_gif_frame_delay(delay: Delay) -> Duration {
     Duration::from_secs_f64(milliseconds / 1000.0).max(MIN_GIF_FRAME_DELAY)
 }
 
-fn finite_loop_count(loop_count: LoopCount) -> Option<u32> {
-    match loop_count {
-        LoopCount::Infinite => None,
-        LoopCount::Finite(count) => Some(count.get()),
-    }
-}
-
 fn send_worker_failure(
     first_frame_tx: &mut Option<oneshot::Sender<Result<DecodedGifFrame, String>>>,
     frames: &Sender<BackgroundGifAnimationEvent>,
@@ -397,6 +491,7 @@ mod tests {
         MIN_GIF_FRAME_DELAY, bounded_gif_frame_delay, load_animated_gif_background,
         path_is_animated_gif, validate_gif_dimensions,
     };
+    use crate::image_preview::LoadedImagePreview;
     use crossbeam_channel::bounded;
     use eframe::egui;
     use image::{
@@ -408,6 +503,8 @@ mod tests {
         path::{Path, PathBuf},
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
+
+    const TEST_LOOP_WAIT: Duration = Duration::from_secs(10);
 
     #[test]
     fn gif_background_detection_is_case_insensitive() {
@@ -491,9 +588,9 @@ mod tests {
             animation.next_frame_at, None,
             "pausing must cancel the pending frame deadline"
         );
-        assert!(animation.poll(&ctx, true).is_none());
+        assert!(animation.poll(&ctx, true, true).is_none());
 
-        assert!(animation.poll(&ctx, false).is_none());
+        assert!(animation.poll(&ctx, false, true).is_none());
         assert!(!animation.request_in_flight);
         let resumed_deadline = animation
             .next_frame_at
@@ -504,11 +601,49 @@ mod tests {
         );
     }
 
+    #[test]
+    fn loop_setting_changes_are_forwarded_to_the_worker_once_per_change() {
+        let (requests, requests_rx) = bounded(2);
+        let (frames_tx, frames) = bounded(1);
+        let _frames_tx = frames_tx;
+        let mut animation = BackgroundGifAnimation {
+            requests,
+            frames,
+            next_frame_at: None,
+            frame_delay: Duration::from_secs(60),
+            request_in_flight: false,
+            loop_enabled: false,
+            loop_change_pending: false,
+            holding_last_frame: false,
+            worker_exited: false,
+        };
+        let ctx = egui::Context::default();
+
+        assert!(animation.poll(&ctx, false, true).is_none());
+        assert_eq!(
+            requests_rx
+                .recv_timeout(TEST_LOOP_WAIT)
+                .expect("loop change"),
+            super::BackgroundGifAnimationRequest::SetLooping(true)
+        );
+
+        assert!(animation.poll(&ctx, false, true).is_none());
+        assert!(requests_rx.try_recv().is_err());
+
+        assert!(animation.poll(&ctx, false, false).is_none());
+        assert_eq!(
+            requests_rx
+                .recv_timeout(TEST_LOOP_WAIT)
+                .expect("loop change"),
+            super::BackgroundGifAnimationRequest::SetLooping(false)
+        );
+    }
+
     fn test_gif_animation() -> (
         BackgroundGifAnimation,
         crossbeam_channel::Sender<super::BackgroundGifAnimationEvent>,
     ) {
-        let (requests, _requests_rx) = bounded(1);
+        let (requests, _requests_rx) = bounded(2);
         let (frames_tx, frames) = bounded(1);
         let animation = BackgroundGifAnimation {
             requests,
@@ -516,6 +651,10 @@ mod tests {
             next_frame_at: None,
             frame_delay: MIN_GIF_FRAME_DELAY,
             request_in_flight: false,
+            loop_enabled: true,
+            loop_change_pending: false,
+            holding_last_frame: false,
+            worker_exited: false,
         };
         (animation, frames_tx)
     }
@@ -534,7 +673,7 @@ mod tests {
     async fn animated_gif_streams_one_requested_frame_at_a_time() {
         let path = temp_gif_path("stream");
         write_two_frame_gif(&path);
-        let mut loaded = load_animated_gif_background(&path, None)
+        let mut loaded = load_animated_gif_background(&path, None, true)
             .await
             .expect("animated GIF should load");
 
@@ -548,11 +687,11 @@ mod tests {
         let ctx = egui::Context::default();
         loaded.animation.activate(Duration::ZERO, Some(&ctx), false);
         std::thread::sleep(MIN_GIF_FRAME_DELAY + Duration::from_millis(5));
-        assert!(loaded.animation.poll(&ctx, false).is_none());
+        assert!(loaded.animation.poll(&ctx, false, true).is_none());
 
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + TEST_LOOP_WAIT;
         let second_frame = loop {
-            match loaded.animation.poll(&ctx, false) {
+            match loaded.animation.poll(&ctx, false, true) {
                 Some(BackgroundGifAnimationUpdate::Frame(preview)) => break preview,
                 Some(other) => panic!("unexpected animation update: {other:?}"),
                 None if Instant::now() < deadline => {
@@ -578,14 +717,14 @@ mod tests {
     async fn minimized_animation_does_not_request_another_frame() {
         let path = temp_gif_path("paused");
         write_two_frame_gif(&path);
-        let mut loaded = load_animated_gif_background(&path, None)
+        let mut loaded = load_animated_gif_background(&path, None, true)
             .await
             .expect("animated GIF should load");
         let ctx = egui::Context::default();
         loaded.animation.activate(Duration::ZERO, Some(&ctx), true);
         std::thread::sleep(MIN_GIF_FRAME_DELAY + Duration::from_millis(5));
 
-        assert!(loaded.animation.poll(&ctx, true).is_none());
+        assert!(loaded.animation.poll(&ctx, true, true).is_none());
         assert!(!loaded.animation.request_in_flight);
 
         drop(loaded);
@@ -594,6 +733,157 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn looping_animated_gif_wraps_back_to_the_first_frame_after_the_last() {
+        let path = temp_gif_path("wraps");
+        write_three_frame_gif(&path);
+        let mut loaded = load_animated_gif_background(&path, None, true)
+            .await
+            .expect("animated GIF should load");
+        let ctx = egui::Context::default();
+        loaded.animation.activate(Duration::ZERO, Some(&ctx), false);
+
+        let mut seen_frames = vec![frame_color(&loaded.first_frame)];
+        let deadline = Instant::now() + TEST_LOOP_WAIT;
+        while seen_frames.len() < 5 && Instant::now() < deadline {
+            match loaded.animation.poll(&ctx, false, true) {
+                Some(BackgroundGifAnimationUpdate::Frame(preview)) => {
+                    seen_frames.push(frame_color(&preview));
+                }
+                Some(other) => panic!("unexpected animation update: {other:?}"),
+                None => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+
+        assert_eq!(
+            seen_frames,
+            vec![
+                TEST_GIF_FRAME_COLORS[0],
+                TEST_GIF_FRAME_COLORS[1],
+                TEST_GIF_FRAME_COLORS[2],
+                TEST_GIF_FRAME_COLORS[0],
+                TEST_GIF_FRAME_COLORS[1],
+            ],
+            "the frame timeline must wrap back to the first frame"
+        );
+
+        drop(loaded);
+        let cleanup_deadline = Instant::now() + Duration::from_secs(1);
+        while std::fs::remove_file(&path).is_err() && Instant::now() < cleanup_deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn non_looping_animated_gif_finishes_once_and_holds_the_last_frame() {
+        let path = temp_gif_path("holds");
+        write_three_frame_gif(&path);
+        let mut loaded = load_animated_gif_background(&path, None, false)
+            .await
+            .expect("animated GIF should load");
+        let ctx = egui::Context::default();
+        loaded.animation.activate(Duration::ZERO, Some(&ctx), false);
+
+        let mut seen_frames = vec![frame_color(&loaded.first_frame)];
+        let mut finished = false;
+        let deadline = Instant::now() + TEST_LOOP_WAIT;
+        while !finished && Instant::now() < deadline {
+            match loaded.animation.poll(&ctx, false, false) {
+                Some(BackgroundGifAnimationUpdate::Frame(preview)) => {
+                    seen_frames.push(frame_color(&preview));
+                }
+                Some(BackgroundGifAnimationUpdate::Finished) => finished = true,
+                Some(other) => panic!("unexpected animation update: {other:?}"),
+                None => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+
+        assert!(finished, "the animation must report the end of the play");
+        assert_eq!(
+            seen_frames,
+            vec![
+                TEST_GIF_FRAME_COLORS[0],
+                TEST_GIF_FRAME_COLORS[1],
+                TEST_GIF_FRAME_COLORS[2],
+            ],
+            "a non-looping animation must stop after the last frame"
+        );
+        assert!(loaded.animation.poll(&ctx, false, false).is_none());
+
+        std::thread::sleep(TEST_GIF_FRAME_DELAY * 2);
+        assert!(
+            loaded.animation.poll(&ctx, false, false).is_none(),
+            "the held last frame must not produce further updates"
+        );
+
+        drop(loaded);
+        let cleanup_deadline = Instant::now() + Duration::from_secs(1);
+        while std::fs::remove_file(&path).is_err() && Instant::now() < cleanup_deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn re_enabling_looping_replays_a_held_animated_gif_from_its_first_frame() {
+        let path = temp_gif_path("revives");
+        write_three_frame_gif(&path);
+        let mut loaded = load_animated_gif_background(&path, None, false)
+            .await
+            .expect("animated GIF should load");
+        let ctx = egui::Context::default();
+        loaded.animation.activate(Duration::ZERO, Some(&ctx), false);
+
+        let deadline = Instant::now() + TEST_LOOP_WAIT;
+        loop {
+            match loaded.animation.poll(&ctx, false, false) {
+                Some(BackgroundGifAnimationUpdate::Finished) => break,
+                Some(BackgroundGifAnimationUpdate::Failed(error)) => {
+                    panic!("unexpected animation failure: {error}")
+                }
+                Some(BackgroundGifAnimationUpdate::Frame(_)) => {}
+                None if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                None => panic!("timed out waiting for the play to finish"),
+            }
+        }
+
+        let mut replayed_frames = Vec::new();
+        let deadline = Instant::now() + TEST_LOOP_WAIT;
+        while replayed_frames.len() < 3 && Instant::now() < deadline {
+            match loaded.animation.poll(&ctx, false, true) {
+                Some(BackgroundGifAnimationUpdate::Frame(preview)) => {
+                    replayed_frames.push(frame_color(&preview));
+                }
+                Some(other) => panic!("unexpected animation update: {other:?}"),
+                None => std::thread::sleep(Duration::from_millis(5)),
+            }
+        }
+
+        assert_eq!(
+            replayed_frames, TEST_GIF_FRAME_COLORS,
+            "re-enabling looping must replay from the first frame without a reload"
+        );
+
+        drop(loaded);
+        let cleanup_deadline = Instant::now() + Duration::from_secs(1);
+        while std::fs::remove_file(&path).is_err() && Instant::now() < cleanup_deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!path.exists());
+    }
+
+    const TEST_GIF_FRAME_DELAY: Duration = Duration::from_millis(100);
+    const TEST_GIF_FRAME_COLORS: [[u8; 4]; 3] =
+        [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]];
+
+    fn frame_color(preview: &LoadedImagePreview) -> [u8; 4] {
+        let rgba = preview.rgba.as_deref().expect("frame keeps cpu rgba");
+        [rgba[0], rgba[1], rgba[2], rgba[3]]
     }
 
     fn write_two_frame_gif(path: &Path) {
@@ -605,6 +895,25 @@ mod tests {
         for color in [Rgba([255, 0, 0, 255]), Rgba([0, 255, 0, 255])] {
             let frame = Frame::from_parts(
                 RgbaImage::from_pixel(2, 1, color),
+                0,
+                0,
+                Delay::from_numer_denom_ms(1, 1),
+            );
+            encoder
+                .encode_frame(frame)
+                .expect("test GIF frame should encode");
+        }
+    }
+
+    fn write_three_frame_gif(path: &Path) {
+        let file = File::create(path).expect("test GIF should be created");
+        let mut encoder = GifEncoder::new(file);
+        encoder
+            .set_repeat(Repeat::Finite(1))
+            .expect("repeat mode should encode");
+        for color in TEST_GIF_FRAME_COLORS {
+            let frame = Frame::from_parts(
+                RgbaImage::from_pixel(2, 1, Rgba(color)),
                 0,
                 0,
                 Delay::from_numer_denom_ms(1, 1),
