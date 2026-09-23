@@ -134,7 +134,7 @@ fn paint_git_panel_row_background(ui: &Ui, rect: Rect, response: &Response, sele
             row_rect,
             GIT_PANEL_ROW_CORNER_RADIUS,
             Stroke::new(
-                1.0,
+                1.0_f32,
                 if selected {
                     visuals.widgets.active.bg_stroke.color
                 } else {

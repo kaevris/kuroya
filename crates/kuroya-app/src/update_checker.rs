@@ -566,7 +566,7 @@ fn render_update_dialog_header(
 fn render_update_icon_badge(ui: &mut Ui, icon: IconKind) {
     let accent = ui.visuals().selection.stroke.color;
     let fill = translucent_color(accent, 32);
-    let stroke = Stroke::new(1.0, translucent_color(accent, 108));
+    let stroke = Stroke::new(1.0_f32, translucent_color(accent, 108));
     let (rect, response) = ui.allocate_exact_size(vec2(42.0, 42.0), egui::Sense::hover());
 
     ui.painter().rect_filled(rect, 6.0, fill);
@@ -603,7 +603,7 @@ fn render_update_installer_row(ui: &mut Ui, installer: &str) {
     egui::Frame::new()
         .fill(ui.visuals().code_bg_color)
         .stroke(Stroke::new(
-            1.0,
+            1.0_f32,
             ui.visuals().widgets.inactive.bg_stroke.color,
         ))
         .corner_radius(egui::CornerRadius::same(4))

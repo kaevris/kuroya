@@ -52,7 +52,7 @@ impl KuroyaApp {
                 egui::Frame::new()
                     .fill(visuals.window_fill)
                     .stroke(Stroke::new(
-                        1.0,
+                        1.0_f32,
                         visuals.widgets.noninteractive.bg_stroke.color,
                     ))
                     .corner_radius(egui::CornerRadius::same(10))

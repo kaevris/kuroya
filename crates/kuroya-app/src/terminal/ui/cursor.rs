@@ -52,7 +52,7 @@ pub(super) fn draw_terminal_cursor(
             painter.rect_stroke(
                 stroke_rect,
                 0.0,
-                Stroke::new(1.2, color),
+                Stroke::new(1.2_f32, color),
                 StrokeKind::Inside,
             );
         }
@@ -70,7 +70,7 @@ fn draw_block_cursor(painter: &egui::Painter, rect: Rect, color: Color32) {
     painter.rect_stroke(
         stroke_rect,
         0.0,
-        Stroke::new(1.0, color),
+        Stroke::new(1.0_f32, color),
         StrokeKind::Inside,
     );
 }
@@ -90,7 +90,7 @@ fn draw_underline_cursor(painter: &egui::Painter, rect: Rect, color: Color32) {
     let (left, right) = inset_axis_range(rect.left(), rect.right(), 1.0);
     painter.line_segment(
         [egui::pos2(left, y), egui::pos2(right, y)],
-        Stroke::new(2.0, color),
+        Stroke::new(2.0_f32, color),
     );
 }
 

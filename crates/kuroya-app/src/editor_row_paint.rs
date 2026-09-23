@@ -728,7 +728,7 @@ fn paint_column_ruler(
 
     painter.line_segment(
         [pos2(x, rect.top()), pos2(x, rect.bottom())],
-        egui::Stroke::new(1.0, column_ruler_color(visuals)),
+        egui::Stroke::new(1.0_f32, column_ruler_color(visuals)),
     );
 }
 
@@ -757,7 +757,7 @@ fn paint_indent_guides(
         let color = indent_guide_color(visuals, is_active);
         painter.line_segment(
             [pos2(x, rect.top() + 2.0), pos2(x, rect.bottom() - 2.0)],
-            egui::Stroke::new(if is_active { 1.5 } else { 1.0 }, color),
+            egui::Stroke::new(if is_active { 1.5_f32 } else { 1.0_f32 }, color),
         );
         true
     });
@@ -1270,7 +1270,7 @@ fn paint_svg_whitespace_marker(
             painter.circle_filled(center, (row.char_width * 0.09).clamp(1.0, 1.8), color);
         }
         WhitespaceMarkerKind::Tab => {
-            let stroke = Stroke::new(1.0, color);
+            let stroke = Stroke::new(1.0_f32, color);
             let tail = pos2(center.x - row.char_width * 0.22, center.y);
             let head = pos2(center.x + row.char_width * 0.28, center.y);
             let arrow = (row.char_width * 0.13).clamp(1.0, 2.0);

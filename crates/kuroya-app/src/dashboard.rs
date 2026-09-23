@@ -967,7 +967,7 @@ fn render_section_rule(ui: &mut egui::Ui, label: &str) {
                 pos2(line_start, rect.center().y),
                 pos2(rect.right(), rect.center().y),
             ],
-            Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color),
+            Stroke::new(1.0_f32, ui.visuals().widgets.inactive.bg_stroke.color),
         );
     }
     ui.painter().text(

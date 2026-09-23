@@ -272,7 +272,7 @@ pub(crate) fn paint_bracket_depth_markers(
         let y = rect.top() + row.row_height - 4.0;
         painter.line_segment(
             [pos2(x, y), pos2(x + row.char_width.max(4.0), y)],
-            egui::Stroke::new(1.4, bracket_depth_color(color.depth)),
+            egui::Stroke::new(1.4_f32, bracket_depth_color(color.depth)),
         );
     }
 }
@@ -309,7 +309,7 @@ pub(crate) fn paint_bracket_match_boxes(
                         vec2(row.char_width, row.row_height - 3.0),
                     ),
                     2.0,
-                    egui::Stroke::new(1.0, Color32::from_rgb(231, 185, 87)),
+                    egui::Stroke::new(1.0_f32, Color32::from_rgb(231, 185, 87)),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -363,9 +363,9 @@ fn bracket_pair_guide_stroke(
     inactive_color: Color32,
 ) -> egui::Stroke {
     if active && highlight_active {
-        egui::Stroke::new(1.5, bracket_depth_color(depth))
+        egui::Stroke::new(1.5_f32, bracket_depth_color(depth))
     } else {
-        egui::Stroke::new(1.0, inactive_color)
+        egui::Stroke::new(1.0_f32, inactive_color)
     }
 }
 

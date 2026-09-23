@@ -141,7 +141,7 @@ impl KuroyaApp {
                     let text_color = visuals.text_color();
                     let bg = alpha_color(visuals.window_fill, alpha);
                     let stroke = Stroke::new(
-                        1.0,
+                        1.0_f32,
                         alpha_color(visuals.widgets.noninteractive.bg_stroke.color, alpha),
                     );
 

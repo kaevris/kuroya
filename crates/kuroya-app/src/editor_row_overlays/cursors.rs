@@ -102,7 +102,7 @@ pub(crate) fn paint_cursors(
                         vec2(row.char_width.max(row.cursor_width), full_height),
                     ),
                     1.0,
-                    egui::Stroke::new(1.0, color),
+                    egui::Stroke::new(1.0_f32, color),
                     egui::StrokeKind::Inside,
                 );
             }

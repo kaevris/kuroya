@@ -62,7 +62,7 @@ pub(super) fn terminal_action_button_enabled(
         ui.painter().rect_stroke(
             rect.shrink(1.0),
             5.0,
-            Stroke::new(1.0, hovered_stroke),
+            Stroke::new(1.0_f32, hovered_stroke),
             StrokeKind::Inside,
         );
     }

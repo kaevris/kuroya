@@ -57,7 +57,7 @@ pub(crate) fn apply_theme(ctx: &Context, theme: &ThemeSettings) {
         (background.r() as u16 + background.g() as u16 + background.b() as u16) < 384;
     visuals.panel_fill = panel;
     visuals.window_fill = panel;
-    visuals.window_stroke = egui::Stroke::new(1.0, border);
+    visuals.window_stroke = egui::Stroke::new(1.0_f32, border);
     visuals.window_corner_radius = egui::CornerRadius::same(6);
     visuals.menu_corner_radius = egui::CornerRadius::same(5);
     visuals.extreme_bg_color = background;
@@ -69,26 +69,26 @@ pub(crate) fn apply_theme(ctx: &Context, theme: &ThemeSettings) {
     visuals.warn_fg_color = palette.warning;
     visuals.error_fg_color = palette.error;
     visuals.override_text_color = Some(text);
-    visuals.selection.stroke = egui::Stroke::new(1.0, palette.accent);
+    visuals.selection.stroke = egui::Stroke::new(1.0_f32, palette.accent);
     visuals.widgets.noninteractive.bg_fill = panel;
-    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, border);
-    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, text);
+    visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0_f32, border);
+    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, text);
     visuals.widgets.inactive.bg_fill = panel;
     visuals.widgets.inactive.weak_bg_fill = panel_alt;
-    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, border);
-    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, text);
+    visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, border);
+    visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0_f32, text);
     visuals.widgets.hovered.bg_fill = hover;
     visuals.widgets.hovered.weak_bg_fill = hover;
-    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, border);
-    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, text);
+    visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, border);
+    visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0_f32, text);
     visuals.widgets.active.bg_fill = blend_color(panel_alt, text, 0.10);
     visuals.widgets.active.weak_bg_fill = blend_color(panel_alt, text, 0.08);
-    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, border);
-    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, text);
+    visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0_f32, border);
+    visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0_f32, text);
     visuals.widgets.open.bg_fill = panel_alt;
     visuals.widgets.open.weak_bg_fill = panel_alt;
-    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0, border);
-    visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0, text);
+    visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, border);
+    visuals.widgets.open.fg_stroke = egui::Stroke::new(1.0_f32, text);
     visuals.selection.bg_fill = palette.selection;
     for widget in [
         &mut visuals.widgets.noninteractive,

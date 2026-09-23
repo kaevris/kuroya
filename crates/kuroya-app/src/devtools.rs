@@ -410,7 +410,7 @@ fn render_frame_timing_graph(
     painter.rect_stroke(
         rect,
         2.0,
-        Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
+        Stroke::new(1.0_f32, visuals.widgets.noninteractive.bg_stroke.color),
         egui::StrokeKind::Inside,
     );
 

@@ -145,7 +145,7 @@ impl TerminalPane {
         painter.rect_stroke(
             rect,
             6.0,
-            Stroke::new(1.0, text_color),
+            Stroke::new(1.0_f32, text_color),
             egui::StrokeKind::Inside,
         );
         painter.galley(rect.left_top() + margin, galley, text_color);
@@ -723,7 +723,7 @@ impl TerminalPane {
                         egui::pos2(rect.center().x - 2.0, rect.center().y + offset),
                         egui::pos2(rect.center().x + 2.0, rect.center().y + offset),
                     ],
-                    Stroke::new(1.0, ui.visuals().widgets.hovered.fg_stroke.color),
+                    Stroke::new(1.0_f32, ui.visuals().widgets.hovered.fg_stroke.color),
                 );
             }
         }
@@ -1010,7 +1010,7 @@ impl TerminalPane {
                 run.color,
             );
             if let Some((start, end)) = run.underline {
-                painter.line_segment([start, end], Stroke::new(1.0, run.color));
+                painter.line_segment([start, end], Stroke::new(1.0_f32, run.color));
             }
         }
 

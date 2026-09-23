@@ -3,8 +3,8 @@ use egui::{Color32, Shape, Stroke, StrokeKind, Ui};
 
 pub(super) fn draw_chrome_icon(ui: &Ui, frame: &IconFrame, icon: IconKind, color: Color32) {
     let painter = ui.painter();
-    let stroke = Stroke::new(1.6, color);
-    let thin = Stroke::new(1.25, color);
+    let stroke = Stroke::new(1.6_f32, color);
+    let thin = Stroke::new(1.25_f32, color);
 
     match icon {
         IconKind::ChevronRight => {

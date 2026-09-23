@@ -198,7 +198,7 @@ pub(super) fn paint_sticky_scroll_row(
             pos2(background_rect.left(), background_rect.bottom() - 1.0),
             pos2(background_rect.right(), background_rect.bottom() - 1.0),
         ],
-        Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
+        Stroke::new(1.0_f32, visuals.widgets.noninteractive.bg_stroke.color),
     );
 
     let actual_end = line_idx.saturating_add(1).min(line_count);

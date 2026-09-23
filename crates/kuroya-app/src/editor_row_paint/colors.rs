@@ -32,7 +32,7 @@ pub(super) fn paint_color_decorators(
             painter.rect_stroke(
                 swatch,
                 2.0,
-                egui::Stroke::new(1.0, Color32::from_rgba_premultiplied(0, 0, 0, 140)),
+                egui::Stroke::new(1.0_f32, Color32::from_rgba_premultiplied(0, 0, 0, 140)),
                 egui::StrokeKind::Inside,
             );
             true

@@ -79,7 +79,7 @@ fn popup_button_widget(
     egui::Button::new(text)
         .min_size(vec2(min_width, 28.0))
         .fill(fill)
-        .stroke(Stroke::new(1.0, stroke))
+        .stroke(Stroke::new(1.0_f32, stroke))
         .corner_radius(egui::CornerRadius::same(4))
 }
 

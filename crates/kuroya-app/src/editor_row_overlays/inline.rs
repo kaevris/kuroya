@@ -332,7 +332,7 @@ pub(crate) fn paint_ime_preedit(
             pos2(x, underline_y),
             pos2((x + label_width).min(rect.right()), underline_y),
         ],
-        egui::Stroke::new(1.0, row.selection_bg_fill),
+        egui::Stroke::new(1.0_f32, row.selection_bg_fill),
     );
 }
 

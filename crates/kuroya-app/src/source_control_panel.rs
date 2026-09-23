@@ -630,7 +630,7 @@ fn source_control_stage_toggle_button(
         ui.painter().rect_stroke(
             rect,
             4.0,
-            Stroke::new(1.0, visuals.widgets.hovered.bg_stroke.color),
+            Stroke::new(1.0_f32, visuals.widgets.hovered.bg_stroke.color),
             StrokeKind::Inside,
         );
     }
@@ -1362,7 +1362,7 @@ fn render_source_control_row(
             rect.shrink2(vec2(2.0, 1.0)),
             4.0,
             Stroke::new(
-                1.0,
+                1.0_f32,
                 if selected {
                     visuals.widgets.active.bg_stroke.color
                 } else {

@@ -340,7 +340,7 @@ fn paint_diagnostic_tag_strikethrough(
     }
 
     let y = rect.top() + row_height * 0.56;
-    painter.line_segment([pos2(left, y), pos2(right, y)], Stroke::new(1.0, color));
+    painter.line_segment([pos2(left, y), pos2(right, y)], Stroke::new(1.0_f32, color));
 }
 
 fn translucent_highlight(color: Color32, alpha: u8) -> Color32 {

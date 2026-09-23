@@ -7,7 +7,7 @@ pub(crate) fn draw_file(ui: &Ui, rect: Rect, color: Color32) {
 
     let painter = ui.painter();
     let color = opaque_color_or(color, Color32::WHITE);
-    let stroke = Stroke::new(1.5, color);
+    let stroke = Stroke::new(1.5_f32, color);
     let p = |x: f32, y: f32| {
         pos2(
             rect.left() + rect.width() * (x / 24.0),
@@ -32,7 +32,7 @@ pub(crate) fn draw_folder(ui: &Ui, rect: Rect, color: Color32, open: bool) {
 
     let painter = ui.painter();
     let color = opaque_color_or(color, Color32::WHITE);
-    let stroke = Stroke::new(1.5, color);
+    let stroke = Stroke::new(1.5_f32, color);
     let p = |x: f32, y: f32| {
         pos2(
             rect.left() + rect.width() * (x / 24.0),
@@ -46,7 +46,7 @@ pub(crate) fn draw_folder(ui: &Ui, rect: Rect, color: Color32, open: bool) {
     painter.line_segment([p(20.5, 18.0), p(3.5, 18.0)], stroke);
     painter.line_segment([p(3.5, 18.0), p(3.5, 8.0)], stroke);
     if open {
-        painter.line_segment([p(5.0, 13.0), p(19.0, 13.0)], Stroke::new(1.2, color));
+        painter.line_segment([p(5.0, 13.0), p(19.0, 13.0)], Stroke::new(1.2_f32, color));
     }
 }
 
@@ -57,7 +57,7 @@ pub(crate) fn draw_plus(ui: &Ui, center: Pos2, radius: f32, color: Color32) {
 
     let painter = ui.painter();
     let color = opaque_color_or(color, Color32::WHITE);
-    let stroke = Stroke::new(1.5, color);
+    let stroke = Stroke::new(1.5_f32, color);
     painter.line_segment(
         [
             pos2(center.x - radius, center.y),

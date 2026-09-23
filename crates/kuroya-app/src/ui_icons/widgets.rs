@@ -31,7 +31,7 @@ pub(crate) fn icon_button_tinted(
         ui.painter().rect_stroke(
             rect.shrink(1.0),
             5.0,
-            Stroke::new(1.0, visuals.widgets.hovered.bg_stroke.color),
+            Stroke::new(1.0_f32, visuals.widgets.hovered.bg_stroke.color),
             StrokeKind::Inside,
         );
     }
@@ -69,7 +69,7 @@ pub(crate) fn icon_text_button(
     ui.painter().rect_stroke(
         rect,
         6.0,
-        Stroke::new(1.0, visuals.widgets.inactive.bg_stroke.color),
+        Stroke::new(1.0_f32, visuals.widgets.inactive.bg_stroke.color),
         StrokeKind::Inside,
     );
 

@@ -48,7 +48,7 @@ impl KuroyaApp {
                 pos2(rect.left(), rect.bottom() - 0.5),
                 pos2(rect.right(), rect.bottom() - 0.5),
             ],
-            Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
+            Stroke::new(1.0_f32, visuals.widgets.noninteractive.bg_stroke.color),
         );
         if response.clicked() {
             self.active_pane = pane_id;

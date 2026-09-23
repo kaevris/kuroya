@@ -132,7 +132,7 @@ impl<'a> SettingsHighlightState<'a> {
             ui.painter().rect_stroke(
                 rect,
                 egui::CornerRadius::same(4),
-                egui::Stroke::new(1.0, warning),
+                egui::Stroke::new(1.0_f32, warning),
                 egui::StrokeKind::Inside,
             );
         }

@@ -1322,7 +1322,7 @@ fn file_tab(
             rect.shrink(1.0),
             4.0,
             Stroke::new(
-                1.0,
+                1.0_f32,
                 if selected {
                     visuals.widgets.active.bg_stroke.color
                 } else {
@@ -1351,7 +1351,7 @@ fn file_tab(
         ui.painter().rect_stroke(
             close_rect,
             4.0,
-            Stroke::new(1.0, visuals.widgets.hovered.bg_stroke.color),
+            Stroke::new(1.0_f32, visuals.widgets.hovered.bg_stroke.color),
             StrokeKind::Inside,
         );
     }
