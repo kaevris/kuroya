@@ -10,11 +10,6 @@ use std::path::PathBuf;
 
 const INVALID_RENAME_RESPONSE: &str = "invalid textDocument/rename response";
 
-/// Emits the `textDocument/prepareRename` result that gates the rename
-/// popup. A null/malformed success payload yields `range: None` (the server
-/// cannot rename at this position); transport errors surface through
-/// `error`. The raw zero-based request coordinates are echoed back so the
-/// app can match the result against the current cursor.
 pub(super) fn send_prepare_rename_result(
     id: BufferId,
     path: PathBuf,

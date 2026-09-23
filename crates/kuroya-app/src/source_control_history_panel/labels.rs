@@ -226,8 +226,6 @@ pub(super) fn source_control_history_display_sample(value: &str, max_chars: usiz
     let head_chars = keep_chars / 2;
     let tail_chars = keep_chars.saturating_sub(head_chars);
 
-    // Sample only the visible head/tail fragment. A full `is_ascii` scan can
-    // make a pathological commit field expensive before it is bounded.
     let head_end = source_control_history_sample_head_end(value, head_chars);
     let tail_start = source_control_history_sample_tail_start(value, tail_chars);
     if tail_start <= head_end {

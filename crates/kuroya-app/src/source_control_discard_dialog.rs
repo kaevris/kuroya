@@ -28,9 +28,7 @@ impl KuroyaApp {
         if !self.require_trusted_source_control_mutation("discarding changes") {
             return;
         }
-        // Borrow the sorted snapshot entries instead of cloning the entry
-        // list; the paths are collected eagerly because the iterator cannot
-        // borrow `self.git` across the `&mut self` call below.
+
         let paths = self
             .git
             .entries_slice_sorted()

@@ -1653,8 +1653,6 @@ fn focused_editor_context_switch_discards_half_typed_vim_sequence() {
 
     app.handle_editor_input(&ctx, 1, 1);
 
-    // The overlay took the context: the pending operator and both input
-    // thread-locals are gone and the buffer was not touched.
     assert_eq!(app.editor_vim_pending_key, None);
     assert_eq!(vim_search_input_text_for_test(), "");
     assert_eq!(vim_command_input_text_for_test(), "");
@@ -1679,7 +1677,7 @@ fn vim_pending_operator_does_not_apply_after_buffer_switch() {
     app.focused_pane = Some(1);
 
     let ctx = Context::default();
-    // `d` in buffer 1 starts a pending operator.
+
     ctx.input_mut(|input| {
         input.events.push(Event::Key {
             key: Key::D,
@@ -1692,10 +1690,8 @@ fn vim_pending_operator_does_not_apply_after_buffer_switch() {
     app.handle_editor_input(&ctx, 1, 1);
     assert!(app.editor_vim_pending_key.is_some());
 
-    // Clicking another tab activates buffer 2; the half-typed `d` must die.
     app.set_active_buffer(2);
-    // egui events persist until the next frame pass, so drain them the way a
-    // real frame boundary would before feeding the next keystroke.
+
     ctx.input_mut(|input| input.events.clear());
 
     ctx.input_mut(|input| {
@@ -1709,7 +1705,6 @@ fn vim_pending_operator_does_not_apply_after_buffer_switch() {
     });
     app.handle_editor_input(&ctx, 1, 2);
 
-    // `j` in buffer 2 is a plain motion: neither buffer was edited.
     assert_eq!(app.editor_vim_pending_key, None);
     assert_eq!(
         app.buffer(1).map(TextBuffer::text),
@@ -1736,7 +1731,7 @@ fn vim_dot_repeat_is_per_buffer_and_never_replays_across_buffers() {
     app.focused_pane = Some(1);
 
     let ctx = Context::default();
-    // `x` in buffer 1 records its last change for buffer 1 only.
+
     ctx.input_mut(|input| {
         input.events.push(Event::Key {
             key: Key::X,
@@ -1753,7 +1748,6 @@ fn vim_dot_repeat_is_per_buffer_and_never_replays_across_buffers() {
 
     app.set_active_buffer(2);
 
-    // `.` in buffer 2 has no last change of its own: nothing happens.
     ctx.input_mut(|input| {
         input.events.push(Event::Key {
             key: Key::Period,
@@ -1768,7 +1762,6 @@ fn vim_dot_repeat_is_per_buffer_and_never_replays_across_buffers() {
     assert!(!app.editor_vim_last_change.contains_key(&2));
     ctx.input_mut(|input| input.events.clear());
 
-    // Buffer 1's change is still recorded and still replays there.
     app.set_active_buffer(1);
     ctx.input_mut(|input| {
         input.events.push(Event::Key {
@@ -1809,8 +1802,6 @@ fn vim_normal_key_collapses_multi_cursor_carets_to_the_primary_cursor() {
 
     app.handle_editor_input(&ctx, 1, 1);
 
-    // `x` edits the primary cursor and the extra carets are gone instead of
-    // staying visible while silently diverging.
     let buffer = app.buffer(1).expect("buffer remains loaded");
     assert_eq!(buffer.text(), "abcef");
     assert_eq!(buffer.selections(), &[Selection::caret(3)]);

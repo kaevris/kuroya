@@ -113,8 +113,7 @@ pub(super) fn append_terminal_plain_text(
                 match error.error_len() {
                     Some(invalid_len) => {
                         let invalid_byte = remaining[valid_up_to];
-                        // Raw 8-bit C1 terminal controls are invalid UTF-8, but they should
-                        // drive ANSI cleanup instead of leaking U+FFFD into search text.
+
                         let ch =
                             terminal_search_c1_control_char(invalid_byte).unwrap_or('\u{fffd}');
                         changed |= append_terminal_plain_text_chars(

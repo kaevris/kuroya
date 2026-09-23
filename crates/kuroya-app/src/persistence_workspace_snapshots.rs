@@ -168,14 +168,6 @@ fn prune_workspace_snapshots(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Orders snapshots oldest-modified first so pruning from the front evicts
-/// the oldest writes and keeps the newest. Snapshot names embed wall-clock
-/// nanos, so after a system-clock rollback freshly written snapshots sort
-/// OLDEST by name and name-order pruning would freeze the safety net
-/// exactly when it is needed; the on-disk modified time tracks real write
-/// order instead. Entries whose modified time cannot be read are treated
-/// as oldest (pruned first, keeping their relative name order); entries
-/// with readable times keep name order on ties (the stable-sort fallback).
 fn sort_workspace_snapshots_oldest_modified_first(snapshots: &mut [PathBuf]) {
     snapshots.sort_by_key(|path| snapshot_modified_time(path).unwrap_or(UNIX_EPOCH));
 }
@@ -266,7 +258,6 @@ fn quarantined_workspace_snapshot_path(path: &Path, reason: &str) -> PathBuf {
 }
 
 fn sort_workspace_snapshot_paths(snapshots: &mut [PathBuf]) {
-    // Preserve path tie-breaking without cloning every PathBuf into the cached key.
     snapshots.sort();
     snapshots.sort_by_cached_key(|path| workspace_snapshot_sort_key(path));
 }
@@ -510,16 +501,13 @@ mod tests {
             let path = snapshot_dir.join(format!("workspace.{index}.0.0.json"));
             fs::write(&path, "{not valid json").unwrap();
             let file = fs::File::options().write(true).open(&path).unwrap();
-            // Lowest names carry the newest modified times: the signature of
-            // a clock rollback, where name order lies about write order.
+
             file.set_modified(base + Duration::from_secs((total - 1 - index) as u64))
                 .unwrap();
         }
 
         prune_workspace_snapshots(&snapshot_dir).unwrap();
 
-        // Snapshot 0 has the oldest name but the newest modified time;
-        // name-order pruning would have evicted it first.
         assert!(snapshot_dir.join("workspace.0.0.0.json").exists());
         assert!(
             snapshot_dir

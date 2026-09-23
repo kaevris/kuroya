@@ -202,20 +202,14 @@ fn single_cursor_plain_delete_run_entry_matches(
         }
 }
 
-/// Outcome of merging a closed undo group into a single history entry.
 pub(super) enum MergedUndoGroup {
-    /// The group's edits cancel out; drop it entirely.
     Unchanged,
-    /// The group collapsed into one replayable entry.
+
     Merged(Box<HistoryEntry>),
-    /// The group's entries could not be replayed backwards; keep them as-is.
+
     ReplayFailed,
 }
 
-/// Merges the consecutive entries pushed while an undo group was open into a
-/// single entry covering the same text transformation. The merged entry is a
-/// single replace edit spanning the changed region, so undo/redo replay it in
-/// one step.
 pub(super) fn merge_undo_history_group(
     entries: &[HistoryEntry],
     current: &Rope,
@@ -265,8 +259,6 @@ pub(super) fn merge_undo_history_group(
     }))
 }
 
-/// Minimal prefix/suffix diff between two ropes, expressed as a single edit in
-/// `old` coordinates.
 fn rope_pair_diff_edit(old: &Rope, new: &Rope) -> TextEdit {
     let old_len = old.len_chars();
     let new_len = new.len_chars();

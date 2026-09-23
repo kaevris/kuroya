@@ -473,9 +473,7 @@ fn append_explorer_directory_entries(
     if snapshot_entries.len() > remaining {
         rows.truncated = true;
     }
-    // Only clone the rows that can still fit this frame; the shared borrow of
-    // the directory cache above must end before the recursion below can take
-    // it mutably, so entries are moved into the rendered rows from here on.
+
     let children: Vec<ProjectEntry> = snapshot_entries.iter().take(remaining).cloned().collect();
 
     for entry in children {
@@ -578,8 +576,6 @@ fn read_explorer_directory(root: &Path, directory: &Path) -> ExplorerDirectoryEn
     ExplorerDirectoryEntries { entries, error }
 }
 
-/// Orders one directory listing: directories first, then files, each group
-/// ASCII-case-insensitively by name with the raw byte order as tie-break.
 fn compare_explorer_directory_entries(a: &ProjectEntry, b: &ProjectEntry) -> std::cmp::Ordering {
     b.is_dir.cmp(&a.is_dir).then_with(|| {
         let a_name = a.relative_path.as_os_str();

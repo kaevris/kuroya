@@ -515,11 +515,6 @@ impl<'a> PreparedProjectSearch<'a> {
     }
 }
 
-/// Outcome of scanning one file during a parallel project search chunk.
-///
-/// `consumed_matches` counts every match that charged the worker's result
-/// budget (collected and hidden), so the merge thread can replay the exact
-/// consumption order against the shared budget and keep `truncated` exact.
 struct ProjectScannedFile {
     matches: Vec<SearchMatch>,
     consumed_matches: usize,
@@ -570,8 +565,6 @@ fn search_project_prepared(
     is_cancelled: &dyn Fn() -> bool,
     on_progress: &mut dyn FnMut(SearchProgress),
 ) -> Option<SearchResult> {
-    // Mirrors the sequential loop-top cancellation check that used to run
-    // before the first file was touched.
     if (is_cancelled)() {
         return None;
     }
@@ -579,9 +572,7 @@ fn search_project_prepared(
     let files = index.files();
     let worker_count = project_search_worker_thread_count();
     let chunk_size = files.len().div_ceil(worker_count).max(1);
-    // The cancellation callback is only ever invoked from this thread; worker
-    // threads observe the shared flag instead so arbitrary non-Sync closures
-    // keep working.
+
     let worker_cancelled = Arc::new(AtomicBool::new(false));
     let stop_spawning = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::channel();
@@ -619,8 +610,7 @@ fn search_project_prepared(
             };
             scope.spawn(move || run_project_search_chunk(job));
         }
-        // All workers hold a sender clone; dropping this one lets the merge
-        // loop detect the disconnected channel once every chunk reported done.
+
         drop(sender);
 
         let mut chunk_done = vec![false; spawned_chunks];
@@ -631,11 +621,6 @@ fn search_project_prepared(
         let mut cancelled = false;
 
         while done_chunks < spawned_chunks {
-            // Re-check the callback with a bounded spin so even scans that
-            // finish between messages still observe cancellation checkpoints,
-            // then surface it to the workers through the shared flag. Once
-            // cancelled, stop consulting the callback entirely, mirroring the
-            // sequential early return.
             if !cancelled {
                 for _ in 0..PROJECT_SEARCH_CANCEL_SPIN_ITERATIONS {
                     if (is_cancelled)() {
@@ -669,8 +654,6 @@ fn search_project_prepared(
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
 
-            // Merge buffered per-file results strictly in file order so the
-            // output, stats, and truncation match a sequential scan exactly.
             while !cancelled && !merging_complete && next_file_index < files.len() {
                 let chunk_index = next_file_index / chunk_size;
                 if chunk_index >= spawned_chunks {
@@ -681,8 +664,6 @@ fn search_project_prepared(
                     Some(scanned) => scanned,
                     None => {
                         if chunk_done[chunk_index] {
-                            // The chunk finished without a result for this
-                            // file (glob-skipped or stopped early).
                             next_file_index += 1;
                             continue;
                         }
@@ -712,8 +693,7 @@ fn search_project_prepared(
                     result_budget.is_exhausted() && scanned.consumed_matches > 0;
                 if result_budget.is_exhausted() {
                     truncated = true;
-                    // Stop spawning new work; workers may finish their
-                    // current file but will not start another one.
+
                     stop_spawning.store(true, Ordering::Relaxed);
                     merging_complete = true;
                 }
@@ -739,8 +719,7 @@ fn search_project_prepared(
                 pending.clear();
             }
         }
-        // The flag may have been raised while the final messages drained;
-        // honour it like a loop-top check before returning results.
+
         if worker_cancelled.load(Ordering::Relaxed) {
             cancelled = true;
         }
@@ -1168,8 +1147,7 @@ fn search_project_index_chunk(
             FileSearchOutcome::Cancelled => return None,
         };
         stats.merge(result.stats);
-        // The file scanner stops charging the budget before returning, so an
-        // exhausted budget after a file means it hit the truncation point.
+
         truncated |= result_budget.is_exhausted();
 
         if result_budget.is_exhausted() {
@@ -2214,8 +2192,7 @@ impl<'a> LineSearchNeedle<'a> {
         match self {
             Self::CaseSensitive(needle) => needle.len(),
             Self::CaseInsensitive(matcher) => matcher.needle_len(),
-            // The regex scanner never consults a needle length; the literal
-            // search loop below only dispatches on the non-regex variants.
+
             Self::Regex(_) => 0,
         }
     }
@@ -2241,8 +2218,7 @@ fn build_search_line_regex(query: &str, case_sensitive: bool) -> Result<Regex, S
     if !regex_query_is_line_local(query) {
         return Err(REGEX_MULTILINE_QUERY_ERROR.to_owned());
     }
-    // Mirrors buffer find: line-local regex matching with the case
-    // sensitivity folded into a single compilation per search.
+
     RegexBuilder::new(query)
         .case_insensitive(!case_sensitive)
         .build()
@@ -2370,8 +2346,6 @@ where
     let mut whole_word_matcher = SearchLineWholeWordMatcher::new(line, whole_word);
     let mut matches_since_cancel_check = 0usize;
     for matched in regex.find_iter(line) {
-        // Zero-width matches have no highlightable column, mirroring the
-        // buffer find scanner which skips empty matches.
         if matched.is_empty() {
             continue;
         }

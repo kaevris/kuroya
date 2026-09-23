@@ -713,8 +713,6 @@ fn session_snapshot_prune_keeps_newest_modified_not_newest_name() {
 
     prune_session_snapshots(&dir).unwrap();
 
-    // Snapshot 1 has the oldest name but the newest modified time: name
-    // order would evict it first after a clock rollback; mtime keeps it.
     assert!(dir.join("session.1.0.0.json").exists());
     assert!(dir.join("session.8.0.0.json").exists());
     assert!(!dir.join("session.9.0.0.json").exists());

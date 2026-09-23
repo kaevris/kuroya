@@ -625,9 +625,6 @@ fn paint_folded_region_highlight(painter: &egui::Painter, rect: egui::Rect, base
 }
 
 pub(crate) fn folded_region_highlight_fill(base: Color32) -> Color32 {
-    // egui stores premultiplied channels; building the fill with the
-    // premultiplied constructor kept the full base channels under a tiny alpha
-    // and rendered the highlight roughly 255/44 times too strong.
     Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 44)
 }
 

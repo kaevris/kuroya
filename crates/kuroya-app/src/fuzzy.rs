@@ -1,13 +1,6 @@
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 
-/// Smart-case-aware fuzzy match.
-///
-/// `SkimMatcherV2::default()` turns case-sensitive as soon as the query
-/// contains an uppercase character, so uppercase acronyms ("SCM", "GIT",
-/// "SRC") silently match nothing against lowercase candidates. This runs the
-/// normal pass first, and when it finds nothing and the query does contain
-/// uppercase, retries with a lowercased query.
 pub(crate) fn fuzzy_match_with_case_fallback(
     matcher: &SkimMatcherV2,
     candidate: &str,

@@ -15,13 +15,8 @@ const MAX_PENDING_LSP_FORMATTING_REQUESTS: usize = 128;
 pub(super) const MAX_LSP_OUTBOUND_TEXT_PAYLOAD_CHARS: usize = 512;
 pub(super) const MAX_LSP_OUTBOUND_JSON_PAYLOAD_BYTES: usize = 64 * 1024;
 
-/// How long a dispatched request may stay unanswered before the runtime
-/// cancels it and fails the pending entry.
 pub(super) const LSP_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// All requests dispatched to one language server that are still awaiting a
-/// response, together with the deadline each one was registered with. The
-/// runtime uses the earliest deadline to arm its cancellation timer.
 #[derive(Debug, Default)]
 pub(super) struct PendingLspRequests {
     requests: HashMap<u64, PendingLspRequest>,
@@ -66,7 +61,6 @@ impl PendingLspRequests {
             .map(|(request_id, pending)| (*request_id, pending))
     }
 
-    /// Drains every pending entry (request ids are not ordered).
     pub(super) fn drain(
         &mut self,
     ) -> std::collections::hash_map::Drain<'_, u64, PendingLspRequest> {
@@ -74,13 +68,10 @@ impl PendingLspRequests {
         self.requests.drain()
     }
 
-    /// Deadline that expires first, if any request is pending.
     pub(super) fn earliest_deadline(&self) -> Option<tokio::time::Instant> {
         self.deadlines.values().copied().min()
     }
 
-    /// Removes and returns every entry whose deadline has passed, oldest
-    /// request id first.
     pub(super) fn take_expired(
         &mut self,
         now: tokio::time::Instant,

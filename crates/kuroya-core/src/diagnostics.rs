@@ -34,19 +34,10 @@ pub enum DiagnosticSeverity {
     Hint,
 }
 
-/// Offset unit of an LSP diagnostic payload stored in a [`DiagnosticSet`].
-///
-/// Payloads flushed while the file is open are converted to character
-/// offsets at flush time; payloads flushed while the file is closed keep
-/// the raw UTF-16 code-unit offsets the server sent and are tagged
-/// [`LspDiagnosticUnits::Utf16`] so they can be converted once a buffer for
-/// the path exists (see [`DiagnosticSet::replace_lsp_source_units`] and
-/// [`DiagnosticSet::drain_raw_utf16_lsp_buckets`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LspDiagnosticUnits {
-    /// Character offsets into the buffer (converted at flush time).
     Chars,
-    /// Raw UTF-16 code-unit offsets as sent by the LSP server.
+
     Utf16,
 }
 
@@ -75,31 +66,21 @@ pub struct Diagnostic {
 
 #[derive(Debug, Clone, Default)]
 pub struct DiagnosticSet {
-    /// Merged, sorted diagnostics per path; authoritative for every read.
     by_path: HashMap<PathBuf, Vec<Diagnostic>>,
     ordered_paths: Vec<PathBuf>,
     counts_by_severity: [usize; 4],
-    /// LSP diagnostics decomposed per server bucket (`source_key`) per path.
-    /// Two servers publishing the same path must not clobber each other, so
-    /// `replace_lsp_source` swaps only its own bucket and the merged view is
-    /// rebuilt from the static payload plus every bucket.
+
     lsp_buckets_by_path: HashMap<PathBuf, HashMap<String, Vec<Diagnostic>>>,
-    /// Buckets still stored in raw UTF-16 units, keyed by (path, source_key).
-    /// A payload flushed while the file was closed keeps the server's UTF-16
-    /// offsets until a buffer for the path exists and the owner converts it
-    /// (see [`DiagnosticSet::drain_raw_utf16_lsp_buckets`]).
+
     raw_utf16_lsp_keys: HashSet<(PathBuf, String)>,
 }
 
-/// Bucket key used by [`DiagnosticSet::replace_lsp`] for callers that do not
-/// track a server identity (legacy / single-server call sites).
 const DEFAULT_LSP_DIAGNOSTIC_SOURCE_KEY: &str = "kuroya:lsp-default";
 
 impl DiagnosticSet {
     pub fn replace(&mut self, path: PathBuf, mut diagnostics: Vec<Diagnostic>) {
         let path = normalize_diagnostic_path_owned(path);
-        // A full replacement discards everything previously stored for the
-        // path, including any per-server LSP buckets and their unit markers.
+
         self.lsp_buckets_by_path.remove(&path);
         self.raw_utf16_lsp_keys
             .retain(|(marker_path, _)| marker_path != &path);
@@ -177,9 +158,6 @@ impl DiagnosticSet {
         self.replace_lsp_source(path, DEFAULT_LSP_DIAGNOSTIC_SOURCE_KEY, diagnostics);
     }
 
-    /// Like [`DiagnosticSet::replace_lsp`] but records the payload's offset
-    /// unit so a raw-UTF16 payload can be converted later (see
-    /// [`DiagnosticSet::replace_lsp_source_units`]).
     pub fn replace_lsp_units(
         &mut self,
         path: PathBuf,
@@ -189,12 +167,6 @@ impl DiagnosticSet {
         self.replace_lsp_source_units(path, DEFAULT_LSP_DIAGNOSTIC_SOURCE_KEY, diagnostics, units);
     }
 
-    /// Replaces only the diagnostics published by one LSP server bucket.
-    /// `source_key` identifies the server instance (the app derives it from
-    /// the language plus the client's globally unique generation), so two
-    /// servers publishing the same path keep independent payloads instead of
-    /// clobbering each other. Diagnostics without a tracked server identity
-    /// should use [`DiagnosticSet::replace_lsp`].
     pub fn replace_lsp_source(
         &mut self,
         path: PathBuf,
@@ -204,12 +176,6 @@ impl DiagnosticSet {
         self.replace_lsp_source_units(path, source_key, diagnostics, LspDiagnosticUnits::Chars);
     }
 
-    /// Like [`DiagnosticSet::replace_lsp_source`] but records whether the
-    /// payload's offsets are characters ([`LspDiagnosticUnits::Chars`]) or
-    /// raw UTF-16 code units ([`LspDiagnosticUnits::Utf16`]). Consumers
-    /// assume char units, so the owner must convert raw-UTF16 payloads (see
-    /// [`DiagnosticSet::drain_raw_utf16_lsp_buckets`]) once a buffer for the
-    /// path exists and re-store them with [`LspDiagnosticUnits::Chars`].
     pub fn replace_lsp_source_units(
         &mut self,
         path: PathBuf,
@@ -234,8 +200,6 @@ impl DiagnosticSet {
         self.store_lsp_bucket(path, source_key, diagnostics);
     }
 
-    /// Paths with at least one LSP bucket still stored in raw UTF-16 units,
-    /// sorted for deterministic sweeps.
     pub fn raw_utf16_lsp_paths(&self) -> Vec<PathBuf> {
         let mut paths = self
             .raw_utf16_lsp_keys
@@ -247,13 +211,6 @@ impl DiagnosticSet {
         paths
     }
 
-    /// Returns and clears the raw-UTF16 buckets stored for `path`, handing
-    /// each `(source_key, diagnostics)` pair back so the caller can convert
-    /// it against a buffer and re-store the converted payload with
-    /// [`DiagnosticSet::replace_lsp_source_units`] and
-    /// [`LspDiagnosticUnits::Chars`]. Buckets the caller does not re-store
-    /// stay dropped, mirroring a flush-time conversion that discards
-    /// diagnostics which no longer fit the buffer.
     pub fn drain_raw_utf16_lsp_buckets(&mut self, path: &Path) -> Vec<(String, Vec<Diagnostic>)> {
         let path = normalize_diagnostic_path_cow(path).into_owned();
         let keys = self
@@ -277,9 +234,6 @@ impl DiagnosticSet {
         drained
     }
 
-    /// Removes the diagnostics stored under `source_key` for every path,
-    /// leaving static diagnostics and other servers' buckets untouched. Used
-    /// when an LSP server stops so its stale errors do not linger.
     pub fn purge_lsp_source(&mut self, source_key: &str) {
         let mut purged_paths = Vec::new();
         self.lsp_buckets_by_path.retain(|path, buckets| {
@@ -295,8 +249,6 @@ impl DiagnosticSet {
         }
     }
 
-    /// Stores one LSP server bucket for an already-normalized `path` and
-    /// rebuilds the merged per-path view.
     fn store_lsp_bucket(
         &mut self,
         path: PathBuf,
@@ -318,10 +270,6 @@ impl DiagnosticSet {
         self.rebuild_path_from_lsp_buckets(path);
     }
 
-    /// Rebuilds the merged per-path view from the retained static payload plus
-    /// every server bucket. Like the previous predicate-based `replace_lsp`,
-    /// non-static diagnostics that are not tracked in any bucket (inserted via
-    /// a full [`DiagnosticSet::replace`]) are replaced by this operation.
     fn rebuild_path_from_lsp_buckets(&mut self, path: PathBuf) {
         let mut merged: Vec<Diagnostic> = Vec::new();
         if let Some(existing) = self.by_path.get(&path) {
@@ -1009,8 +957,6 @@ mod tests {
         let noisy = PathBuf::from("src/../src/main.rs");
         let mut diagnostics = DiagnosticSet::default();
 
-        // A payload flushed while the file was closed keeps raw UTF-16
-        // offsets and is tracked as unconverted.
         diagnostics.replace_lsp_units(
             noisy.clone(),
             vec![diagnostic(
@@ -1023,8 +969,6 @@ mod tests {
         assert_eq!(diagnostics.for_path(&path).len(), 1);
         assert_eq!(diagnostics.raw_utf16_lsp_paths(), vec![path.clone()]);
 
-        // Another server publishing the same closed path gets its own
-        // marker; the merged view holds both payloads.
         diagnostics.replace_lsp_source_units(
             path.clone(),
             "rust\u{0}2",
@@ -1037,8 +981,6 @@ mod tests {
         );
         assert_eq!(diagnostics.for_path(&path).len(), 2);
 
-        // Draining hands back every raw bucket for the path and clears the
-        // merged view's raw contributions until they are re-stored.
         let mut drained = diagnostics.drain_raw_utf16_lsp_buckets(&path);
         drained.sort_by(|left, right| left.0.cmp(&right.0));
         assert_eq!(drained.len(), 2);
@@ -1046,7 +988,6 @@ mod tests {
         assert_eq!(drained[1].0, "rust\u{0}2");
         assert!(diagnostics.raw_utf16_lsp_paths().is_empty());
 
-        // Re-storing converted payloads marks them converted.
         for (source_key, mut bucket) in drained {
             for diagnostic in &mut bucket {
                 diagnostic.column = 1;
@@ -1062,8 +1003,6 @@ mod tests {
         assert_eq!(diagnostics.for_path(&path).len(), 2);
         assert!(diagnostics.raw_utf16_lsp_paths().is_empty());
 
-        // A later raw publish re-marks the path; clearing the payload
-        // clears the marker again.
         diagnostics.replace_lsp_units(
             path.clone(),
             vec![diagnostic(&path, DiagnosticSeverity::Hint, "rust-analyzer")],
@@ -1092,7 +1031,6 @@ mod tests {
         );
         assert_eq!(diagnostics.raw_utf16_lsp_paths(), vec![path.clone()]);
 
-        // A full replacement of the path drops buckets and unit markers.
         diagnostics.replace(
             path.clone(),
             vec![diagnostic(
@@ -1103,8 +1041,6 @@ mod tests {
         );
         assert!(diagnostics.raw_utf16_lsp_paths().is_empty());
 
-        // Re-marking, then purging the stopped server's source key, clears
-        // the marker too.
         diagnostics.replace_lsp_source_units(
             path.clone(),
             source_key,
@@ -1119,7 +1055,6 @@ mod tests {
         diagnostics.purge_lsp_source(source_key);
         assert!(diagnostics.raw_utf16_lsp_paths().is_empty());
 
-        // An empty raw payload never leaves a marker behind.
         diagnostics.replace_lsp_units(path.clone(), Vec::new(), LspDiagnosticUnits::Utf16);
         assert!(diagnostics.raw_utf16_lsp_paths().is_empty());
     }
@@ -1146,7 +1081,6 @@ mod tests {
             vec![diagnostic(&path, DiagnosticSeverity::Warning, "pyright")],
         );
 
-        // Both servers' payloads survive on the shared path.
         assert_eq!(diagnostics.for_path(&path).len(), 2);
         assert_eq!(diagnostics.count_by_severity(DiagnosticSeverity::Error), 1);
         assert_eq!(
@@ -1154,14 +1088,12 @@ mod tests {
             1
         );
 
-        // A newer publish from the rust server replaces only its own bucket.
         let mut updated = diagnostic(&path, DiagnosticSeverity::Error, "rust-analyzer");
         updated.line = 3;
         diagnostics.replace_lsp_source(path.clone(), rust_key, vec![updated]);
         assert_eq!(diagnostics.for_path(&path).len(), 2);
         assert_eq!(diagnostics.count_by_severity(DiagnosticSeverity::Error), 1);
 
-        // Clearing the rust server's payload leaves the sibling untouched.
         diagnostics.replace_lsp_source(path.clone(), rust_key, Vec::new());
         let remaining = diagnostics.for_path(&path);
         assert_eq!(remaining.len(), 1);
@@ -1218,7 +1150,6 @@ mod tests {
         );
         assert_eq!(diagnostics.count_by_severity(DiagnosticSeverity::Info), 2);
 
-        // Purging an unknown bucket key is a no-op.
         diagnostics.purge_lsp_source("missing\u{0}99");
         assert_eq!(diagnostics.len(), 4);
     }

@@ -451,14 +451,9 @@ impl TextBuffer {
     }
 }
 
-/// Number of chars kept behind an index when testing grapheme boundaries.
-/// Mirrors the context window used by the movement module's boundary check.
 const GRAPHEME_SNAP_CONTEXT_CHARS: usize = 32;
 
 impl TextBuffer {
-    /// Nearest grapheme cluster boundary at or before `idx`; an index inside a
-    /// multi-char cluster snaps to the start of that cluster. Backs the vim
-    /// visual range math so selection endpoints never split a cluster.
     pub fn snap_back_to_grapheme_boundary(&self, idx: usize) -> usize {
         let mut idx = idx.min(self.len_chars());
         while idx > 0 && !self.is_grapheme_boundary_index(idx) {
@@ -467,8 +462,6 @@ impl TextBuffer {
         idx
     }
 
-    /// Nearest grapheme cluster boundary at or after `idx`; an index inside a
-    /// multi-char cluster snaps to the end of that cluster.
     pub fn snap_forward_to_grapheme_boundary(&self, idx: usize) -> usize {
         let len = self.len_chars();
         let mut idx = idx.min(len);
@@ -478,9 +471,6 @@ impl TextBuffer {
         idx
     }
 
-    /// Returns `true` when a grapheme cluster boundary exists immediately
-    /// before `char_index`, reusing the movement module's `&str`-based
-    /// boundary check over a short context window.
     fn is_grapheme_boundary_index(&self, char_index: usize) -> bool {
         let len = self.len_chars();
         if char_index == 0 || char_index >= len {

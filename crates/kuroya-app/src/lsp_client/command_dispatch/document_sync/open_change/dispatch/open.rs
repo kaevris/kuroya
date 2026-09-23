@@ -23,9 +23,6 @@ pub(in crate::lsp_client::command_dispatch::document_sync::open_change) async fn
     let write_result =
         write_did_open_full_document(writer, &path, &language, wire_version, &text).await;
     if write_result.is_ok() {
-        // didOpen (re)establishes what the server holds for this document.
-        // The snapshot materialization only happens for incremental servers,
-        // the only kind that consults the synced-text tracker.
         if sync_state.sync_kind == kuroya_core::TextDocumentSyncKindSetting::Incremental {
             sync_state.record_synced_text(&path, &text.text());
         }

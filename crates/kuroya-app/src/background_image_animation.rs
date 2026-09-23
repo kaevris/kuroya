@@ -23,8 +23,7 @@ const GIF_DECODER_LIVE_CANVAS_COUNT: u64 = 3;
 const MAX_GIF_DECODER_ALLOC_BYTES: u64 =
     MAX_ANIMATED_BACKGROUND_PIXELS * GIF_RGBA_BYTES_PER_PIXEL * GIF_DECODER_LIVE_CANVAS_COUNT;
 const MIN_GIF_FRAME_DELAY: Duration = Duration::from_millis(16);
-/// Authored GIF delays of 10 ms or less mean "as fast as possible"; browsers
-/// render them at 100 ms so honor that convention instead of pinning a core.
+
 const BROWSER_FAST_GIF_DELAY_THRESHOLD_MS: f64 = 10.0;
 const BROWSER_FAST_GIF_FRAME_DELAY: Duration = Duration::from_millis(100);
 
@@ -98,8 +97,6 @@ impl BackgroundGifAnimation {
         }
 
         if paused {
-            // Cancel the pending deadline; resuming re-anchors a fresh full delay
-            // instead of instantly firing every frame that came due while hidden.
             self.next_frame_at = None;
             return None;
         }
@@ -139,9 +136,6 @@ impl BackgroundGifAnimation {
         }
         let now = Instant::now();
         let next_frame_at = match self.next_frame_at {
-            // Advance the previous deadline on a virtual clock so decode latency
-            // never accumulates into slow-motion playback. A deadline that has
-            // already passed clamps to `now`, banking at most one immediate frame.
             Some(previous) => previous
                 .checked_add(self.frame_delay)
                 .map(|advanced| advanced.max(now)),
@@ -423,8 +417,6 @@ mod tests {
 
     #[test]
     fn gif_frame_delay_follows_browser_conventions() {
-        // Authored delays of 10 ms or less mean "as fast as possible" and are
-        // rendered at 100 ms, matching browser behavior.
         assert_eq!(
             bounded_gif_frame_delay(Delay::from_numer_denom_ms(0, 1)),
             Duration::from_millis(100)
@@ -433,7 +425,7 @@ mod tests {
             bounded_gif_frame_delay(Delay::from_numer_denom_ms(8, 1)),
             Duration::from_millis(100)
         );
-        // Longer authored delays are honored, floored at MIN_GIF_FRAME_DELAY.
+
         assert_eq!(
             bounded_gif_frame_delay(Delay::from_numer_denom_ms(20, 1)),
             Duration::from_millis(20)
@@ -448,8 +440,7 @@ mod tests {
     fn gif_frame_pacing_advances_on_a_virtual_clock_without_drift() {
         let (mut animation, _frames_tx) = test_gif_animation();
         let delay = Duration::from_millis(200);
-        // Anchor the virtual clock slightly in the past to simulate a frame that
-        // arrives after its deadline (decode latency).
+
         let anchor = Instant::now()
             .checked_sub(Duration::from_millis(5))
             .expect("clock supports subtraction");
@@ -462,8 +453,6 @@ mod tests {
             "the deadline must advance from the previous deadline, not receive time"
         );
 
-        // Each successive frame advances the same virtual deadline by one delay,
-        // so decode latency never accumulates into slow-motion playback.
         animation.schedule_next_frame(delay, None, false);
         assert_eq!(animation.next_frame_at, Some(anchor + delay * 2));
     }
@@ -504,8 +493,6 @@ mod tests {
         );
         assert!(animation.poll(&ctx, true).is_none());
 
-        // Resuming re-anchors a fresh full delay rather than instantly firing
-        // the frames that came due while paused.
         assert!(animation.poll(&ctx, false).is_none());
         assert!(!animation.request_in_flight);
         let resumed_deadline = animation

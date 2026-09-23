@@ -21,8 +21,6 @@ fn dirty_repo_root(label: &str) -> PathBuf {
     root
 }
 
-/// Clean worktree with one committed file so a scoped merge that reports the
-/// file as modified is always a real change against the scanned snapshot.
 fn clean_repo_root(label: &str) -> PathBuf {
     let root = revision_test_root(label);
     fs::create_dir_all(&root).unwrap();

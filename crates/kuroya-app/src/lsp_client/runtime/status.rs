@@ -21,8 +21,6 @@ pub(super) fn send_lsp_read_error_status(
     );
 }
 
-/// Reports the server as stopped and wakes restart handling. `detail` (exit
-/// code, stderr tail, ...) is optional and gets sanitized before display.
 pub(super) fn send_lsp_stopped_status(
     language: &str,
     root: &Path,

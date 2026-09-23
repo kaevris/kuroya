@@ -497,9 +497,6 @@ fn plugin_command_contributions_are_runnable(plugin: &PluginDescriptor) -> bool 
 }
 
 fn plugin_command_runtime_capabilities_are_supported(capabilities: &PluginCapabilities) -> bool {
-    // workspace_write is a supported runtime capability (it gates the
-    // buffer-mutation host functions); process_spawn and network remain
-    // unsupported and fail closed.
     !capabilities.process_spawn && !capabilities.network
 }
 
@@ -716,8 +713,7 @@ fn parse_friendly_theme_settings_toml(value: &toml::Value) -> anyhow::Result<The
         let name = name
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("theme name must be a string"))?;
-        // Hostile theme files must not smuggle over-long or control-character
-        // names into UI state, so cap the label like plugin manifest labels.
+
         let sanitized = sanitize_display_label(name);
         if !sanitized.is_empty() {
             theme.name = sanitized;
@@ -907,10 +903,6 @@ impl PluginSyntaxRegistry {
     }
 }
 
-/// A parsed `plugin.toml`. Unknown keys are rejected so a typo such as
-/// `capabilites = true` fails discovery loudly instead of silently producing
-/// a plugin that runs with none of the capabilities its author meant to
-/// grant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PluginManifest {
@@ -1114,10 +1106,6 @@ fn discover_workspace_plugins_with_limits(
     for root in roots {
         match load_plugin_manifest(&root) {
             Ok(plugin) => {
-                // The manifest parsed, so verify the declared entry actually
-                // exists: a plugin whose wasm is missing (renamed folder,
-                // partial copy, typo) would otherwise register commands that
-                // only fail later at run time.
                 if let Some(entry) = &plugin.manifest.entry
                     && !entry.is_file()
                 {
@@ -1143,9 +1131,7 @@ fn discover_workspace_plugins_with_limits(
             }
             Err(error) => discovery.errors.push(PluginDiscoveryError {
                 root,
-                // `{error:#}` walks the anyhow chain so the recorded error
-                // carries the cause ("could not parse X: unknown field
-                // `...`") instead of only the outer context.
+
                 error: format!("{error:#}"),
             }),
         }

@@ -94,9 +94,6 @@ impl KuroyaApp {
         crate::editor_vim_key_events::vim_forget_searches_for_buffer(id);
         self.editor_vim_last_change.remove(&id);
         if self.editor_vim_insert_undo_group_buffer == Some(id) {
-            // The buffer owning the open insert-session group is gone; the
-            // group died with it and the tracker must not alias a future
-            // buffer id.
             self.editor_vim_insert_undo_group_buffer = None;
         }
         self.virtual_buffer_labels.remove(&id);
@@ -386,8 +383,6 @@ mod tests {
 
         app.force_close_buffer(7);
 
-        // The closed buffer's search, last change and insert-group tracking
-        // are gone; the other buffer's entries survive.
         assert_eq!(vim_last_search_word_for_test(7), None);
         assert_eq!(vim_last_search_word_for_test(8), Some("gamma".to_owned()));
         assert!(!app.editor_vim_last_change.contains_key(&7));

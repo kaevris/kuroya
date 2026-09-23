@@ -1203,9 +1203,7 @@ fn restore_session_orders_recovered_buffers_by_saved_open_file_order() {
     fs::create_dir_all(&root).unwrap();
     let first = root.join("src/a.rs");
     let last = root.join("src/c.rs");
-    // Saved tab order was [a.rs, b.rs, c.rs]; a.rs and c.rs were dirty (so
-    // they are recovered buffers, listed out of saved order here) while
-    // b.rs was clean and is only referenced by open_files.
+
     let mut app = app_for_test(root.clone());
 
     app.restore_session(PersistedSession {

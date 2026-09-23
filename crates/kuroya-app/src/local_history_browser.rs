@@ -30,9 +30,6 @@ const LOCAL_HISTORY_BROWSER_NO_SNAPSHOTS_LABEL: &str = "No local history for thi
 const LOCAL_HISTORY_BROWSER_LOADING_LABEL: &str = "Loading local history...";
 
 impl KuroyaApp {
-    /// Toggles the Local History browser for the active file. Opening always
-    /// re-enumerates the (bounded, cheap) snapshot list so the rows reflect
-    /// the newest saved snapshots.
     pub(crate) fn toggle_local_history_browser(&mut self) {
         if self.local_history_browser_open {
             self.close_local_history_browser();
@@ -64,8 +61,6 @@ impl KuroyaApp {
         self.status = "Closed local history browser".to_owned();
     }
 
-    /// Re-enumerates snapshots for the tracked browser path. Invoked when the
-    /// browser opens and whenever a save completes for the tracked file.
     pub(crate) fn spawn_local_history_browser_refresh(&mut self) {
         let Some(path) = self.local_history_browser_path.clone() else {
             return;
@@ -94,8 +89,6 @@ impl KuroyaApp {
         });
     }
 
-    /// Refresh hook for save completion: only re-enumerates while the browser
-    /// is open and the saved file is the one being browsed.
     pub(crate) fn refresh_local_history_browser_after_save(&mut self, path: &Path) {
         if !self.local_history_browser_open {
             return;
@@ -134,10 +127,6 @@ impl KuroyaApp {
         self.local_history_browser_loading = false;
     }
 
-    /// Opens the selected snapshot as a read-only virtual revision buffer.
-    /// Reads the snapshot off the UI thread and never touches the file on
-    /// disk; the opened buffer is the same virtual revision kind the
-    /// "Open Latest Local History Snapshot" command produces.
     pub(crate) fn open_local_history_browser_selection(&mut self, index: usize) {
         let Some(path) = self.local_history_browser_path.clone() else {
             return;
@@ -391,10 +380,6 @@ fn local_history_browser_failed_status(path_label: &str, sequence: u128, reason:
     format!("Could not open local history snapshot {sequence} for {path_label}: {reason}")
 }
 
-/// Formats a snapshot mtime as a fixed-width `YYYY-MM-DD HH:MM:SS UTC`
-/// label. UTC keeps the conversion deterministic without pulling in a
-/// timezone database; the label identifies the revision rather than
-/// scheduling work in a specific zone.
 fn format_snapshot_timestamp_utc(modified: SystemTime) -> String {
     let seconds = match modified.duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_secs() as i64,
@@ -411,8 +396,6 @@ fn format_snapshot_timestamp_utc(modified: SystemTime) -> String {
     )
 }
 
-/// Inverse of days-from-civil: converts a count of days since 1970-01-01 to
-/// a proleptic Gregorian calendar date.
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let shifted = days + 719_468;
     let era = shifted.div_euclid(146_097);

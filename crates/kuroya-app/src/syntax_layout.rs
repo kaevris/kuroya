@@ -9,22 +9,12 @@ const DEFAULT_FONT_SIZE: f32 = 13.0;
 const MAX_FONT_SIZE: f32 = 128.0;
 const DEFAULT_TAB_WIDTH: usize = 4;
 const MAX_TAB_WIDTH: usize = 32;
-// Below this WCAG contrast ratio a syntect token foreground is unreadable
-// against the active theme and falls back to the theme text color.
+
 const MIN_TOKEN_CONTRAST_RATIO: f32 = 3.0;
-// The editor background is not threaded into the highlighter, so it is
-// estimated from the theme family picked by the text color polarity (the app
-// guarantees its text color is readable against its background). The values
-// mirror the app's default dark and light theme backgrounds.
+
 const ESTIMATED_DARK_BACKGROUND: Color32 = Color32::from_rgb(18, 20, 24);
 const ESTIMATED_LIGHT_BACKGROUND: Color32 = Color32::from_rgb(244, 246, 248);
 
-/// Render-relevant identity of the active app theme for syntect token colors.
-///
-/// The bundled syntect theme is fixed, so token colors are contrast-checked
-/// against the active app theme at paint time: pale token colors designed for
-/// dark backgrounds fall back to the theme text color instead of washing out on
-/// light themes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SyntaxThemeColors {
     background: Color32,
@@ -448,14 +438,13 @@ mod tests {
 
     #[test]
     fn format_from_style_falls_back_to_theme_text_for_pale_tokens_on_light_themes() {
-        // The base16-ocean.dark default foreground: far too pale for light apps.
         let pale_token = style_with_foreground(Color {
             r: 192,
             g: 197,
             b: 206,
             a: 255,
         });
-        // The ocean comment color is dark enough to survive on a light theme.
+
         let readable_token = style_with_foreground(Color {
             r: 101,
             g: 115,
@@ -475,7 +464,7 @@ mod tests {
             readable_on_light.color,
             egui::Color32::from_rgb(101, 115, 126)
         );
-        // Dark themes keep the original syntect token color.
+
         assert_eq!(pale_on_dark.color, egui::Color32::from_rgb(192, 197, 206));
     }
 

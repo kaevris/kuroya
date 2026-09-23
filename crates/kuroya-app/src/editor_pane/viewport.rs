@@ -608,11 +608,7 @@ fn minimap_jump_pending_actions(
     line: usize,
 ) {
     pending_actions.minimap_jump = Some(line);
-    // The cursor-surrounding-lines=All style scrolls back to the cursor line
-    // every frame while the pane is focused, so a jump that only moved the
-    // viewport would snap back one frame later. Move the cursor to the start
-    // of the target line instead, like a text click would, so the follow
-    // scroll and the jump agree.
+
     pending_actions.cursor = Some((buffer.line_column_to_char(line, 0), false, false));
 }
 

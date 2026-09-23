@@ -77,8 +77,6 @@ fn stopped_server_restarts_by_client_key_without_touching_sibling_servers() {
         LspClientHandle::disconnected_with_generation_for_test(11),
     );
 
-    // The primary server dies: its own restart ladder starts, and the
-    // sibling client plus its (absent) ladder stay untouched.
     assert!(
         app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::ServerStopped {
             language: "rust".to_owned(),
@@ -100,7 +98,6 @@ fn stopped_server_restarts_by_client_key_without_touching_sibling_servers() {
         app.status
     );
 
-    // The sibling dies independently and gets its own ladder.
     assert!(
         app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::ServerStopped {
             language: "rust".to_owned(),
@@ -178,8 +175,6 @@ fn server_stopped_purges_only_stopped_server_diagnostics() {
         LspClientHandle::disconnected_with_generation_for_test(11),
     );
 
-    // Both co-attached servers publish diagnostics for the same file, on top
-    // of a static diagnostic that must survive server lifecycle events.
     let mut static_diagnostic = test_diagnostic(&source, "static marker");
     static_diagnostic.source = "kuroya-static".to_owned();
     app.diagnostics
@@ -211,8 +206,6 @@ fn server_stopped_purges_only_stopped_server_diagnostics() {
     assert_eq!(app.flush_pending_lsp_diagnostics(), 2);
     assert_eq!(app.diagnostics.for_path(&source).len(), 3);
 
-    // The primary server dies: only its own diagnostics are purged; the
-    // sibling server's payload and the static diagnostic remain.
     assert!(
         app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::ServerStopped {
             language: "rust".to_owned(),
@@ -232,7 +225,6 @@ fn server_stopped_purges_only_stopped_server_diagnostics() {
     assert!(remaining.contains(&"from secondary"), "{remaining:?}");
     assert!(remaining.contains(&"static marker"), "{remaining:?}");
 
-    // The sibling server becomes unavailable: its diagnostics are purged too.
     assert!(
         app.handle_lsp_event(UiEvent::Lsp(LspUiEvent::ServerUnavailable {
             language: "rust".to_owned(),

@@ -21,8 +21,6 @@ fn load_or_create_migrates_legacy_settings_schema_atomically() {
 
 #[test]
 fn settings_schema_version_preflight_preserves_validation() {
-    // An absent schema_version means the file was written by an unknown or
-    // current tool: it counts as the current version so migrations never run.
     assert_eq!(
         settings_schema_version_from_toml("font_size = 15.0\n").unwrap(),
         SETTINGS_SCHEMA_VERSION
@@ -55,8 +53,6 @@ fn settings_schema_version_preflight_preserves_validation() {
         "{future_error}"
     );
 
-    // A non-integer schema_version is unreadable, so it counts as absent:
-    // current version, no migrations.
     assert_eq!(
         settings_schema_version_from_toml("schema_version = \"1\"\n").unwrap(),
         SETTINGS_SCHEMA_VERSION
@@ -270,8 +266,7 @@ fn load_or_create_with_recovery_defaults_invalid_line_numbers_without_quarantine
     let path = temp_settings_path("recover-invalid-line-numbers");
     let root = path.parent().unwrap().parent().unwrap().to_path_buf();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    // An explicit legacy schema_version keeps the rewrite-to-clean-file
-    // behavior under test; a missing schema_version would no longer migrate.
+
     fs::write(
         &path,
         "schema_version = 1\nfont_size = 15.0\nline_numbers = \"visible\"\n[theme]\nname = \"Graphite\"\n",
@@ -344,8 +339,7 @@ fn load_or_create_with_recovery_keeps_future_schema_versions_for_newer_builds() 
             && status.contains("uses them as defaults"),
         "{status}"
     );
-    // The file written by the newer build stays in place: nothing is
-    // quarantined and nothing is rewritten against it.
+
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
     let sibling_count = fs::read_dir(path.parent().unwrap())
         .unwrap()
@@ -382,7 +376,7 @@ fn load_or_create_with_recovery_keeps_future_schema_before_known_recovery() {
     assert_eq!(loaded.settings, EditorSettings::default());
     assert_eq!(loaded.quarantined_path, None);
     assert_eq!(loaded.future_schema_version, Some(future_version));
-    // The known line_numbers recovery must not rewrite a future-version file.
+
     assert_eq!(fs::read_to_string(&path).unwrap(), text);
 
     fs::remove_dir_all(root).unwrap();
@@ -398,8 +392,6 @@ fn load_or_create_with_recovery_keeps_missing_schema_version_settings_unmigrated
 
     let loaded = EditorSettings::load_or_create_with_recovery(&path).unwrap();
 
-    // A hand-written file without schema_version counts as current-era: the
-    // schema 1/2 migrations must not run against user intent.
     assert_eq!(loaded.quarantined_path, None);
     assert_eq!(loaded.future_schema_version, None);
     assert_eq!(

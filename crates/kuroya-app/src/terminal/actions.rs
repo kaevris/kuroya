@@ -154,7 +154,6 @@ enum TerminalInputQueueResult {
     Disconnected,
 }
 
-/// Outcome of sending input to a session, enough to surface paste failures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalInputDelivery {
     Delivered,
@@ -1137,7 +1136,6 @@ impl TerminalPane {
         });
     }
 
-    /// Returns the active notice message and the time left before it expires.
     pub(super) fn active_paste_notice(&self) -> Option<(&str, Duration)> {
         self.active_paste_notice_at(Instant::now())
     }
@@ -1588,10 +1586,6 @@ impl super::TerminalSession {
         self.queue_input_scrolling_to_bottom(input, true)
     }
 
-    /// Queues a response the terminal itself synthesized (a cursor-position
-    /// report and similar replies). Unlike user input this must not jump the
-    /// scrollback to the bottom: the user may be reading history while the
-    /// running program probes the cursor.
     fn queue_synthesized_input(&mut self, input: String) -> TerminalInputQueueResult {
         self.queue_input_scrolling_to_bottom(input, false)
     }

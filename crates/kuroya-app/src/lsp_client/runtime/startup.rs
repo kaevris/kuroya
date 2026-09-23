@@ -22,7 +22,7 @@ pub(super) struct StartedLspClient {
     pub(super) child: Child,
     pub(super) writer: ChildStdin,
     pub(super) reader: BufReader<ChildStdout>,
-    /// Negotiated `textDocumentSync` change kind from the initialize result.
+
     pub(super) sync_kind: TextDocumentSyncKindSetting,
 }
 

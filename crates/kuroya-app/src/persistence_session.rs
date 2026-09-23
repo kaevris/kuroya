@@ -865,13 +865,6 @@ fn clear_terminal_scrollback(session: &mut PersistedSession) -> bool {
     changed
 }
 
-/// Evicts the largest recovery buffer first when a session exceeds the byte
-/// budget. Recovery buffers are stored in buffer-open order, so dropping
-/// the LAST entry would always discard the most recently opened/edited
-/// work; size-first eviction instead sacrifices the entries that free the
-/// most bytes per removal, so small entries carrying real user text
-/// survive. `last_edited` timestamps are not part of the persisted
-/// recovery schema, so buffer size is used as the eviction signal.
 fn skip_largest_recovery_entry(session: &mut PersistedSession) -> bool {
     let Some((index, recovered)) = session
         .recovery
@@ -900,8 +893,6 @@ fn skip_largest_recovery_entry(session: &mut PersistedSession) -> bool {
     true
 }
 
-/// Drops the view state of the removed recovery entry and shifts the indices
-/// of later entries so they keep pointing at their buffers.
 fn retain_remapped_recovery_view_states(
     states: &mut Vec<crate::persistence::RecoveredBufferViewState>,
     removed_index: usize,
@@ -916,8 +907,6 @@ fn retain_remapped_recovery_view_states(
     });
 }
 
-/// Drops the history state of the removed recovery entry and shifts the
-/// indices of later entries so they keep pointing at their buffers.
 fn retain_remapped_recovery_history_states(
     states: &mut Vec<crate::persistence::RecoveredBufferHistoryState>,
     removed_index: usize,
@@ -1561,14 +1550,6 @@ async fn prune_session_snapshots_async(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Orders snapshots oldest-modified first so pruning from the front evicts
-/// the oldest writes and keeps the newest. Snapshot names embed wall-clock
-/// nanos, so after a system-clock rollback freshly written snapshots sort
-/// OLDEST by name and name-order pruning would freeze the safety net
-/// exactly when it is needed; the on-disk modified time tracks real write
-/// order instead. Entries whose modified time cannot be read are treated
-/// as oldest (pruned first, keeping their relative name order); entries
-/// with readable times keep name order on ties (the stable-sort fallback).
 fn sort_session_snapshots_oldest_modified_first(snapshots: &mut [PathBuf]) {
     snapshots.sort_by_key(|path| snapshot_modified_time(path).unwrap_or(UNIX_EPOCH));
 }

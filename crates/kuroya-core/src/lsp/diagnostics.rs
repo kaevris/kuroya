@@ -45,9 +45,6 @@ pub fn diagnostics_from_lsp(
         .into_iter()
         .take(MAX_LSP_DIAGNOSTICS_PER_FILE)
     {
-        // publishDiagnostics is full-state replacement, so aborting on one
-        // malformed entry would keep stale diagnostics alive; skip the entry
-        // and keep every parseable sibling instead.
         if let Some(diagnostic) = diagnostic_from_lsp_struct(diagnostic, &path) {
             diagnostics.push(diagnostic);
         }
@@ -71,8 +68,6 @@ pub fn parse_publish_diagnostics(value: &Value) -> Option<(PathBuf, Option<u64>,
         Vec::with_capacity(lsp_diagnostics.len().min(MAX_LSP_DIAGNOSTICS_PER_FILE));
 
     for diagnostic in lsp_diagnostics.iter().take(MAX_LSP_DIAGNOSTICS_PER_FILE) {
-        // Same full-state replacement contract as `diagnostics_from_lsp`:
-        // skip malformed entries rather than discarding the whole publish.
         if let Some(diagnostic) = diagnostic_from_lsp_value(diagnostic, &path) {
             diagnostics.push(diagnostic);
         }
@@ -102,13 +97,6 @@ pub(super) fn lsp_code_action_diagnostic(diagnostic: &Diagnostic) -> Value {
     })
 }
 
-/// Builds the line-relative `Diagnostic::char_range` from an LSP range.
-///
-/// LSP ranges may span multiple lines, but `end.character` belongs to the end
-/// line; using it as a column on the start line collapses a multi-line range
-/// to a bogus start-line width. When the range ends on a later line, store a
-/// sentinel end that consumers clamp to the start line's content length
-/// instead.
 fn lsp_diagnostic_char_range(
     start: ParsedLspPosition,
     end: ParsedLspPosition,
@@ -194,8 +182,6 @@ fn lsp_diagnostic_severity(severity: DiagnosticSeverity) -> u8 {
     }
 }
 
-/// LSP omits `severity` on errors by convention and editors such as VS Code
-/// render a missing severity as Error, so default to Error rather than Info.
 fn lsp_severity(severity: Option<u8>) -> DiagnosticSeverity {
     match severity.unwrap_or(1) {
         1 => DiagnosticSeverity::Error,

@@ -13,18 +13,12 @@ const PENDING_LSP_DIAGNOSTIC_PAYLOAD_CAPACITY: usize = 5_000;
 #[derive(Debug, Default)]
 pub(crate) struct PendingLspDiagnosticsBatch {
     first_queued_at: Option<Instant>,
-    /// Pending payloads grouped per path, then per server instance, so two
-    /// servers publishing the same path keep independent slots instead of the
-    /// second server dropping the first server's payload.
+
     diagnostics_by_path: HashMap<PathBuf, HashMap<PendingServerSlot, PendingLspDiagnostics>>,
     path_keys: HashMap<PendingLspDiagnosticsPathKey, PathBuf>,
     path_order: VecDeque<PathBuf>,
 }
 
-/// Pending-slot identity within one path: `None` for legacy un-sourced
-/// payloads, or the publishing server's language, workspace root, and client
-/// generation (globally unique per spawned client, so co-attached servers for
-/// the same language and root still get distinct slots).
 type PendingServerSlot = Option<PendingLspDiagnosticsSource>;
 
 #[derive(Debug)]
@@ -121,9 +115,6 @@ impl PendingLspDiagnosticsBatch {
         self.update_pending_lsp_diagnostics(&path, source, version, diagnostics, now);
     }
 
-    /// Resolves the already-queued path this payload belongs to, tolerating
-    /// lexical equivalent spellings, or `None` when the path must be queued
-    /// fresh.
     fn pending_path_for(&mut self, path: &Path) -> Option<PathBuf> {
         if self.diagnostics_by_path.contains_key(path) {
             return Some(path.to_path_buf());
@@ -138,7 +129,6 @@ impl PendingLspDiagnosticsBatch {
         }
     }
 
-    /// Updates (or creates) the publishing server's pending slot for `path`.
     fn update_pending_lsp_diagnostics(
         &mut self,
         path: &Path,
@@ -262,7 +252,7 @@ impl PendingLspDiagnosticsBatch {
                     });
                 }
             }
-            // Sibling servers may still have payloads pending for this path.
+
             if self
                 .diagnostics_by_path
                 .get(&path)
@@ -302,8 +292,6 @@ impl PendingLspDiagnosticsBatch {
         self.path_order.clear();
     }
 
-    /// Removes one server's pending slot for `path`; the path entry (and its
-    /// lexical index) is dropped once no server has a payload left.
     fn remove_pending_entry(
         &mut self,
         path: &Path,
@@ -323,7 +311,6 @@ impl PendingLspDiagnosticsBatch {
         Some(removed)
     }
 
-    /// Drops every server's pending payload for one path (capacity eviction).
     fn remove_path_entry(&mut self, path: &Path) -> bool {
         let removed = self.diagnostics_by_path.remove(path);
         if let Some(key) = PendingLspDiagnosticsPathKey::new(path) {
@@ -568,19 +555,13 @@ fn lsp_diagnostic_line_offsets(
             if start_utf16 == next_utf16_offset {
                 start = Some(next_char_offset);
             } else if start_utf16 > utf16_offset && start_utf16 < next_utf16_offset {
-                // A UTF-16 offset inside a surrogate pair clamps down to the
-                // nearest character boundary (the pair's first code unit), so
-                // the diagnostic is not silently dropped.
                 start = Some(char_offset);
             }
         }
         if end.is_none() && requested_end_utf16 <= next_utf16_offset {
-            if requested_end_utf16 == next_utf16_offset {
-                end = Some(next_char_offset);
-            } else if requested_end_utf16 > utf16_offset && requested_end_utf16 < next_utf16_offset
+            if requested_end_utf16 == next_utf16_offset
+                || (requested_end_utf16 > utf16_offset && requested_end_utf16 < next_utf16_offset)
             {
-                // An end offset inside a surrogate pair clamps up past the
-                // whole pair instead of dropping the diagnostic.
                 end = Some(next_char_offset);
             }
         }
@@ -840,8 +821,7 @@ mod tests {
             vec![diagnostic(&path, "primary server")],
             now,
         );
-        // A co-attached server for the same language and root must not drop
-        // the first server's pending payload.
+
         batch.queue_for_server(
             PendingLspDiagnosticsSource {
                 language: "rust".to_owned(),
@@ -1461,8 +1441,7 @@ mod tests {
         assert_eq!(diagnostics.len(), 2);
         assert_eq!(diagnostics[0].column, 2);
         assert_eq!(diagnostics[0].char_range, 1..6);
-        // A start offset inside a surrogate pair clamps down to the nearest
-        // character boundary instead of dropping the diagnostic.
+
         assert_eq!(diagnostics[1].column, 1);
         assert_eq!(diagnostics[1].char_range, 0..1);
     }
@@ -1484,7 +1463,7 @@ mod tests {
         );
 
         assert_eq!(diagnostics.len(), 1);
-        // An end offset inside a surrogate pair clamps up past the whole pair.
+
         assert_eq!(diagnostics[0].column, 1);
         assert_eq!(diagnostics[0].char_range, 0..2);
     }
@@ -1505,8 +1484,6 @@ mod tests {
             )],
         );
 
-        // Multi-line LSP ranges arrive with a `usize::MAX` sentinel end; it
-        // resolves to the line content length instead of a bogus width.
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].column, 3);
         assert_eq!(diagnostics[0].char_range, 2..5);

@@ -53,9 +53,7 @@ impl KuroyaApp {
                         display_error_label_cow(&error)
                     );
                 }
-                // Panes that were created for this load are still empty
-                // (`active: None`); without a buffer they could never be
-                // focused, so close them instead of leaving them orphaned.
+
                 self.close_orphaned_panes(&pending_panes);
             }
             _ => {}

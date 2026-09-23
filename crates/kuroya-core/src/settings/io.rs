@@ -90,7 +90,6 @@ pub(super) fn settings_read_error_is_not_found(error: &anyhow::Error) -> bool {
         .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
-// Keep schema preflight narrow so large string settings are not materialized twice.
 #[derive(Default, Deserialize)]
 struct SettingsSchemaVersionToml {
     #[serde(
@@ -203,10 +202,6 @@ pub(super) fn settings_schema_version_from_toml(text: &str) -> anyhow::Result<u3
     Ok(version)
 }
 
-// Parses only the schema_version key without enforcing the supported bound so
-// the recovery path can tell a future-version file from a corrupt one. An
-// absent schema_version means the file was written by an unknown or current
-// tool: report the current version so migrations never run against it.
 fn settings_schema_version_raw_from_toml(text: &str) -> anyhow::Result<u32> {
     let schema = toml::from_str::<SettingsSchemaVersionToml>(text)?;
     let Some(version) = schema.schema_version else {
@@ -216,9 +211,6 @@ fn settings_schema_version_raw_from_toml(text: &str) -> anyhow::Result<u32> {
         .map_err(|_| anyhow::anyhow!("settings schema_version must be between 0 and {}", u32::MAX))
 }
 
-// Some(schema_version) when `text` declares a schema_version newer than this
-// build supports. Such files were written by a newer Kuroya and must be kept
-// on disk untouched instead of quarantined or rewritten.
 pub(super) fn settings_schema_version_newer_than_supported(text: &str) -> Option<u32> {
     let version = settings_schema_version_raw_from_toml(text).ok()?;
     (version > SETTINGS_SCHEMA_VERSION).then_some(version)

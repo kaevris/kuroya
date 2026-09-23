@@ -268,19 +268,13 @@ fn keybinding_chord_matches_prepared(
         || chord.eq_ignore_ascii_case(prepared)
 }
 
-/// How a candidate chord collides with an existing chord of another command
-/// through modifier subsetting instead of exact equality.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum KeybindingChordShadow {
-    /// The candidate chord can never dispatch: `existing_chord` matches the same
-    /// key with a subset of the candidate's modifiers and shadows it.
     ShadowedBy { existing_chord: String },
-    /// The candidate chord shadows `existing_chord`, which can no longer dispatch.
+
     Shadows { existing_chord: String },
 }
 
-/// True when `chord` shadows `other`: both parse to the same key while `chord`
-/// uses a strict subset of `other`'s modifiers, so `other` can never dispatch.
 pub(crate) fn keybinding_chord_shadows(chord: &str, other: &str) -> bool {
     let (Some(chord), Some(other)) = (parse_key_chord(chord), parse_key_chord(other)) else {
         return false;
@@ -298,8 +292,6 @@ fn keybinding_modifiers_subset_of(subset: Modifiers, superset: Modifiers) -> boo
         && (!subset.command || superset.command)
 }
 
-/// Finds a modifier-superset collision between `chord` and the bindings of
-/// other commands, in either shadowing direction.
 pub(crate) fn keybinding_chord_shadow_conflict(
     bindings: &[KeyBinding],
     command: &Command,
@@ -323,7 +315,6 @@ pub(crate) fn keybinding_chord_shadow_conflict(
         })
 }
 
-/// Returns the factory default chord for `command` from a fresh `Keymap::default()`.
 pub(crate) fn keybinding_default_chord_for_command(command: &Command) -> Option<String> {
     Keymap::default()
         .bindings
@@ -518,7 +509,7 @@ mod tests {
             keybinding_chord_shadow_conflict(&bindings, &Command::Undo, "Ctrl+P"),
             None
         );
-        // Exact chord equality is a hard conflict, never a shadow.
+
         let own_chord_only = vec![KeyBinding {
             chord: "Ctrl+S".to_owned(),
             command: Command::SaveActive,

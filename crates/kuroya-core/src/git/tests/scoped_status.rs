@@ -467,9 +467,6 @@ fn merge_scoped_statuses_preserves_branch_divergence_and_scan_error() {
         revision: 1,
     };
 
-    // The worktree file now matches HEAD, so the scoped query reports no
-    // entries and the merge must drop the stale entry while keeping the
-    // HEAD-derived metadata untouched.
     fs::write(&path, "one\n").unwrap();
     let scoped = scoped_status_for(&repo, std::slice::from_ref(&path));
     assert!(scoped.entries.is_empty());
@@ -593,8 +590,6 @@ fn git_scoped_status_snapshot_updates_snapshot_without_cold_rescan() {
     let snapshot = GitSnapshot::scan_with_status_limit(&root, DEFAULT_GIT_STATUS_LIMIT);
     assert_eq!(snapshot.len(), 2, "precondition: both changes are visible");
 
-    // Stage only the tracked file; the scoped refresh must update that entry
-    // while leaving the unrelated change untouched.
     stage_path(&root, &tracked).unwrap();
     let updated = git_scoped_status_snapshot(
         &snapshot,
@@ -642,7 +637,6 @@ fn git_scoped_status_snapshot_returns_none_without_a_repository() {
 
 #[test]
 fn git_scoped_status_snapshot_returns_none_when_repository_cannot_be_opened() {
-    // The directory is never created, so opening the repository fails.
     let root = scoped_test_root("wrapper-unopenable");
     let snapshot = GitSnapshot {
         root: Some(root.clone()),

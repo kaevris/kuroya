@@ -274,7 +274,7 @@ fn lsp_servers_default_to_builtin_configs() {
     let settings: EditorSettings = toml::from_str("").expect("empty settings should load");
 
     assert_eq!(settings.lsp_servers, crate::lsp::default_server_configs());
-    // Only the core languages ship enabled; the runtime sees just those.
+
     let enabled_defaults: Vec<_> = crate::lsp::default_server_configs()
         .into_iter()
         .filter(|server| server.enabled)
@@ -327,7 +327,7 @@ fn lsp_server_configs_exclude_disabled_servers() {
     let servers = settings.lsp_server_configs();
     assert_eq!(servers.len(), 1);
     assert_eq!(servers[0].language, "rust");
-    // The disabled entry is kept in settings so its configuration survives.
+
     assert_eq!(settings.lsp_servers.len(), 2);
     assert!(!settings.lsp_servers[1].enabled);
 }
@@ -370,8 +370,6 @@ fn lsp_servers_stay_as_configured_without_implicit_defaults() {
         .find(|server| server.language == "kuroya-test")
         .expect("custom config should be present");
 
-    // The configured list is authoritative: no implicit built-in defaults
-    // are merged into it.
     assert_eq!(servers.len(), 3);
     assert_eq!(rust.command, "rust-analyzer-custom");
     assert_eq!(rust.args, ["--stdio"]);
@@ -436,8 +434,6 @@ fn lsp_server_configs_normalize_in_memory_custom_servers() {
         .find(|server| server.language == "kuroya-test")
         .expect("custom config should be present");
 
-    // Both distinct rust servers survive; each keeps its own normalized
-    // fields (the first one also replaces the built-in default in place).
     assert_eq!(rust_servers.len(), 2);
     assert_eq!(rust.command, "rust-analyzer-custom");
     assert_eq!(rust.args, ["--stdio"]);
@@ -500,8 +496,7 @@ fn lsp_server_configs_sanitize_custom_servers() {
     };
 
     assert!(settings.sanitize());
-    // Both distinct rust servers survive sanitization; only the invalid
-    // entry (empty command) is dropped.
+
     assert_eq!(
         settings.lsp_servers,
         vec![
@@ -562,7 +557,6 @@ fn lsp_servers_support_multiple_servers_per_language_and_collapse_duplicates() {
         .filter(|server| server.language == "rust")
         .collect::<Vec<_>>();
 
-    // The exact duplicate collapses and no implicit defaults are merged in.
     assert_eq!(rust_servers.len(), 2);
     assert_eq!(rust_servers[0].command, "rust-analyzer");
     assert_eq!(rust_servers[1].command, "rust-analyzer-obsidian");

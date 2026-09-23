@@ -32,8 +32,6 @@ use super::super::shutdown_signal_requested;
 const LSP_INITIALIZE_REQUEST_ID: u64 = 1;
 pub(super) const LSP_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Everything the initialize response teaches this client about the server:
-/// the negotiated sync kind plus the advertised provider capabilities.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LspServerHandshake {
     sync_kind: TextDocumentSyncKindSetting,
@@ -120,9 +118,7 @@ pub(super) async fn complete_lsp_startup_handshake(
             return LspStartupHandshakeResult::Failed;
         }
     };
-    // Retain the advertised providers on the shared state so the app frame
-    // loop can gate requests the server never advertised (a server without
-    // inlayHint/codeLens/semanticTokens providers must not be asked for them).
+
     capabilities.set(handshake.capabilities);
 
     if shutdown_signal_requested(shutdown_rx) {
@@ -251,9 +247,6 @@ fn initialize_response_state(value: &Value, request_id: u64) -> InitializeRespon
     }
 }
 
-/// Extracts the negotiated `textDocumentSync` change kind from the initialize
-/// result. Servers that omit or malformedly declare the capability keep the
-/// full-document sync default.
 fn initialize_result_sync_kind(result: &Value) -> TextDocumentSyncKindSetting {
     result
         .get("capabilities")
@@ -262,10 +255,6 @@ fn initialize_result_sync_kind(result: &Value) -> TextDocumentSyncKindSetting {
         .unwrap_or_default()
 }
 
-/// Extracts the advertised provider capabilities from the initialize result.
-/// Providers arrive in several shapes — `true`, an options object such as
-/// `{ workDoneProgress: true }`, or absent — so only `true` and object shapes
-/// count as advertised; `false`, `null`, and missing keys do not.
 fn initialize_result_capabilities(result: &Value) -> LspServerCapabilities {
     let capabilities = result.get("capabilities");
     let (rename_provider, prepare_rename_supported) =
@@ -418,7 +407,7 @@ mod tests {
             sync(json!({"openClose": true, "change": 2})),
             TextDocumentSyncKindSetting::Incremental
         );
-        // Anything underdetermined falls back to full-document sync.
+
         assert_eq!(sync(json!(1)), TextDocumentSyncKindSetting::Full);
         assert_eq!(sync(json!(9)), TextDocumentSyncKindSetting::Full);
         assert_eq!(
@@ -484,7 +473,6 @@ mod tests {
             initialize_result_capabilities(&json!({ "capabilities": capabilities_json }))
         };
 
-        // Bare boolean providers.
         assert_eq!(
             capabilities(json!({
                 "semanticTokensProvider": true,
@@ -501,7 +489,6 @@ mod tests {
             }
         );
 
-        // Object shapes ({workDoneProgress} and prepareProvider) count.
         assert_eq!(
             capabilities(json!({
                 "semanticTokensProvider": { "workDoneProgress": true },
@@ -518,7 +505,6 @@ mod tests {
             }
         );
 
-        // Explicit false, null, and absent keys are all "not advertised".
         assert_eq!(
             capabilities(json!({
                 "semanticTokensProvider": false,
@@ -533,7 +519,6 @@ mod tests {
             "a server advertising nothing gets no provider capabilities"
         );
 
-        // renameProvider object without prepareProvider keeps rename only.
         assert_eq!(
             capabilities(json!({ "renameProvider": { "prepareProvider": false } })),
             LspServerCapabilities {

@@ -9,14 +9,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::process::ChildStdin;
 
-/// Per-server document sync state owned by the runtime task: the negotiated
-/// `textDocumentSync` kind plus, per open document, the last text the server
-/// acknowledged (the basis for incremental diffs).
-///
-/// `synced_texts` only tracks buffers while a server negotiated incremental
-/// sync, so the cost is one text copy per open synced buffer there. Full and
-/// None servers keep no text; large, lossy, and binary buffers never sync
-/// (existing eligibility checks), which bounds each copy.
 pub(in crate::lsp_client) struct DocumentSyncState {
     pub(in crate::lsp_client) sync_kind: TextDocumentSyncKindSetting,
     pub(super) synced_texts: HashMap<PathBuf, String>,
@@ -30,8 +22,6 @@ impl DocumentSyncState {
         }
     }
 
-    /// Records the text the server now holds for an open document. Only
-    /// incremental servers need the tracker, so other kinds store nothing.
     pub(super) fn record_synced_text(&mut self, path: &Path, text: &str) {
         if self.sync_kind == TextDocumentSyncKindSetting::Incremental {
             self.synced_texts

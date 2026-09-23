@@ -52,14 +52,10 @@ impl KuroyaApp {
             self.session_save_in_flight.is_some(),
             !self.queued_session_saves.is_empty(),
         ) {
-            // The fingerprint compare found nothing to persist: disarm the
-            // session-save heartbeat so an idle window stops waking for it.
             self.session_save_persisted_changes = false;
             return false;
         }
-        // This tick staged a save, so session state has (or had) unsaved
-        // changes: keep the session-save wakeup armed until a later tick
-        // observes a clean fingerprint.
+
         self.session_save_persisted_changes = true;
         let root = self.workspace.root.clone();
         let session = self.build_session_save_snapshot();
@@ -302,10 +298,7 @@ impl KuroyaApp {
             if !lsp_event_path_is_current(&self.workspace.root, &path) {
                 continue;
             }
-            // Payloads flushed while a buffer exists convert to char offsets
-            // immediately; payloads for closed files keep the server's raw
-            // UTF-16 offsets and are tagged `LspDiagnosticUnits::Utf16` so
-            // the sweep below converts them once a buffer is opened.
+
             let (path, diagnostics, units) = if let Some(buffer) =
                 self.buffer_by_lexical_path(&path)
             {
@@ -324,8 +317,7 @@ impl KuroyaApp {
             } else {
                 (path, entry.diagnostics, LspDiagnosticUnits::Utf16)
             };
-            // Publish into the server's own bucket so co-attached servers
-            // never clobber each other's diagnostics on a shared path.
+
             match entry
                 .source
                 .as_ref()
@@ -340,10 +332,6 @@ impl KuroyaApp {
             count = count.saturating_add(1);
         }
 
-        // Diagnostics stored while a file was closed keep raw UTF-16 offsets.
-        // Once a buffer for the path exists, convert them with the same
-        // helper the flush path uses so decorations land on real characters,
-        // then mark the payload converted.
         for path in self.diagnostics.raw_utf16_lsp_paths() {
             let Some(buffer) = self.buffer_by_lexical_path(&path).cloned() else {
                 continue;
@@ -1218,8 +1206,6 @@ mod tests {
         let mut app = app_for_test(root);
         let queued_at = Instant::now() - LSP_DIAGNOSTIC_BATCH_DELAY;
 
-        // No buffer for the path yet: the payload keeps the server's raw
-        // UTF-16 offsets (a column landing inside the emoji surrogate pair).
         app.pending_lsp_diagnostics.queue(
             path.clone(),
             None,
@@ -1234,8 +1220,6 @@ mod tests {
         assert_eq!(stored[0].column, 3);
         assert_eq!(stored[0].char_range, 2..7);
 
-        // Opening the file converts the stored payload at the next flush
-        // tick using the same helper the open-buffer flush path uses.
         app.buffers.push(TextBuffer::from_text(
             7,
             Some(path.clone()),
@@ -1243,7 +1227,6 @@ mod tests {
         ));
         assert_eq!(app.flush_pending_lsp_diagnostics(), 1);
 
-        // The payload is now marked converted: further flushes leave it be.
         assert_eq!(app.flush_pending_lsp_diagnostics(), 0);
 
         let converted = app.diagnostics.for_path(&path);
@@ -1259,8 +1242,6 @@ mod tests {
         let mut app = app_for_test(root);
         let queued_at = Instant::now() - LSP_DIAGNOSTIC_BATCH_DELAY;
 
-        // A multi-line LSP range stored raw keeps the `usize::MAX` sentinel
-        // end (see kuroya-core `lsp_diagnostic_char_range`).
         app.pending_lsp_diagnostics.queue(
             path.clone(),
             None,
@@ -1284,8 +1265,6 @@ mod tests {
         ));
         assert_eq!(app.flush_pending_lsp_diagnostics(), 1);
 
-        // Conversion at consumption resolves the sentinel to the line
-        // content length instead of a bogus width.
         let converted = app.diagnostics.for_path(&path);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted[0].column, 3);
@@ -1297,8 +1276,7 @@ mod tests {
         let root = PathBuf::from("workspace");
         let path = root.join("src/main.rs");
         let mut app = app_for_test(root);
-        // Two co-attached rust servers share the language key but have their
-        // own globally unique client generations.
+
         app.lsp_clients.insert(
             "rust".to_owned(),
             LspClientHandle::disconnected_with_generation_for_test(10),

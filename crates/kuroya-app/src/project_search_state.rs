@@ -321,8 +321,7 @@ pub(crate) fn project_search_result_is_current(
     let Some(current_query) = normalize_project_search_request_query_cow(current_query) else {
         return false;
     };
-    // Search UI events do not carry the regex flag, so this comparison stays
-    // regex-neutral; regex toggles invalidate results through request ids.
+
     ProjectSearchKey {
         root: PathBuf::new(),
         query: result_query.to_owned(),

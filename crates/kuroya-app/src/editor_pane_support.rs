@@ -28,9 +28,6 @@ pub(crate) enum DiagnosticTagKind {
     Deprecated,
 }
 
-/// Folds one value into a cache fingerprint. Fingerprints stand in for
-/// revision counters on LSP/git payloads whose storage sites cannot bump one,
-/// so a replaced payload always produces a different key.
 pub(crate) fn fingerprint_fold_u64(hash: &mut u64, value: u64) {
     *hash = (*hash ^ value).wrapping_mul(0x100_0000_01b3);
 }
@@ -142,14 +139,6 @@ fn diagnostic_tag_char_range(buffer: &TextBuffer, diagnostic: &Diagnostic) -> Op
         return None;
     }
 
-    // Multi-line LSP ranges are stored with a `usize::MAX` sentinel end (see
-    // kuroya-core `lsp_diagnostic_char_range`); the saturating width plus the
-    // `.min(line_chars)` below clamp such ranges to the line content length.
-    //
-    // Payloads stored while a file was closed keep raw UTF-16 columns until
-    // the flush sweep in `runtime_ticks` converts them (see
-    // `LspDiagnosticUnits` in kuroya-core); this consumer still clamps
-    // defensively so out-of-range columns can never widen a span.
     let width = diagnostic
         .char_range
         .end
@@ -175,9 +164,6 @@ pub(crate) fn semantic_token_spans_for_buffer(
 
 const MAX_SEMANTIC_TOKEN_SPAN_CACHE_ENTRIES: usize = 16;
 
-/// Cache key for projected semantic token spans. The token payload has no
-/// revision counter at its storage site, so `tokens_fingerprint` detects
-/// replacement and `buffer_version` detects buffer edits.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SemanticTokenSpanCacheKey {
     buffer_id: u64,
@@ -215,10 +201,6 @@ fn semantic_token_span_cache() -> MutexGuard<'static, SemanticTokenSpanCache> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Projected token spans cached per (path, buffer version, token payload), so
-/// unchanged frames skip the per-token rope conversions and String clones and
-/// share one `Arc` allocation instead. Output matches
-/// [`semantic_token_spans_for_buffer`] exactly.
 pub(crate) fn cached_semantic_token_spans_for_buffer(
     buffer: &TextBuffer,
     path: Option<&Path>,
@@ -258,9 +240,6 @@ pub(crate) fn cached_semantic_token_spans_for_buffer(
 
 const MAX_RENDERABLE_ANNOTATION_CACHE_ENTRIES: usize = 16;
 
-/// Cache identity for filtered blame/hint/lens projections: the source path,
-/// the buffer line count the filter is bounded by, and a fingerprint of the
-/// source payload (its storage sites cannot bump revision counters).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RenderableAnnotationKey {
     path: Option<PathBuf>,
@@ -269,9 +248,6 @@ struct RenderableAnnotationKey {
     source_fingerprint: u64,
 }
 
-/// Returns the cached filtered projection for `source`, rebuilding via
-/// `render` only when path, line count or payload changed. Output matches
-/// calling `render` directly.
 fn cached_renderable_annotations<T>(
     entries: &mut HashMap<RenderableAnnotationKey, Arc<Vec<T>>>,
     path: Option<&Path>,
@@ -358,8 +334,6 @@ fn code_lenses_fingerprint(lenses: &[LspCodeLens]) -> u64 {
     hash
 }
 
-/// Cached `renderable_git_blame_lines`; repeated frames with unchanged blame
-/// share one `Arc` instead of cloning every line.
 pub(crate) fn cached_renderable_git_blame_lines(
     path: Option<&Path>,
     lines: &[GitBlameLine],
@@ -376,7 +350,6 @@ pub(crate) fn cached_renderable_git_blame_lines(
     )
 }
 
-/// Cached `renderable_inlay_hints`.
 pub(crate) fn cached_renderable_inlay_hints(
     path: Option<&Path>,
     hints: &[LspInlayHint],
@@ -393,7 +366,6 @@ pub(crate) fn cached_renderable_inlay_hints(
     )
 }
 
-/// Cached `renderable_code_lenses`.
 pub(crate) fn cached_renderable_code_lenses(
     path: Option<&Path>,
     lenses: &[LspCodeLens],
@@ -418,9 +390,6 @@ fn semantic_token_char_range(
         return None;
     }
 
-    // Semantic tokens may span multiple lines (e.g. block comments), so the
-    // UTF-16 length is capped to the token's first line at consumption time;
-    // the single-line range conversion would otherwise reject the whole token.
     let start_utf16 = token.column.saturating_sub(1);
     let line_utf16_len = lsp_line_content_utf16_len(buffer, token.line - 1)?;
     let clamped_length = token.length.min(line_utf16_len.saturating_sub(start_utf16));
@@ -681,8 +650,6 @@ mod tests {
         let spans =
             semantic_token_spans_for_buffer(&buffer, &[semantic_token(1, 1, 11, "comment")]);
 
-        // The token covers both lines; consumption caps the highlight to the
-        // first line's content instead of dropping the token.
         assert_eq!(spans, vec![(0..4, "comment".to_owned(), Vec::new())]);
     }
 
@@ -871,8 +838,7 @@ mod tests {
             path,
             line: 1,
             column: 7,
-            // Multi-line LSP range sentinel end (see kuroya-core
-            // `lsp_diagnostic_char_range`): clamps to the line content length.
+
             char_range: 6..usize::MAX,
             severity: DiagnosticSeverity::Hint,
             source: "rust-analyzer".to_owned(),
@@ -924,7 +890,6 @@ mod tests {
         let cached = cached_semantic_token_spans_for_buffer(&buffer, Some(&path), Some(&tokens));
         let repeated = cached_semantic_token_spans_for_buffer(&buffer, Some(&path), Some(&tokens));
 
-        // Identical output to the uncached projection for a fixed input.
         assert_eq!(
             cached.as_slice(),
             vec![
@@ -936,9 +901,9 @@ mod tests {
             cached.as_slice(),
             semantic_token_spans_for_buffer(&buffer, &tokens)
         );
-        // An unchanged frame reuses the cached allocation.
+
         assert!(Arc::ptr_eq(&cached, &repeated));
-        // Missing token payloads still project to an empty list.
+
         assert!(cached_semantic_token_spans_for_buffer(&buffer, Some(&path), None).is_empty());
     }
 
@@ -1003,7 +968,6 @@ mod tests {
         assert_eq!(cached.as_slice(), vec![blame_line(1, "first")]);
         assert!(Arc::ptr_eq(&cached, &repeated));
 
-        // A replaced blame payload rebuilds instead of serving stale lines.
         let replaced = [blame_line(1, "first"), blame_line(2, "second")];
         let invalidated = cached_renderable_git_blame_lines(Some(&path), &replaced, 2);
         assert!(!Arc::ptr_eq(&cached, &invalidated));
@@ -1012,7 +976,6 @@ mod tests {
             vec![blame_line(1, "first"), blame_line(2, "second")]
         );
 
-        // A different path never shares a cached entry.
         let other = PathBuf::from("cache-test/annotations-other.rs");
         let other_cached = cached_renderable_git_blame_lines(Some(&other), &blame, 2);
         assert!(!Arc::ptr_eq(&cached, &other_cached));

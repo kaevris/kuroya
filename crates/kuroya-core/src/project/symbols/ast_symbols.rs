@@ -1,13 +1,8 @@
 use super::ProjectSymbolKind;
 use crate::LanguageId;
 
-/// One AST-extracted declaration: name, kind, and 1-based line/column of the
-/// identifier.
 pub(super) type AstSymbol = (String, ProjectSymbolKind, usize, usize);
 
-/// Parses `text` with the grammar registered for `language` and walks
-/// declaration nodes. Returns `None` when no grammar is registered or the
-/// text fails to parse; the caller falls back to line scanning in both cases.
 pub(super) fn extract_ast_symbols(
     language: LanguageId,
     text: &str,
@@ -32,9 +27,6 @@ pub(super) fn extract_ast_symbols(
     Some(symbols)
 }
 
-/// Picks the symbol name node and kind out of a declaration node. Receives
-/// the source text for identifier extraction and returns owned data, so
-/// implementations never fight node lifetimes.
 type SelectFn = fn(&tree_sitter::Node<'_>, &str) -> Option<AstSymbol>;
 
 struct AstExtractor {
@@ -42,10 +34,6 @@ struct AstExtractor {
     select: SelectFn,
 }
 
-/// Depth-first iteration in source order. Declaration nodes are yielded and
-/// only descended into when they can nest further declarations (modules,
-/// impls, class bodies, trait bodies); everything else — function bodies
-/// especially — is skipped so locals never surface as symbols.
 fn walk(root: tree_sitter::Node<'_>) -> DeclarationNodes<'_> {
     DeclarationNodes { stack: vec![root] }
 }
@@ -61,8 +49,6 @@ impl<'a> Iterator for DeclarationNodes<'a> {
         while let Some(node) = self.stack.pop() {
             let is_declaration = node_is_declaration(node.kind());
             if !is_declaration || node_is_container(node.kind()) {
-                // Pushed reversed so the LIFO stack visits children in
-                // source order.
                 let mut cursor = node.walk();
                 let children: Vec<_> = node.children(&mut cursor).collect();
                 for child in children.into_iter().rev() {
@@ -195,8 +181,6 @@ fn typescript_select(node: &tree_sitter::Node<'_>, source: &str) -> Option<AstSy
         "interface_declaration" => ProjectSymbolKind::Interface,
         "type_alias_declaration" => ProjectSymbolKind::Type,
         "variable_declaration" | "lexical_declaration" => {
-            // const → Constant; let/var → Variable. Declarators are plain
-            // named children of the declaration node.
             let is_const = node
                 .child_by_field_name("kind")
                 .and_then(|kind| kind.utf8_text(source.as_bytes()).ok())
@@ -205,9 +189,6 @@ fn typescript_select(node: &tree_sitter::Node<'_>, source: &str) -> Option<AstSy
             let mut cursor = node.walk();
             for declarator in node.children(&mut cursor) {
                 if declarator.kind() == "variable_declarator" {
-                    // A const/let initialized with an arrow function or
-                    // function expression is a function to the user, not a
-                    // data binding.
                     let value_kind = declarator
                         .child_by_field_name("value")
                         .map(|value| value.kind())
@@ -232,7 +213,6 @@ fn typescript_select(node: &tree_sitter::Node<'_>, source: &str) -> Option<AstSy
 fn c_family_select(node: &tree_sitter::Node<'_>, source: &str) -> Option<AstSymbol> {
     match node.kind() {
         "function_definition" => {
-            // The name lives at declarator → function_declarator → declarator.
             let declarator = node.child_by_field_name("declarator")?;
             let name_node = if declarator.kind() == "function_declarator" {
                 declarator.child_by_field_name("declarator")?
@@ -245,7 +225,6 @@ fn c_family_select(node: &tree_sitter::Node<'_>, source: &str) -> Option<AstSymb
         "enum_specifier" => ast_name(node, source, ProjectSymbolKind::Enum),
         "class_specifier" => ast_name(node, source, ProjectSymbolKind::Class),
         "type_definition" => {
-            // The typedef name is the last identifier child (the new name).
             let mut cursor = node.walk();
             let mut name_node = None;
             for child in node.children(&mut cursor) {
@@ -259,9 +238,6 @@ fn c_family_select(node: &tree_sitter::Node<'_>, source: &str) -> Option<AstSymb
     }
 }
 
-/// Extracts the `name`-field child of a declaration node, falling back to
-/// the first identifier-like child for grammars that omit the field (trait
-/// method signatures, Go methods, TypeScript enums).
 fn ast_name(
     node: &tree_sitter::Node<'_>,
     source: &str,
@@ -282,7 +258,6 @@ fn ast_name(
     None
 }
 
-/// Builds the symbol tuple from an explicit identifier node.
 fn ast_name_at(
     name_node: tree_sitter::Node<'_>,
     source: &str,

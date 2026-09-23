@@ -430,8 +430,6 @@ pub(crate) fn quick_open_navigation_target<'a>(
         .find(|location| quick_open_paths_match(&location.path, path))
 }
 
-/// Keeps the latest location for each path while preserving chronological order
-/// across those latest locations, so reverse iteration remains recency order.
 #[cfg(test)]
 pub(crate) fn quick_open_latest_navigation_locations_by_path(
     navigation_locations: &[NavigationLocation],

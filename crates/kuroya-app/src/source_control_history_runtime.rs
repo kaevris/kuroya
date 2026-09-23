@@ -953,7 +953,6 @@ mod tests {
     fn history_filter_scoped_terms_restrict_matching_to_one_field() {
         let commits = vec![commit("aaaaaaaa", "Add search panel", 10)];
 
-        // The author is "Kuroya Test" and the summary is "Add search panel".
         assert_eq!(
             source_control_filtered_history_indices(&commits, "author:kuroya", 60),
             vec![0]
@@ -970,7 +969,6 @@ mod tests {
         );
         assert!(source_control_filtered_history_indices(&commits, "message:kuroya", 60).is_empty());
 
-        // The oid scope matches both the full oid and the short oid.
         assert_eq!(
             source_control_filtered_history_indices(&commits, "oid:aaaaaaaa", 60),
             vec![0]
@@ -981,7 +979,6 @@ mod tests {
         );
         assert!(source_control_filtered_history_indices(&commits, "oid:kuroya", 60).is_empty());
 
-        // Unknown scopes stay plain terms; empty scoped values match nothing.
         assert!(source_control_filtered_history_indices(&commits, "scope:search", 60).is_empty());
         assert!(source_control_filtered_history_indices(&commits, "author:", 60).is_empty());
     }
@@ -1008,7 +1005,7 @@ mod tests {
             source_control_filtered_history_indices(&commits, "1H", now),
             vec![0, 1]
         );
-        // A commit exactly at the boundary is still within the duration.
+
         assert_eq!(
             source_control_filtered_history_indices(&commits, "1d", now),
             vec![0, 1, 2]
@@ -1017,27 +1014,25 @@ mod tests {
             source_control_filtered_history_indices(&commits, "1w", now),
             vec![0, 1, 2, 3]
         );
-        // Scoped and age terms combine with AND semantics.
+
         assert_eq!(
             source_control_filtered_history_indices(&commits, "author:Kuroya 1h", now),
             vec![0, 1]
         );
-        // Terms that do not parse as an age never match by time.
+
         assert!(source_control_filtered_history_indices(&commits, "2x", now).is_empty());
     }
 
     #[test]
     fn history_filter_no_longer_matches_rendered_age_labels() {
         let now = 90;
-        // The commit is 90 seconds old and renders as "1m ago".
+
         let commits = vec![commit("aaaaaaaa", "Fix scrollback", 0)];
 
-        // The rendered age label text no longer matches.
         assert!(source_control_filtered_history_indices(&commits, "1m", now).is_empty());
         assert!(source_control_filtered_history_indices(&commits, "1m ago", now).is_empty());
         assert!(source_control_filtered_history_indices(&commits, "just now", now).is_empty());
-        // ...but an age range covering the commit still matches, and plain
-        // text matching is unchanged.
+
         assert_eq!(
             source_control_filtered_history_indices(&commits, "5m", now),
             vec![0]

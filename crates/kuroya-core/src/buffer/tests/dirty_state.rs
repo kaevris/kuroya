@@ -1,7 +1,3 @@
-//! Tests for the content-derived dirty flag backed by the saved baseline
-//! (`mark_saved` / `recompute_dirty_after_mutation`) and the provenance
-//! override (`mark_dirty`).
-
 use super::*;
 
 #[test]
@@ -39,16 +35,13 @@ fn mark_saved_rebases_clean_state_until_next_content_change() {
     buffer.mark_saved();
     assert!(!buffer.is_dirty());
 
-    // The cursor sits after the previously inserted "x", so "y" lands there.
     buffer.insert_at_cursor("y");
     assert_eq!(buffer.text(), "xyhello");
     assert!(buffer.is_dirty());
 
-    // Delete the "y" with a separate (non-coalescing) transaction so the text
-    // returns exactly to the saved baseline.
     buffer.delete_backward();
     assert_eq!(buffer.text(), "xhello");
-    // Content matches the saved baseline again — the dirty flag clears.
+
     assert!(!buffer.is_dirty());
 }
 
@@ -102,13 +95,9 @@ fn mark_dirty_forces_dirty_even_when_content_matches_baseline() {
     buffer.mark_saved();
     assert!(!buffer.is_dirty());
 
-    // Provenance-based override: forced dirty wins even though the content
-    // still matches the saved baseline.
     buffer.mark_dirty();
     assert!(buffer.is_dirty());
 
-    // The forced flag persists until the next content mutation recomputes
-    // the content-derived value.
     buffer.insert_at_cursor("z");
     assert!(buffer.is_dirty());
     assert!(buffer.undo());
@@ -127,7 +116,6 @@ fn mark_saved_if_text_matches_adopts_baseline_only_on_equal_text() {
     assert!(buffer.mark_saved_if_text_matches("recovered"));
     assert!(!buffer.is_dirty());
 
-    // The adopted baseline drives later content-derived transitions.
     buffer.insert_at_cursor("!");
     assert!(buffer.is_dirty());
     assert!(buffer.undo());
@@ -162,8 +150,7 @@ fn disk_buffer_replacement_rebases_saved_state() {
 
     assert_eq!(buffer.text(), "new");
     assert!(!buffer.is_dirty());
-    // Disk replacement intentionally clears undo history (the on-disk file is
-    // the source of truth for a clean buffer), so there is nothing to undo.
+
     assert!(!buffer.undo());
     assert!(!buffer.is_dirty());
 }

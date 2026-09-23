@@ -23,8 +23,6 @@ pub(in crate::lsp_client::command_dispatch::document_sync::open_change) async fn
 ) -> bool {
     let wire_version = lsp_version(version);
     let write_result = match sync_state.sync_kind {
-        // The server asked for no document content; the notification itself
-        // is skipped but the buffer still counts as synced locally.
         TextDocumentSyncKindSetting::None => Ok(()),
         TextDocumentSyncKindSetting::Full => {
             write_did_change_full_document(writer, &path, wire_version, &text).await
@@ -41,10 +39,6 @@ pub(in crate::lsp_client::command_dispatch::document_sync::open_change) async fn
     }
 }
 
-/// Sends one didChange under incremental sync. The command queue coalesces
-/// contiguous same-document snapshots to the newest one, which stays correct
-/// here: the diff always runs against the last text actually synced to the
-/// server, so intermediate snapshots carry no information.
 async fn dispatch_incremental_did_change(
     path: &Path,
     wire_version: i32,
@@ -69,17 +63,12 @@ async fn dispatch_incremental_did_change(
     write_result
 }
 
-/// Decides the wire form of a single didChange under incremental sync.
 #[derive(Debug, PartialEq, Eq)]
 enum IncrementalWrite {
-    /// Texts are identical (a bare version bump): send nothing. LSP servers
-    /// ignore no-op content changes, so skipping the write is correct.
     Skip,
-    /// No previously synced text (e.g. the first change observed by this
-    /// runtime session): fall back to today's full-document write, which
-    /// also seeds the synced-text tracker.
+
     Full,
-    /// A single ranged content change against the previous synced text.
+
     Ranged(ContentChange),
 }
 
@@ -122,8 +111,6 @@ mod tests {
 
     #[test]
     fn plan_diffs_newest_snapshot_against_last_synced_text() {
-        // Mirrors a coalesced queue run: didOpen synced "one", versions 2 and
-        // 3 were coalesced so only the newest snapshot "three" arrives.
         let mut sync_state = DocumentSyncState::new(TextDocumentSyncKindSetting::Incremental);
         sync_state.record_synced_text(std::path::Path::new("src/main.rs"), "one");
 
@@ -134,8 +121,6 @@ mod tests {
 
         assert_eq!(
             plan_incremental_write(previous, "three"),
-            // Minimal diff: the trailing "e" is shared, so only "on" is
-            // replaced with "thre".
             change(0, 0, 0, 2, "thre")
         );
     }
@@ -165,9 +150,6 @@ mod tests {
             "identical text must not produce a write"
         );
 
-        // The planner only serves incremental sync; full/None kinds never
-        // reach it (dispatch handles them above), but record still refuses
-        // to track text for them.
         for kind in [
             TextDocumentSyncKindSetting::Full,
             TextDocumentSyncKindSetting::None,

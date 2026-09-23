@@ -121,8 +121,6 @@ impl TerminalPane {
         self.render_rename_terminal_dialog(ui.ctx());
     }
 
-    /// Overlays the active paste notice (truncation, busy, undeliverable) on
-    /// the bottom-right of the terminal panel until it expires.
     fn render_paste_notice(&mut self, ui: &mut egui::Ui, panel_rect: Rect) {
         self.expire_paste_notice();
         let Some((message, remaining)) = self
@@ -878,8 +876,7 @@ impl TerminalPane {
         let accent = terminal_accent(ui);
         let selection_fill = blend_color(accent, terminal_background, 0.58);
         let search_fill = blend_color(Color32::from_rgb(231, 185, 87), terminal_background, 0.42);
-        // The match under the search cursor is painted distinctly so it can
-        // be told apart from the other highlighted matches.
+
         let active_search_fill =
             blend_color(Color32::from_rgb(255, 152, 0), terminal_background, 0.85);
         let ansi_palette = colors::terminal_ansi_palette_from_colors(

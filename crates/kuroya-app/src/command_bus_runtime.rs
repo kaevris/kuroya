@@ -54,10 +54,7 @@ impl ShortcutDispatchCache {
                 ))
             })
             .collect();
-        // Dispatch consumes the first matching binding in list order, and
-        // egui's modifier matching treats a pressed Shift as satisfying a
-        // Ctrl-only pattern. Most-specific (most modifiers) first, so
-        // Ctrl+Shift+P is consumed before Ctrl+P can shadow it.
+
         parsed.sort_by_key(|(binding, _)| {
             let modifiers = binding.shortcut.modifiers;
             let count =

@@ -130,11 +130,9 @@ pub(crate) struct KuroyaApp {
     pub(crate) settings: EditorSettings,
     pub(crate) app_state_vim_keybindings: bool,
     pub(crate) app_state_vim: kuroya_core::EditorVimSettings,
-    /// Opt-in Discord Rich Presence runtime; `None` (the default) means the
-    /// feature spawned nothing and stays fully inert.
+
     pub(crate) discord_presence: Option<DiscordPresenceRuntime>,
-    /// The labels last handed to the presence thread, so each frame only
-    /// sends an update when the file, workspace, or show flags changed.
+
     pub(crate) discord_presence_sent: Option<PresenceActivity>,
     pub(crate) highlighter: SyntaxHighlighter,
     pub(crate) syntax_tree_cache: TreeSitterSyntaxCache,
@@ -184,6 +182,7 @@ pub(crate) struct KuroyaApp {
     pub(crate) update_check_in_flight: bool,
     pub(crate) update_check_manual: bool,
     pub(crate) update_download_in_flight: bool,
+    pub(crate) update_downloaded_bytes: Arc<AtomicU64>,
     pub(crate) available_update: Option<AvailableUpdate>,
     pub(crate) pending_update_install: Option<UpdateInstallerReady>,
     pub(crate) next_automatic_update_check_at: Instant,
@@ -302,9 +301,7 @@ pub(crate) struct KuroyaApp {
     pub(crate) watcher_rebuild_attempts: u32,
     pub(crate) git: GitSnapshot,
     pub(crate) git_scan_root_cache: Option<GitScanRootCacheEntry>,
-    /// Bumped each time a floating git panel (history/stashes/hunks) opens so
-    /// its egui window id changes per open and no oversized persisted window
-    /// state can follow the panel around.
+
     pub(crate) git_panel_open_generation: u64,
     pub(crate) workspace_index_next_request_id: u64,
     pub(crate) workspace_index_active_request_id: u64,
@@ -536,11 +533,9 @@ pub(crate) struct KuroyaApp {
     pub(crate) pending_fold_line: Option<(PathBuf, usize)>,
     pub(crate) lsp_rename_open: bool,
     pub(crate) lsp_rename_input: String,
-    /// Outstanding `textDocument/prepareRename` request; the rename popup
-    /// stays closed until its response validates the position.
+
     pub(crate) lsp_rename_prepare_pending: Option<LspRenamePrepareAwait>,
-    /// Validated prepareRename result for the open popup; submit refuses to
-    /// send `textDocument/rename` unless the cursor is still inside it.
+
     pub(crate) lsp_rename_prepare: Option<LspRenamePrepareTarget>,
     pub(crate) lsp_rename_preview_open: bool,
     pub(crate) lsp_rename_preview_new_name: String,
@@ -571,21 +566,15 @@ pub(crate) struct KuroyaApp {
     pub(crate) editor_vim_pending_key: Option<EditorVimPendingKey>,
     pub(crate) editor_vim_last_char_find: Option<EditorVimCharFind>,
     pub(crate) editor_vim_unnamed_register: Option<EditorVimRegister>,
-    /// Vim's `.` repeat is per buffer: the change recorded for one file must
-    /// never replay into another one, so the last change is keyed by buffer.
+
     pub(crate) editor_vim_last_change: HashMap<BufferId, EditorVimLastChange>,
-    /// The buffer whose insert-session undo group is currently open. Vim mode
-    /// is app-global but undo groups are per buffer: when the active buffer
-    /// changes mid-session the group must be ended on the buffer that opened
-    /// it, or that buffer's undo granularity collapses.
+
     pub(crate) editor_vim_insert_undo_group_buffer: Option<BufferId>,
     pub(crate) pending_language_sync: HashMap<BufferId, Instant>,
     pub(crate) pending_lsp_resync: VecDeque<PathBuf>,
     pub(crate) last_session_structure_fingerprint: Option<u64>,
     pub(crate) last_saved_session_structure_fingerprint: Option<u64>,
-    /// Whether the last session-save tick staged a save (found changes to
-    /// persist). Gates the periodic session-save wakeup so a clean, idle
-    /// session stops waking the UI thread every `SESSION_SAVE_INTERVAL`.
+
     pub(crate) session_save_persisted_changes: bool,
     pub(crate) session_save_in_flight: Option<PathBuf>,
     pub(crate) session_save_in_flight_snapshot: Option<SessionSaveSnapshot>,

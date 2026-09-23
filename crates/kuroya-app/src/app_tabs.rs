@@ -500,11 +500,6 @@ impl KuroyaApp {
         rows
     }
 
-    /// Closes every open tab, routing dirty buffers through the shared
-    /// unsaved-changes guard (same pattern as `close_other_buffers`):
-    /// clean buffers close immediately while dirty ones are queued in
-    /// `pending_close_buffers` and surfaced one at a time by
-    /// `begin_next_pending_close`, so unsaved edits are never discarded.
     pub(crate) fn close_all_buffers(&mut self) {
         let mut closed = 0;
         let mut pending = Vec::new();

@@ -1509,12 +1509,6 @@ fn source_control_render_row_index_for_selection(
     })
 }
 
-/// Filter+sort+row-build output for the source control change list, cached on
-/// [`KuroyaApp`] so the panel can reuse the previous frame's rows whenever the
-/// inputs are unchanged instead of re-filtering, re-sorting, and rebuilding
-/// rows every frame. Selection and hover state are intentionally not keyed:
-/// rows never depend on them, and view mode only affects per-row display
-/// labels, which are built per visible row at render time.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SourceControlRowsCache {
     key: SourceControlRowsCacheKey,
@@ -1536,8 +1530,6 @@ struct SourceControlRowsCacheKey {
     staged_collapsed: bool,
 }
 
-/// Per-frame borrow-only view of the [`SourceControlRowsCacheKey`] inputs so
-/// hit-testing never clones the query or the repository root.
 #[derive(Debug, Clone, Copy)]
 struct SourceControlRowsCacheInputs<'a> {
     git_revision: u64,
@@ -1565,12 +1557,6 @@ impl SourceControlRowsCacheKey {
     }
 }
 
-/// Returns the cached change-list rows for `inputs`, rebuilding the filter,
-/// sort, and row build from `visible_entries` when any input changed. The
-/// git revision input covers full scans and scoped merges, and the query,
-/// sort, untracked-changes, and collapse inputs cover the panel-local state.
-/// The returned rows borrow `cache`, so callers may keep them while mutating
-/// other `KuroyaApp` fields.
 fn source_control_rows_cache_entry<'cache>(
     inputs: SourceControlRowsCacheInputs<'_>,
     visible_entries: Cow<'_, [GitStatusEntry]>,

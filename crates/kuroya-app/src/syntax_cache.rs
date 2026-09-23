@@ -13,7 +13,7 @@ pub(crate) const CHECKPOINT_INTERVAL: usize = 96;
 pub(crate) const MAX_HIGHLIGHT_CACHES: usize = 8;
 pub(crate) const MAX_VISIBLE_LAYOUT_RANGES_PER_CACHE: usize = 8;
 pub(crate) const MAX_VISIBLE_LAYOUT_ROWS_PER_RANGE: usize = CHECKPOINT_INTERVAL * 2;
-// Keep the final usize tail reserved for overflow/sentinel row values from viewport math.
+
 const MAX_CACHEABLE_VISIBLE_LAYOUT_ROW: usize = usize::MAX - MAX_VISIBLE_LAYOUT_ROWS_PER_RANGE;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -28,10 +28,7 @@ pub(crate) struct HighlightCacheKey {
     font_bits: u32,
     tab_width: usize,
     line_char_limit: Option<usize>,
-    /// Active app theme identity for token color mapping. The theme text color
-    /// drives the estimated background polarity and the low-contrast fallback,
-    /// so a theme change produces a different key and stale highlight colors are
-    /// never served.
+
     theme_text: Color32,
 }
 

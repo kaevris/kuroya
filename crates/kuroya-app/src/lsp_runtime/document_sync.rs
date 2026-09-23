@@ -21,9 +21,6 @@ use std::{
 };
 
 impl KuroyaApp {
-    /// didOpen fans out to EVERY live client matching the buffer (each client
-    /// tracks its own sync state); follow-up feature requests (symbols, inlay
-    /// hints, code lens, semantic tokens) go to the PRIMARY client only.
     pub(crate) fn notify_lsp_open(&mut self, id: BufferId) {
         let Some((path, language, version)) = self.lsp_document_sync_target(id) else {
             return;
@@ -36,8 +33,6 @@ impl KuroyaApp {
         let mut primary_synced = true;
         for (index, client) in clients.iter().enumerate() {
             if client.did_open(id, path.clone(), language.clone(), version, text.clone()) {
-                // Track the open document so didClose only fans out to
-                // clients that actually hold it open.
                 client.open_documents().note_open(&path);
                 self.record_lsp_client_trace(
                     "textDocument/didOpen",
@@ -57,7 +52,6 @@ impl KuroyaApp {
         }
     }
 
-    /// didChange fans out to EVERY live client matching the buffer.
     pub(crate) fn notify_lsp_change(&mut self, id: BufferId) {
         let Some((path, _language, version)) = self.lsp_document_sync_target(id) else {
             return;
@@ -87,7 +81,6 @@ impl KuroyaApp {
         }
     }
 
-    /// didSave fans out to EVERY live client matching the buffer.
     pub(crate) fn notify_lsp_save(&mut self, id: BufferId) {
         let Some(buffer) = self.buffer(id) else {
             return;
@@ -118,12 +111,6 @@ impl KuroyaApp {
         }
     }
 
-    /// didClose fans out to the live clients for the buffer's language that
-    /// actually hold the document open (tracked since didOpen); missing
-    /// clients are skipped (their restart ladder still applies per client
-    /// key). A client with no tracked documents at all (never saw a didOpen
-    /// for this session) keeps the legacy language-wide fan-out for backward
-    /// safety.
     pub(crate) fn notify_lsp_close(&mut self, id: BufferId) {
         let Some(buffer) = self.buffer(id) else {
             return;
@@ -257,10 +244,7 @@ impl KuroyaApp {
         } else {
             None
         };
-        // Provider capability gates: servers that never advertised a
-        // provider are not asked for it. Until the initialize response has
-        // been processed (capabilities unknown) the legacy behavior — send
-        // everything — applies so under-declaring servers keep working.
+
         let capabilities = client.capabilities();
         let inlay_hints_advertised = capabilities
             .map(|capabilities| capabilities.inlay_hint_provider)
@@ -353,10 +337,6 @@ fn lsp_symbol_refresh_target_for_buffer(
     Some((buffer.path()?.clone(), buffer.version()))
 }
 
-/// Whether this client should receive the didClose for `path`. Clients that
-/// track at least one open document only get the notification if they hold
-/// THIS document; clients with an empty tracking table never saw a didOpen
-/// (unknown state) and keep the legacy language-wide fan-out.
 fn client_should_receive_did_close(
     client: &crate::lsp_client::LspClientHandle,
     path: &Path,
@@ -473,7 +453,6 @@ mod tests {
             LspClientHandle::from_sender_for_test(secondary_tx, 11),
         );
 
-        // Interactive resolution returns the primary only.
         assert_eq!(
             app.ensure_lsp_for_buffer(7)
                 .map(|client| client.generation()),
@@ -511,7 +490,7 @@ mod tests {
                         assert_eq!(path, source);
                         did_close = true;
                     }
-                    // Primary-only feature requests (symbol refreshes).
+
                     _ => {}
                 }
             }
@@ -550,14 +529,13 @@ mod tests {
         gated_handle.set_capabilities_for_test(crate::lsp_client::LspServerCapabilities {
             rename_provider: true,
             prepare_rename_supported: true,
-            // None of the three refresh providers advertised.
+
             semantic_tokens_provider: false,
             inlay_hint_provider: false,
             code_lens_provider: false,
         });
         app.lsp_clients.insert(key.clone(), gated_handle);
 
-        // didOpen still syncs the document; only the feature requests are gated.
         app.notify_lsp_open(7);
         let mut saw_request = false;
         while let Ok(command) = gated_rx.try_recv() {
@@ -573,7 +551,6 @@ mod tests {
             "a server without providers must not receive inlay/codeLens/semanticTokens requests"
         );
 
-        // A server advertising every provider receives all three requests.
         let (full_tx, mut full_rx) = mpsc::channel(64);
         let full_handle = LspClientHandle::from_sender_for_test(full_tx, 22);
         full_handle.set_capabilities_for_test(crate::lsp_client::LspServerCapabilities {
@@ -585,8 +562,7 @@ mod tests {
         });
         app.lsp_clients.insert(key, full_handle);
         app.lsp_trace.clear();
-        // Schedules due immediately (now minus the debounce), unlike the
-        // plain refresh scheduler.
+
         assert_eq!(app.schedule_lsp_symbol_refreshes_for_open_buffers(), 1);
         assert!(app.flush_pending_lsp_symbol_refreshes() >= 1);
 
@@ -679,11 +655,8 @@ mod tests {
             LspClientHandle::from_sender_for_test(secondary_tx, 31),
         );
 
-        // Both clients learn about the document.
         app.notify_lsp_open(7);
-        // The secondary then closes it on its own and opens a sibling file:
-        // it no longer holds main.rs but DOES track documents, so it must
-        // not receive the didClose for main.rs anymore.
+
         secondary_open_documents_note(&app, &secondary_key, &source, false);
         secondary_open_documents_note(&app, &secondary_key, &PathBuf::from("other.rs"), true);
 
@@ -719,8 +692,7 @@ mod tests {
             &configs,
         );
         let (tx, mut rx) = mpsc::channel(64);
-        // A client with NO tracked documents (unknown didOpen state) keeps
-        // the legacy behavior: the didClose still reaches it.
+
         app.lsp_clients
             .insert(key, LspClientHandle::from_sender_for_test(tx, 41));
 
@@ -755,18 +727,13 @@ mod tests {
         let root = temp_root("pending-restart-spawn-replays-did-open");
         let main_source = root.join("src").join("main.rs");
         let lib_source = root.join("src").join("lib.rs");
-        // The stall server stays alive silently, so the spawned client task
-        // parks in the initialize handshake and its command queue keeps
-        // accepting the didOpen commands this test asserts on.
+
         let settings = EditorSettings {
             lsp_servers: vec![silent_stall_server_config()],
             ..EditorSettings::default()
         };
         let mut app = app_for_test_with_settings(root.clone(), settings);
-        // The spawned server process runs with its working directory set to
-        // the workspace root, so the directory must exist for the spawn to
-        // succeed (otherwise the client task exits immediately and drops its
-        // command queue while this test is still queueing didOpen).
+
         std::fs::create_dir_all(root.join("src")).expect("create test workspace");
         app.buffers.push(TextBuffer::from_text(
             7,
@@ -778,10 +745,7 @@ mod tests {
             Some(lib_source.clone()),
             "fn helper() {}\n".to_owned(),
         ));
-        // The rust server died while both buffers were open: its restart is
-        // pending. A keystroke now spawns a fresh client before the restart
-        // ladder flushes, and that spawn must replay the ladder's didOpen
-        // pass for both buffers instead of leaving them feature-dead.
+
         app.pending_lsp_restarts
             .insert("rust".to_owned(), Instant::now() - Duration::from_millis(1));
 
@@ -816,9 +780,6 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    /// A fake rust server that stays alive without ever speaking LSP, so a
-    /// client spawned for it parks in the initialize handshake (the command
-    /// queue keeps accepting commands) instead of failing startup.
     fn silent_stall_server_config() -> LspServerConfig {
         #[cfg(windows)]
         let (command, args) = (

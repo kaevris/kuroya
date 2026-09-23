@@ -70,9 +70,7 @@ impl KuroyaApp {
         if watched.plugins_changed || drain.overflowed {
             self.schedule_workspace_plugin_reload();
         }
-        // Watched git directories that resolve outside the workspace root
-        // (parent repositories, worktree-style `.git` files) never reach the
-        // workspace-root classification above.
+
         if !watched.git_metadata_changed
             && self.watcher.as_ref().is_some_and(|watcher| {
                 watcher.git_watch_dirs().iter().any(|git_dir| {
@@ -118,8 +116,6 @@ impl KuroyaApp {
         }
         if watched.workspace_refresh_needed || drain.overflowed {
             if watched.workspace_refresh_needed && !drain.overflowed {
-                // Small known batches are applied incrementally by the
-                // debounced flush; overflow falls back to a full re-walk.
                 self.schedule_workspace_refresh_with_paths(std::mem::take(
                     &mut watched.project_paths,
                 ));
@@ -130,9 +126,6 @@ impl KuroyaApp {
         changed_count
     }
 
-    /// Parent repositories resolved above the workspace root keep their
-    /// `.git` directory outside the watched tree; watch it so HEAD and index
-    /// changes there still refresh git status.
     fn ensure_parent_repository_git_watch(&mut self) {
         let Some(git_root) = self.git.root().map(Path::to_path_buf) else {
             return;
@@ -236,10 +229,7 @@ fn include_open_buffer_paths(
 
 fn dedupe_watcher_paths(changed: &mut Vec<PathBuf>) -> usize {
     let original_len = changed.len();
-    // Dedupes by case-folded key; case-only rename spellings (`Foo.rs` +
-    // `foo.rs`, identical keys, different raw paths) collapse into their
-    // parent directory so the index rescan rebuilds the real casing instead
-    // of dropping the renamed file.
+
     collapse_case_only_path_collisions(changed);
     original_len.saturating_sub(changed.len())
 }

@@ -184,9 +184,6 @@ struct TerminalSession {
 }
 
 impl TerminalPane {
-    /// Maps the match under the search cursor onto the visible screen so it
-    /// can be painted with a distinct highlight. Returns the visible row and
-    /// the match's byte range within that row's text.
     pub(crate) fn active_terminal_search_screen_match(
         &self,
         screen: &vt100::Screen,
@@ -291,8 +288,6 @@ struct TerminalPendingPaste {
     text: String,
 }
 
-/// Transient paste/input notice shown in the terminal until it expires, so
-/// silently dropped or truncated input is at least reported to the user.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalPasteNotice {
     message: String,

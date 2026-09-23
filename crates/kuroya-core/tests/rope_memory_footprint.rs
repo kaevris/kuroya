@@ -1,6 +1,3 @@
-//! Measures the real memory footprint of a 500k-line buffer in Kuroya's
-//! storage layer (rope-backed TextBuffer), using a counting global allocator.
-
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -44,7 +41,6 @@ fn allocated_now() -> usize {
 
 #[test]
 fn rope_buffer_memory_footprint_for_500k_lines() {
-    // Build a realistic 500k-line source file (~48 MB on disk).
     let mut content = String::with_capacity(50_000_000);
     for i in 0..500_000 {
         content.push_str(&format!(
@@ -54,8 +50,6 @@ fn rope_buffer_memory_footprint_for_500k_lines() {
     }
     let text_bytes = content.len();
 
-    // Clone so the source string stays alive: the delta then measures the
-    // buffer's own (gross) allocations, not a move-and-free wash.
     let before = allocated_now();
     let buffer = kuroya_core::TextBuffer::from_text(1, None, content.clone());
     let after = allocated_now();
@@ -69,8 +63,6 @@ fn rope_buffer_memory_footprint_for_500k_lines() {
          (overhead {overhead_ratio:.2}x)"
     );
 
-    // The rope should stay close to the raw text size: well under 2x, which
-    // keeps a 48 MB source file's footprint in the tens of MB, not hundreds.
     assert!(
         delta_mb < text_mb * 2.0,
         "rope overhead too high: {delta_mb:.1} MB for {text_mb:.1} MB of text"

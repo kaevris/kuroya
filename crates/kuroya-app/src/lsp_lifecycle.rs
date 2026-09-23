@@ -101,8 +101,6 @@ pub(crate) fn lsp_lifecycle_targets_for_buffers(
         .collect()
 }
 
-/// Resolves the PRIMARY server config for a buffer: the first entry of
-/// [`lsp_server_configs_for_buffer`].
 pub(crate) fn lsp_server_config_for_buffer<'a>(
     configs: &'a [LspServerConfig],
     plugin_languages: &'a PluginLanguageRegistry,
@@ -113,12 +111,6 @@ pub(crate) fn lsp_server_config_for_buffer<'a>(
         .next()
 }
 
-/// Resolves EVERY configured server matching this buffer, in settings order.
-/// A config matches when its language equals the buffer's resolved language
-/// id (custom extension matches first, then plugin languages, then the
-/// built-in language id); when none match, the buffer's core language id is
-/// used. Entries with an identical language + command + args (which would
-/// otherwise produce the same client) are deduplicated, keeping the first.
 pub(crate) fn lsp_server_configs_for_buffer<'a>(
     configs: &'a [LspServerConfig],
     plugin_languages: &'a PluginLanguageRegistry,

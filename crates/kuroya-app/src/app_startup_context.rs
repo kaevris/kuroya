@@ -80,11 +80,7 @@ impl AppStartupContext {
         let settings_panel_draft = settings.clone();
         let settings_editor_font_path = optional_setting_path_to_input(&settings.editor_font_path);
         let settings_ui_font_path = optional_setting_path_to_input(&settings.ui_font_path);
-        // The saved session is read off-thread (`spawn_startup_session_load`,
-        // called from `KuroyaApp::new`) and applied when the critical
-        // `UiEvent::StartupSessionLoaded` arrives, so the multi-megabyte
-        // session JSON no longer blocks the first frame. Fonts, theme, and
-        // settings stay synchronous above: the first paint needs them.
+
         startup_profiler.record("Queue session load");
 
         let mut terminal = TerminalPane::with_settings(
@@ -219,13 +215,6 @@ pub(crate) fn load_startup_session_with_warning(
     }
 }
 
-/// Reads the saved session off the blocking thread pool and delivers it to
-/// the app with a critical `UiEvent::StartupSessionLoaded` (bounded wait, no
-/// silent drop while capacity frees up). This keeps the multi-megabyte
-/// session JSON read off the startup path so the first frame can paint
-/// before the restore lands. `startup_target` rides along on the event so
-/// the handler can apply it after the restore, preserving the ordering of
-/// the previous synchronous startup (restore, then file/folder target).
 pub(crate) fn spawn_startup_session_load(
     runtime: &Runtime,
     tx: Sender<UiEvent>,
@@ -534,10 +523,7 @@ mod tests {
             } => {
                 assert_eq!(event_root, root);
                 assert_eq!(event_target, Some(StartupTarget::File(target)));
-                // The test state dir is thread-local, so the blocking thread
-                // sees a fresh bucket and a missing session file loads as
-                // (None, None); the session round-trip itself is covered by
-                // the synchronous load_startup_session_with_warning tests.
+
                 assert!(session.is_none());
                 assert!(warning.is_none());
             }

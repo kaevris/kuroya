@@ -11,10 +11,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Schema 4 stores per-entry metadata (len and modification/creation millis)
-/// plus the index max_files cap, so signatures are derived from stored entry
-/// metadata and cache validation needs no stat walk. Schema 3 caches fail
-/// validation and rebuild cleanly.
 const PROJECT_INDEX_CACHE_SCHEMA: u32 = 4;
 const PROJECT_INDEX_CACHE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const PROJECT_INDEX_CACHE_MAX_BYTES_USIZE: usize = PROJECT_INDEX_CACHE_MAX_BYTES as usize;
@@ -73,9 +69,6 @@ pub(crate) fn load_project_index_cache_unverified_with_options(
     load_project_index_cache_validated(workspace_root, options)
 }
 
-/// Loads and validates the on-disk cache without touching the workspace:
-/// shape, options, and payload checks only. Freshness against the live
-/// workspace is reconciled by the startup rebuild walk in `spawn_index`.
 fn load_project_index_cache_validated(
     workspace_root: &Path,
     options: &ProjectIndexOptions,
@@ -533,8 +526,7 @@ mod tests {
 
         let loaded = load_project_index_cache_unverified(&root, 40_000).unwrap();
         assert_eq!(loaded.index.files().len(), 1);
-        // Shape validation no longer stats the workspace, so the stale cache
-        // also loads as a valid preview; spawn_index reconciles it.
+
         assert!(load_project_index_cache(&root, 40_000).is_some());
 
         fs::remove_dir_all(root).unwrap();
@@ -1041,8 +1033,6 @@ mod tests {
         fs::write(root.join("src/main.rs"), "fn indexed() {}\nfn newer() {}\n").unwrap();
         let path = project_index_cache_path(&root);
 
-        // Cache loads no longer stat the workspace; staleness is reconciled
-        // by the startup rebuild walk, so the stale cache stays usable.
         let loaded = load_project_index_cache(&root, 40_000).unwrap();
         assert_eq!(loaded.files().len(), 1);
         assert!(path.exists());
@@ -1105,8 +1095,6 @@ mod tests {
         let (_, signature) = ProjectIndex::rebuild_with_signature(&root, 40_000);
         save_project_index_cache(&root, &index, signature).unwrap();
 
-        // Incremental update on the loaded cache: metadata stays intact and
-        // the derived signature keeps matching a fresh rebuild.
         fs::write(root.join("src/b.rs"), "pub struct Added {}\n").unwrap();
         let mut updated = load_project_index_cache_unverified_with_options(&root, &options)
             .unwrap()
@@ -1121,8 +1109,7 @@ mod tests {
         save_project_index_cache(&root, &updated, updated_signature).unwrap();
         let reloaded = load_project_index_cache(&root, 40_000).unwrap();
         assert_eq!(reloaded.files().len(), 2);
-        // The untouched file keeps its walked symbol and the incremental
-        // update adds the new file's symbol (ordering is by insertion).
+
         let names: Vec<&str> = reloaded.symbols().iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"a"), "symbols: {names:?}");
         assert!(names.contains(&"Added"), "symbols: {names:?}");
@@ -1353,8 +1340,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// Signature whose shape fields do not describe the hand-built test
-    /// index; saves must fail before signature validation ever matters.
     fn mismatched_shape_signature() -> ProjectIndexSignature {
         ProjectIndexSignature {
             max_files: 40_000,

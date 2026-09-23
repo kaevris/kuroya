@@ -21,9 +21,6 @@ impl KuroyaApp {
 
 impl eframe::App for KuroyaApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
-        // Ingest status toasts before anything renders so the toast pipeline
-        // stays alive even while the status bar (the render-side ingest) is
-        // hidden.
         self.ingest_status_toast();
         let frame_start = Instant::now();
         let profiling = self.profiling_enabled();
@@ -86,8 +83,7 @@ impl eframe::App for KuroyaApp {
             self.record_profile_sample("frame", "total", update_duration);
         }
         let startup_warmup = self.startup_repaint_warmup_active();
-        // Frame timing stays unconditional: the GPU acceleration lag
-        // detector consumes `frame_timings` even when devtools are closed.
+
         self.record_frame_timing(update_duration);
         self.maybe_show_gpu_acceleration_prompt();
         self.maybe_show_lsp_enable_prompt();
@@ -118,9 +114,7 @@ impl eframe::App for KuroyaApp {
             terminal_output_pending,
             profiling,
         );
-        // Repaint samples are devtools/profiling data; skip recording them
-        // on frames nobody observes, but keep the per-frame warmup counter
-        // advancing so startup warmup still ends after its frame budget.
+
         if self.devtools_open || profiling {
             self.record_repaint_diagnostics(activity, update_duration, repaint_after);
         } else {
@@ -144,14 +138,6 @@ impl KuroyaApp {
         std::process::exit(0);
     }
 
-    /// Applies the startup session loaded off-thread by
-    /// `spawn_startup_session_load`. This is the deferred counterpart of the
-    /// synchronous startup sequence that used to run in `KuroyaApp::new`:
-    /// restore the session (or surface the load warning), then handle the
-    /// startup target that was held back so it always runs on top of the
-    /// restored state (opening a folder re-saves the restored session for
-    /// the previous workspace, so it must observe the restored state), then
-    /// arm the workspace trust prompt in the same relative order.
     pub(crate) fn apply_startup_session_loaded(
         &mut self,
         startup_root: PathBuf,
@@ -161,17 +147,11 @@ impl KuroyaApp {
     ) {
         if self.workspace_placeholder || !paths_match_lexically(&self.workspace.root, &startup_root)
         {
-            // The placeholder startup path never restores a session, and an
-            // event for a workspace the app already left (startup folder
-            // target) is stale.
             return;
         }
         if let Some(session) = session {
             self.restore_session(*session);
-            // The startup git scan may have completed before this event; the
-            // restored source-control loads gate on a scan, so redrive them
-            // here when the scan already landed (this is a no-op otherwise
-            // and the next scan drains them as before).
+
             self.drain_pending_restored_source_control_loads();
         } else if let Some(warning) = warning {
             self.status = warning;
@@ -199,8 +179,7 @@ impl KuroyaApp {
             client.shutdown();
         }
         self.abort_session_save_in_flight_for_shutdown();
-        // Clear the Discord presence before the slower shutdown steps; the
-        // wait is bounded (~500ms) so exit never blocks on a hung pipe.
+
         self.shutdown_discord_presence();
         let _ = self.save_app_state();
         let _ = self.terminal.drain_output_for_shutdown();
@@ -425,9 +404,6 @@ mod tests {
         ));
         app.handle_events();
 
-        // The restored open file is queued for its (async) load, the session
-        // active path waits on that load, and the session's recent projects
-        // were merged with the current root.
         assert!(app.pending_open_paths.contains(&restored));
         assert_eq!(app.pending_active_path, Some(restored));
         assert!(app.recent_projects.contains(&other_project));
@@ -517,8 +493,6 @@ mod tests {
         ));
         app.handle_events();
 
-        // The session state was applied first, then the deferred startup
-        // target was queued on top of it — the synchronous startup order.
         assert!(app.pending_open_paths.contains(&restored));
         assert!(app.pending_open_paths.contains(&target));
 

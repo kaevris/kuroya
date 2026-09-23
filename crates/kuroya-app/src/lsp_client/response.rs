@@ -179,9 +179,6 @@ fn emit_pending_lsp_request_failures_with_deadline(
     )
 }
 
-/// Drains and fails every pending request with the cancellation wording.
-/// Called when a server is stopped on purpose so queued requests surface a
-/// typed failure instead of being dropped silently.
 pub(super) fn emit_pending_lsp_request_cancellations_for_server(
     target: LspServerResultTarget,
     pending_requests: &mut PendingLspRequests,
@@ -213,9 +210,6 @@ fn emit_drained_lsp_request_failures(
     count
 }
 
-/// Fails expired pending requests with the timeout wording, wrapped for the
-/// server that owns them. Called by the runtime after it cancelled the
-/// requests on the wire.
 pub(super) fn emit_expired_lsp_request_timeouts(
     target: LspServerResultTarget,
     expired: Vec<(u64, PendingLspRequest)>,
@@ -402,10 +396,7 @@ fn pending_lsp_failure_event(pending: PendingLspRequest, error: &str) -> UiEvent
             path,
             version,
             line,
-            // The prepare flow compares the position against the zero-based
-            // cursor reported by `active_lsp_position`, so the raw wire
-            // coordinates are preserved here (unlike the one-based display
-            // conventions of other navigation results).
+
             column: character,
             range: None,
             error,

@@ -78,10 +78,6 @@ pub(crate) fn source_control_filter_empty_label(query: &str) -> String {
     }
 }
 
-/// Renders a captured git scan failure for the source control panel. The
-/// error text is already control-character sanitized and bounded at capture
-/// time; this additionally trims it and applies the shared ref-label
-/// sanitization so the panel never renders raw error output.
 pub(crate) fn source_control_git_error_label(error: &str) -> String {
     let error = error.trim();
     if error.is_empty() {

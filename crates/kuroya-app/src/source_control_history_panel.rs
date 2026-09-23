@@ -51,9 +51,6 @@ impl KuroyaApp {
             self.source_control_history_selected = commit_indices.len().saturating_sub(1);
         }
 
-        // Full-page layout: the panel fills the viewport (inside margins) so
-        // long commit lists stay readable. The filter field and the commit
-        // list expand to the fixed window; the list scrolls internally.
         egui::Window::new("Git History")
             .id(egui::Id::new((
                 "git_history_panel",

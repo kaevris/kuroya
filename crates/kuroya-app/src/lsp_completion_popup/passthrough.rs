@@ -79,9 +79,7 @@ impl KuroyaApp {
         };
         let tab = self.indent_options_for_buffer(id).unit;
         let auto_indent = self.settings.auto_indent;
-        // Snapshot the popup before editing: `mark_buffer_changed` below clears
-        // completion state for the edited path, so the refilter works from this
-        // snapshot instead of live state.
+
         let popup_for_buffer = self.completion_buffer_id == Some(id);
         let popup_items = if popup_for_buffer {
             std::mem::take(&mut self.completion_items)
@@ -120,9 +118,6 @@ impl KuroyaApp {
         true
     }
 
-    /// VS Code-style incremental completion update after a passthrough edit:
-    /// keep the popup open and narrow its items by the new cursor prefix, and
-    /// only close when the word context ended or nothing matches the prefix.
     fn refresh_completion_popup_after_edit(
         &mut self,
         ctx: &Context,
@@ -146,8 +141,6 @@ impl KuroyaApp {
             return;
         };
         if prefix.is_empty() {
-            // The word context ended (space, bracket, newline, ...), so there
-            // is no prefix left to filter against.
             self.clear_completion_popup_state();
             self.status = completion_popup_closed_status(changed);
             return;
@@ -156,10 +149,6 @@ impl KuroyaApp {
         filter_completion_items_by_settings(&mut items, &self.settings, &prefix);
         if items.is_empty() {
             if completion_edit_requests_refresh(events, &self.settings) {
-                // Still typing inside a word past the end of the local item
-                // list: re-query the server like VS Code instead of closing.
-                // The request version/position stay cleared so the pending
-                // flush is not swallowed by the target-matches dedupe.
                 self.completion_open = true;
                 self.completion_buffer_id = Some(id);
                 self.completion_path = Some(origin.1);
@@ -197,7 +186,6 @@ impl KuroyaApp {
         self.status = "Refiltered completions while typing".to_owned();
     }
 
-    /// Current word prefix at the cursor for the popup refilter.
     fn completion_popup_refilter_prefix(&self, id: BufferId) -> Option<String> {
         let buffer = self.buffer(id)?;
         let range = buffer.completion_prefix_range()?;
@@ -213,8 +201,6 @@ fn completion_popup_closed_status(changed: bool) -> String {
     }
 }
 
-/// Whether the just-typed text still asks for completions, mirroring the
-/// typing-driven trigger used by the editor input path.
 fn completion_edit_requests_refresh(events: &[Event], settings: &EditorSettings) -> bool {
     events
         .iter()
@@ -481,9 +467,6 @@ mod tests {
 
         assert!(app.apply_completion_passthrough_input(&ctx));
 
-        // The popup stays open and the fresh LSP request is scheduled instead
-        // of closing; the request version/position stay cleared so the flush
-        // is not swallowed by the request target dedupe.
         assert!(app.completion_open);
         assert!(app.completion_items.is_empty());
         assert_eq!(app.completion_prefix, "prin");
@@ -496,8 +479,6 @@ mod tests {
             Some("fn main() {\n    prin\n}\n".to_owned())
         );
 
-        // Once due, the scheduled request reaches the LSP client and refreshes
-        // the popup origin to the typing position.
         app.pending_completion_requests
             .insert(7, Instant::now() - Duration::from_millis(50));
         app.lsp_clients

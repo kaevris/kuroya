@@ -344,9 +344,7 @@ fn git_snapshot_entries_are_sorted_by_stage_then_path() {
         first.clone(),
         super::super::GitStatusLookup::new(GitFileStatus::Modified, GitChangeStage::Unstaged),
     );
-    // Entries are maintained sorted by (stage, path) at every mutation, so
-    // the display order below is (staged z.rs, unstaged a.rs) and both
-    // entry accessors hand it back unchanged.
+
     let snapshot = GitSnapshot {
         root: Some(PathBuf::from(".")),
         branch: Some("main".to_owned()),
@@ -1053,7 +1051,6 @@ fn stage_paths_stages_both_sides_of_an_unstaged_rename() {
     let new = root.join("r2.txt");
     fs::rename(&old, &new).unwrap();
 
-    // The source control panel names an unstaged rename by its new path only.
     stage_paths(&root, [new.as_path()]).unwrap();
 
     let staged = GitSnapshot::scan(&root).entries();
@@ -1114,11 +1111,8 @@ fn unstage_paths_restores_both_sides_of_a_staged_rename() {
     assert_eq!(staged[0].status, GitFileStatus::Renamed);
     assert_eq!(staged[0].stage, GitChangeStage::Staged);
 
-    // The source control panel names a staged rename by its new path only.
     unstage_paths(&root, [new.as_path()]).unwrap();
 
-    // The index is clean again: the old path is restored and the new path is
-    // gone, while the worktree keeps the renamed file.
     assert_eq!(
         file_text_at_index(&root, &old).unwrap(),
         Some("same content\n".to_owned())
@@ -1159,8 +1153,6 @@ fn unstage_all_paths_unstages_a_rename_and_a_modify_together() {
     let staged = GitSnapshot::scan(&root).entries();
     assert_eq!(staged.len(), 2, "precondition: staged modify plus rename");
 
-    // "Unstage All" feeds the staged entry paths: the modified path plus the
-    // rename's new path only.
     unstage_paths(&root, [modified.as_path(), new.as_path()]).unwrap();
 
     assert_eq!(

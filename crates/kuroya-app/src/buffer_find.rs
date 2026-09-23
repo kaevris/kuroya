@@ -117,10 +117,6 @@ impl<'a> BufferFindCacheLookupKey<'a> {
     }
 }
 
-/// Bounded LRU of per-buffer find results. Split panes render different
-/// buffers on alternating frames, so entries are keyed per buffer state and
-/// the oldest entry is evicted on insert instead of the previous result being
-/// dropped on every other pane's lookup.
 pub(crate) const BUFFER_FIND_CACHE_CAPACITY: usize = 8;
 
 #[derive(Clone, Debug, Default)]
@@ -147,7 +143,6 @@ impl BufferFindCache {
         self.entries.iter().any(|(stored, _)| stored == key)
     }
 
-    /// Returns the cached matches for `key` without mutating the cache.
     fn matches_for_lookup_key(
         &self,
         key: &BufferFindCacheLookupKey<'_>,
@@ -158,10 +153,6 @@ impl BufferFindCache {
             .map(|(_, matches)| matches.as_slice())
     }
 
-    /// Moves the entry matching `key` to the most recently used position and
-    /// reports whether it was present. The boolean result keeps the mutable
-    /// borrow region-local so the caller can hand out an immutable slice of
-    /// the same entry afterwards.
     fn touch_lookup_key(&mut self, key: &BufferFindCacheLookupKey<'_>) -> bool {
         let Some(index) = self.entries.iter().position(|(stored, _)| stored.eq(key)) else {
             return false;
@@ -336,10 +327,7 @@ impl KuroyaApp {
             regex,
             scope,
         );
-        // Refresh recency first (region-local mutable borrow), then hand out
-        // an immutable slice: the function's return type is tied to `&mut
-        // self`, so a slice derived from a mutable borrow would pin that
-        // borrow for the whole function and collide with `store` below.
+
         if self.buffer_find_cache.touch_lookup_key(&lookup_key) {
             return Some(
                 self.buffer_find_cache

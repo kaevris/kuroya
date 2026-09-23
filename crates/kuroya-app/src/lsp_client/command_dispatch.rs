@@ -60,9 +60,6 @@ pub(super) async fn handle_lsp_client_command(
             }
         }
         ClientCommandFamily::Shutdown => {
-            // Writes `shutdown` + `exit`; the child watchdog waits out the
-            // grace period (killing the child afterwards) once the runtime
-            // loop observes the intentional stop.
             lifecycle::handle_shutdown_messages(writer).await;
             return LspClientCommandOutcome::Stop(
                 stop_reason.unwrap_or(LspClientStopReason::Intentional),

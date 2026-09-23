@@ -262,9 +262,7 @@ impl KuroyaApp {
         let root = self.workspace.root.clone();
         let generation = self.workspace_event_generation;
         let tx = self.tx.clone();
-        // Capture the active buffer's path and full text on the UI thread
-        // before the blocking run starts, so guest reads see a consistent
-        // snapshot and staged writes can be attributed after the run.
+
         let active_buffer = self
             .active
             .and_then(|id| self.buffer(id))
@@ -300,11 +298,6 @@ impl KuroyaApp {
     }
 }
 
-/// Events emitted when a plugin command run finishes. The completion event is
-/// always sent first; a run that staged buffer text through
-/// `kuroya.buffer_set_text` additionally emits `PluginBufferTextApply`, even
-/// when the run failed — a plugin that set the buffer text and then errored
-/// still has its last staged write applied.
 fn plugin_command_completion_events(
     root: PathBuf,
     generation: u64,
@@ -543,8 +536,6 @@ mod tests {
 
     #[test]
     fn plugin_command_completion_events_apply_staged_text_after_failure() {
-        // A plugin that set the buffer text and then errored still has its
-        // last staged write applied.
         let events = super::plugin_command_completion_events(
             PathBuf::from("workspace"),
             3,

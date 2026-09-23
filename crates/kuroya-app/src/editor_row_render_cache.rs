@@ -68,13 +68,8 @@ impl EditorRowRenderKey {
 
 #[derive(Debug, Default)]
 pub(crate) struct EditorRowRenderCache {
-    /// The `HashMap` is the O(1) lookup index; `order` only feeds eviction.
     entries: HashMap<EditorRowRenderKey, EditorRowRenderCacheEntry>,
-    /// Insertion-order queue of eviction candidates. A queue entry carries
-    /// the stamp its entry had when it was queued; lookups promote by bumping
-    /// the entry stamp in place instead of reordering the queue, so lookup
-    /// and promotion are O(1) and only eviction walks the queue front,
-    /// skipping entries a promotion made stale.
+
     order: VecDeque<(EditorRowRenderKey, u64)>,
     next_stamp: u64,
 }
@@ -149,16 +144,10 @@ impl EditorRowRenderCache {
         self.next_stamp
     }
 
-    /// Evicts the least recently used entry, dropping dead queue entries and
-    /// re-queuing stale ones with their entry's current stamp. Returns false
-    /// when the queue holds no live entry.
     fn evict_least_recently_used(&mut self) -> bool {
         while let Some((candidate, queued_stamp)) = self.order.pop_front() {
             let current_stamp = self.entries.get(&candidate).map(|entry| entry.stamp);
             match current_stamp {
-                // The entry was promoted after this queue entry was written;
-                // re-queue it so it is evicted only when it becomes the least
-                // recently used entry again.
                 Some(stamp) if stamp != queued_stamp => {
                     self.order.push_back((candidate, stamp));
                 }
@@ -166,7 +155,7 @@ impl EditorRowRenderCache {
                     self.entries.remove(&candidate);
                     return true;
                 }
-                // The entry is already gone (cleared); drop the stale entry.
+
                 None => {}
             }
         }
@@ -187,9 +176,6 @@ pub(crate) struct EditorRowRenderCacheStats {
     pub(crate) capacity: usize,
 }
 
-/// Snapshot of the row render cache counters for the devtools overlay.
-/// `cache` is `None` before the first warm snapshot installs a cache; the
-/// global hit/miss counters are process-lifetime by design.
 pub(crate) fn editor_row_render_cache_stats(
     mode: EditorExperimentalGpuAcceleration,
     cache: Option<&EditorRowRenderCache>,
@@ -365,8 +351,6 @@ mod tests {
                 cache.get_or_compute(test_key(row_index, 800.0_f32.to_bits(), 3), sample_galley);
         }
 
-        // Looking up the oldest row promotes it to most recently used; the
-        // eviction that follows must then take the next-oldest row instead.
         let promoted = test_key(0, 800.0_f32.to_bits(), 3);
         let recomputes = Cell::new(0usize);
         let _ = cache.get_or_compute(promoted, || {
@@ -440,7 +424,7 @@ mod tests {
             "other buffers keep their cached rows after a targeted clear"
         );
         assert!(Arc::ptr_eq(&first, &second));
-        // One row for the recomputed buffer and one for the surviving one.
+
         assert_eq!(cache.len(), 2);
     }
 

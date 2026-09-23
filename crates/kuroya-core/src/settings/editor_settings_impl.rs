@@ -182,8 +182,7 @@ impl Default for EditorSettings {
             format_on_paste: false,
             paste_as_enabled: true,
             paste_as_show_paste_selector: EditorPasteAsShowPasteSelector::default(),
-            // Autosave is opt-in: the app must never write the user's file
-            // unless they explicitly save (or confirm saving on close).
+
             autosave: false,
             autosave_mode: EditorAutoSaveMode::AfterDelay,
             autosave_delay_ms: DEFAULT_AUTOSAVE_DELAY_MS,
@@ -574,8 +573,6 @@ impl EditorSettings {
         }
     }
 
-    /// The server list handed to the LSP runtime: disabled entries are kept
-    /// in settings (so their configuration survives) but are not exposed.
     pub fn lsp_server_configs(&self) -> Vec<LspServerConfig> {
         effective_lsp_server_configs(&self.lsp_servers)
             .into_iter()
@@ -1110,10 +1107,6 @@ impl EditorSettings {
                 })
             }
             Err(_) => {
-                // A future schema_version means the file was written by a
-                // newer Kuroya: quarantining or rewriting it would destroy
-                // settings this build cannot parse, so keep it on disk
-                // untouched and run this session on defaults.
                 if let Some(version) = settings_schema_version_newer_than_supported(&text) {
                     return Ok(EditorSettingsLoad {
                         settings: Self::default(),
@@ -1198,15 +1191,10 @@ impl EditorSettings {
             changed |= self.keymap.ensure_default_command_palette_binding();
         }
         if source_version < 4 {
-            // Schema 4 made the settings list authoritative: materialize the
-            // built-in defaults into it so they can be edited or removed.
             self.lsp_servers = merge_lsp_server_configs_with_defaults(&self.lsp_servers);
             changed = true;
         }
         if source_version < 5 {
-            // Schema 5 made most built-ins ship disabled by default: reset the
-            // enabled flag of untouched default entries to the new defaults.
-            // Entries the user customized keep their enabled state.
             for server in &mut self.lsp_servers {
                 if let Some(default) = default_lsp_server_for_language(&server.language)
                     && server.command == default.command

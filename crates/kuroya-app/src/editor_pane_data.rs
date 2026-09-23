@@ -343,13 +343,7 @@ impl KuroyaApp {
         } else {
             diagnostic_line_maps(&[])
         };
-        // Tag spans are intentionally NOT gated by `render_validation_decorations`:
-        // unused/deprecated styling is governed independently by the
-        // `show_unused` / `show_deprecated` settings ("Fade unused code" /
-        // "Strike deprecated symbols"), so fading unused code keeps working
-        // when severity squiggles are off. Only the severity maps above are
-        // gated by the validation setting; tags are additionally disabled in
-        // large-file mode.
+
         let diagnostic_tag_spans = if large_file_mode {
             Vec::new()
         } else {

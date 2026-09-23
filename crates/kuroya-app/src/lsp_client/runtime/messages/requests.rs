@@ -112,11 +112,6 @@ async fn handle_apply_workspace_edit_request(
     LspServerMessageHandlerOutcome::Handled
 }
 
-/// Answers `client/registerCapability` with a spec-valid success result.
-/// Registrations for `workspace/didChangeWatchedFiles` additionally feed the
-/// per-server watcher table so the frame loop knows which filesystem events
-/// to forward. Servers (notably vscode-languageserver-node based ones) treat
-/// a failure here as fatal, so every registration method gets a response.
 async fn handle_register_capability_request(
     value: &Value,
     writer: &mut ChildStdin,
@@ -200,9 +195,6 @@ async fn handle_unregister_capability_request(
     }
 }
 
-/// Collects the plain string `globPattern` entries of a didChangeWatchedFiles
-/// registration's watchers. Object-shaped patterns (`{ baseUri, pattern }`)
-/// are skipped.
 fn watcher_glob_patterns(registration: &Value) -> Vec<String> {
     registration
         .get("registerOptions")
@@ -591,7 +583,6 @@ mod tests {
         assert_eq!(response["id"], 23);
         assert_eq!(response["result"]["capabilities"], json!({}));
 
-        // String glob patterns are tracked; object-shaped ones are ignored.
         assert!(state.matches_any(&root.join("src/main.rs")));
         assert!(!state.matches_any(&root.join("src/main.ts")));
         Ok(())

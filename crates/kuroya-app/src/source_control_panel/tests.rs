@@ -1398,7 +1398,7 @@ fn source_control_git_error_label_prefixes_error_text() {
         source_control_git_error_label("repository is bare"),
         "Git error: repository is bare"
     );
-    // Whitespace-only errors collapse to the bare label.
+
     assert_eq!(source_control_git_error_label("   "), "Git error");
 }
 
@@ -1453,8 +1453,6 @@ fn source_control_rows_cache_reuses_rows_when_inputs_are_unchanged() {
     assert_eq!(first.entries, entries);
     assert!(!first.rows.is_empty());
 
-    // Mutate the cached rows to prove the next call reuses them instead of
-    // rebuilding from `entries`.
     cache
         .as_mut()
         .expect("rows cache populated")
@@ -1567,6 +1565,6 @@ fn source_control_rows_cache_invalidates_on_sort_mode_and_collapse_inputs() {
     let collapsed =
         source_control_rows_cache_entry(collapsed_inputs, Cow::Borrowed(&entries), &mut cache);
     assert_eq!(collapsed.entries, entries);
-    // Only the staged entry survives collapsing the unstaged section.
+
     assert_eq!(source_control_visible_entry_count(&collapsed.rows), 1);
 }

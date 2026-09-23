@@ -53,11 +53,7 @@ impl KuroyaApp {
                         |ui| {
                             ui.set_min_width(pane_width);
                             ui.set_max_width(pane_width);
-                            // A pane whose load is still pending (`active: None`)
-                            // must render as empty instead of falling back to the
-                            // globally active buffer; otherwise it would accept
-                            // input for an unrelated buffer and never become
-                            // focusable once the load fails.
+
                             self.render_editor_pane(ui, pane.id, pane.active);
                         },
                     );

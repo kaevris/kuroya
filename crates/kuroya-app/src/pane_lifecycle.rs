@@ -13,9 +13,6 @@ use std::path::PathBuf;
 
 impl KuroyaApp {
     pub(crate) fn split_buffer_right(&mut self, id: BufferId) {
-        // Prefer the active pane showing the buffer so the split inherits the
-        // viewport the user is actually looking at, not the first pane that
-        // happens to hold the same buffer.
         let source_pane = self
             .active_pane_holding_buffer(id)
             .or_else(|| self.pane_id_for_buffer(id))
@@ -27,9 +24,6 @@ impl KuroyaApp {
     }
 
     pub(crate) fn split_buffer_right_from_tab_menu(&mut self, id: BufferId) {
-        // The tab menu is invoked from the tab bar, so the pane showing that
-        // tab is not necessarily the active pane; focus it first so the split
-        // is inserted next to it (mirroring the pane context menu).
         if let Some(pane_id) = self.pane_id_for_buffer(id) {
             self.active_pane = pane_id;
         }
@@ -113,9 +107,6 @@ impl KuroyaApp {
         self.status = format!("Closed pane {}", removed.id);
     }
 
-    /// Closes panes that are still waiting for a pending load (`active: None`)
-    /// and can therefore never be focused. Panes that already show a buffer
-    /// are left untouched.
     pub(crate) fn close_orphaned_panes(&mut self, pane_ids: &[crate::workspace_state::PaneId]) {
         for pane_id in pane_ids {
             self.close_orphaned_pane(*pane_id);
@@ -399,7 +390,7 @@ mod tests {
         let tab_pane = app.insert_editor_pane_right(Some(7));
         app.editor_scroll_offsets.insert((tab_pane, 7), 33.0);
         app.editor_scroll_targets.insert((tab_pane, 7), 90.0);
-        // The tab menu runs while a different pane is active.
+
         app.active_pane = 1;
         app.active = Some(8);
 

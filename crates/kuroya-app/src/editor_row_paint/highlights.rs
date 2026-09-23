@@ -7,7 +7,6 @@ use crate::{
 use eframe::egui::{self, Color32, Stroke, pos2};
 use std::{collections::BTreeSet, ops::Range};
 
-/// Straight-alpha strength of the translucent document-highlight tint.
 const DOCUMENT_HIGHLIGHT_TINT_ALPHA: u8 = 60;
 
 pub(super) fn paint_row_highlights(
@@ -166,7 +165,6 @@ fn sorted_range_spans_before_snapshot_end<'a, T>(
     &spans[..end]
 }
 
-// Returns the original start index plus the visible slice for start-sorted, non-overlapping ranges.
 fn sorted_non_overlapping_range_spans_for_snapshot<'a, T>(
     spans: &'a [T],
     snapshot_range: &Range<usize>,
@@ -345,16 +343,10 @@ fn paint_diagnostic_tag_strikethrough(
     painter.line_segment([pos2(left, y), pos2(right, y)], Stroke::new(1.0, color));
 }
 
-// egui stores premultiplied channels, so building a translucent tint from the
-// straight-alpha channels of an opaque source color must go through
-// `from_rgba_unmultiplied`; the premultiplied constructor would keep the full
-// channel values and render the box several times too strong.
 fn translucent_highlight(color: Color32, alpha: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
-// `document_highlight_color` stays an opaque palette entry in theme/colors.rs,
-// so the readable translucent tint is applied here at the call site.
 fn document_highlight_fill(kind: Option<u8>) -> Color32 {
     translucent_highlight(
         document_highlight_color(kind),
@@ -470,8 +462,6 @@ pub(crate) fn unicode_highlight_kind(
 }
 
 fn unicode_highlight_color(kind: UnicodeHighlightKind) -> Color32 {
-    // Translucent straight-alpha tints keep the highlighted text readable on
-    // both dark and light themes, unlike the previous opaque boxes.
     match kind {
         UnicodeHighlightKind::Invisible => Color32::from_rgba_unmultiplied(107, 76, 42, 60),
         UnicodeHighlightKind::Ambiguous => Color32::from_rgba_unmultiplied(100, 79, 35, 60),
@@ -954,8 +944,7 @@ mod tests {
             translucent_highlight(source, 96),
             Color32::from_rgba_unmultiplied(110, 116, 130, 96)
         );
-        // A highlight built from an opaque source must not equal its
-        // premultiplied form, which keeps the full channel values.
+
         assert_ne!(
             translucent_highlight(source, 96),
             Color32::from_rgba_premultiplied(110, 116, 130, 96)

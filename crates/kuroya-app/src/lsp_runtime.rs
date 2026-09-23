@@ -34,9 +34,6 @@ pub(crate) fn lsp_command_queue_failed_status(method: &str) -> String {
     )
 }
 
-/// Records a resync request in insertion order. Re-queueing an existing path
-/// moves it to the back (it is the newest request); once the limit is
-/// reached the OLDEST entry (front) is evicted.
 pub(crate) fn record_pending_lsp_resync_path(
     pending: &mut VecDeque<PathBuf>,
     path: PathBuf,
@@ -92,10 +89,6 @@ pub(crate) fn lsp_stopped_status_message(language: &str) -> String {
     lsp_status_display_message_cow(&message).into_owned()
 }
 
-/// Stopped status carrying an optional machine-derived detail (exit code,
-/// captured stderr tail). The detail is sanitized and bounded like every
-/// other status fragment so hostile servers cannot inject control or bidi
-/// formatting characters.
 pub(crate) fn lsp_stopped_status_message_with_detail(
     language: &str,
     detail: Option<&str>,
@@ -181,11 +174,6 @@ pub(crate) fn lsp_server_config_for_language(
     core_server_config_for_language(configs, language)
 }
 
-/// Stable registry key for a resolved server config. When a language has
-/// exactly one configured server the key is the language id itself (all
-/// restart/unavailable state keeps today's shape); when several servers
-/// serve one language the command and args are appended (NUL-separated) so
-/// every config gets its own client, restart ladder, and unavailable flag.
 pub(crate) fn lsp_client_key(config: &LspServerConfig, configs: &[LspServerConfig]) -> String {
     let shared_language = configs
         .iter()
@@ -202,28 +190,18 @@ pub(crate) fn lsp_client_key(config: &LspServerConfig, configs: &[LspServerConfi
     }
 }
 
-/// The language id portion of a client key (plain language keys pass through).
 pub(crate) fn lsp_client_key_language(client_key: &str) -> &str {
     client_key.split('\u{0}').next().unwrap_or(client_key)
 }
 
-/// Stable bucket key for the diagnostics published by one server instance.
-/// The client generation is globally unique per spawned client, so it alone
-/// pins the instance (the language keeps the key readable); stored
-/// diagnostics can therefore be replaced or purged per server without
-/// touching co-attached servers or later restart generations.
 pub(crate) fn lsp_diagnostics_source_key(language: &str, generation: u64) -> String {
     format!("{language}\u{0}{generation}")
 }
 
-/// The command portion of a client key; empty for plain language keys.
 pub(crate) fn lsp_client_key_command(client_key: &str) -> &str {
     client_key.split('\u{0}').nth(1).unwrap_or_default()
 }
 
-/// Finds the configured server a client key was derived from. Keys without a
-/// command segment (plain language keys, e.g. from long-lived restart state)
-/// fall back to the first config for that language.
 pub(crate) fn lsp_config_for_client_key<'a>(
     client_key: &str,
     configs: &'a [LspServerConfig],
@@ -242,10 +220,6 @@ pub(crate) fn lsp_config_for_client_key<'a>(
     None
 }
 
-/// Display label for status messages naming a client. When multiple servers
-/// are configured for the language, the command is appended so the two
-/// ladders can be told apart ("rust (rust-analyzer) LSP stopped"); otherwise
-/// the label is exactly today's language label.
 pub(crate) fn lsp_client_display_label(client_key: &str, configs: &[LspServerConfig]) -> String {
     let language = lsp_client_key_language(client_key);
     let command = lsp_client_key_command(client_key);
@@ -263,27 +237,10 @@ pub(crate) fn lsp_client_display_label(client_key: &str, configs: &[LspServerCon
 }
 
 impl KuroyaApp {
-    /// Resolves the PRIMARY LSP client for a buffer: the first live (or
-    /// spawnable) client among the servers matching the buffer, in settings
-    /// order. Every interactive request (hover, completion, definition,
-    /// formatting, ...) intentionally uses only this primary client so UI
-    /// features never merge results across servers; document-sync
-    /// notifications fan out to every client instead (see
-    /// [`KuroyaApp::ensure_lsp_clients_for_buffer`]).
     pub(crate) fn ensure_lsp_for_buffer(&mut self, id: BufferId) -> Option<LspClientHandle> {
         self.ensure_lsp_clients_for_buffer(id).into_iter().next()
     }
 
-    /// Ensures every configured server matching this buffer has a client and
-    /// returns the handles in settings order (primary first). Each config gets
-    /// its own client keyed by [`lsp_client_key`]; configs whose client is
-    /// unavailable, dead, or not eligible for the buffer path are skipped so
-    /// one broken server never blocks the others.
-    ///
-    /// Spawning a client while its restart ladder is pending supersedes that
-    /// ladder: the spawn clears the pending restart and replays the ladder's
-    /// didOpen pass for every open buffer the client serves, so the fresh
-    /// server process learns about all of them (see the spawn site below).
     pub(crate) fn ensure_lsp_clients_for_buffer(&mut self, id: BufferId) -> Vec<LspClientHandle> {
         if !self.workspace_trusted {
             return Vec::new();
@@ -335,15 +292,6 @@ impl KuroyaApp {
                 clear_pending_lsp_restart_for_started_client(&mut self.pending_lsp_restarts, &key);
             self.lsp_clients.insert(key.clone(), handle.clone());
             if superseded_restart {
-                // This client replaces one that died under a scheduled
-                // restart, so the restart ladder's reopen pass runs here
-                // instead: a fresh server process starts with no document
-                // state and needs didOpen for every open buffer it serves,
-                // not just the buffer that triggered the spawn. Without the
-                // replay, the keystroke that spawned the client sends only
-                // didChange, which servers ignore until didOpen re-opens
-                // the document (every buffer of the language stays
-                // feature-dead until closed and reopened).
                 self.reopen_lsp_buffers_for_client_keys(
                     std::iter::once(key.as_str()),
                     &lsp_configs,
@@ -354,8 +302,6 @@ impl KuroyaApp {
         handles
     }
 
-    /// The live clients previously spawned for a language (any client key
-    /// sharing that language), used to fan out document notifications.
     pub(crate) fn live_lsp_clients_for_language(&self, language: &str) -> Vec<LspClientHandle> {
         self.lsp_clients
             .iter()
@@ -364,10 +310,6 @@ impl KuroyaApp {
             .collect()
     }
 
-    /// Locates the live client (and its registry key) a lifecycle event
-    /// belongs to. Events carry the client generation, which uniquely
-    /// identifies it; the client key is recovered from the registry so the
-    /// restart ladder stays per client.
     pub(crate) fn lsp_client_entry_for_event(
         &self,
         language: &str,
@@ -565,10 +507,6 @@ pub(crate) fn lsp_restart_decision(
     }
 }
 
-/// Buffers eligible for a restart of the server identified by `client_key`:
-/// buffers whose resolved server set contains that key's config and whose
-/// path the server accepts. Plain language keys (legacy restart state)
-/// restart any server for the language.
 pub(crate) fn lsp_restart_buffer_ids(
     client_key: &str,
     buffers: &[TextBuffer],
@@ -972,7 +910,6 @@ mod tests {
             .expect("default rust config")
             .clone();
 
-        // Single server per language keeps today's plain language key.
         assert_eq!(lsp_client_key(&rust, &configs), "rust");
         assert_eq!(lsp_client_key_language("rust"), "rust");
         assert_eq!(lsp_client_key_command("rust"), "");
@@ -996,8 +933,6 @@ mod tests {
         assert_eq!(lsp_client_key_language(&primary_key), "rust");
         assert_eq!(lsp_client_key_command(&primary_key), "rust-analyzer");
 
-        // Config lookup round-trips, and plain language keys fall back to the
-        // first config for the language.
         assert_eq!(
             lsp_config_for_client_key(&secondary_key, &configs)
                 .map(|config| config.command.as_str()),
@@ -1038,7 +973,7 @@ mod tests {
             lsp_client_display_label(&key, &configs),
             "rust (rust-analyzer)"
         );
-        // Plain keys keep the plain label even when siblings exist.
+
         assert_eq!(lsp_client_display_label("rust", &configs), "rust");
     }
 
@@ -1102,7 +1037,7 @@ mod tests {
         for index in evicted..inserted {
             assert!(pending.contains(&PathBuf::from(format!("src/{index}.rs"))));
         }
-        // Oldest survivor is at the front, newest at the back.
+
         assert_eq!(
             pending.front(),
             Some(&PathBuf::from(format!("src/{evicted}.rs")))

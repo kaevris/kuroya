@@ -87,8 +87,6 @@ pub(super) async fn handle_lsp_server_message(
     LspServerMessageOutcome::Continue
 }
 
-/// Extracts the human-readable text of a `window/logMessage` notification so
-/// it can be retained in the shared stderr ring instead of being dropped.
 fn lsp_window_log_message_text(value: &Value) -> Option<&str> {
     if value.get("method").and_then(Value::as_str) != Some("window/logMessage") {
         return None;

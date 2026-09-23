@@ -32,7 +32,6 @@ pub(super) enum ProjectSymbolQuery<'a> {
     Many(Vec<ProjectSymbolQueryTerm<'a>>),
 }
 
-// Ordered so BinaryHeap::peek returns the lowest-ranked retained match.
 impl PartialEq for ProjectSymbolMatch<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other).is_eq()
@@ -223,9 +222,6 @@ fn project_symbol_term_score<'a>(
     } else if let Some(subsequence_score) =
         project_symbol_subsequence_score(&symbol.name, term.text)
     {
-        // Fuzzy tier: the query characters appear in order across the name's
-        // word boundaries ("liveindex" matches "LiveIndexProbe"). Ranked
-        // below substring matches, above path-only matches.
         Some(subsequence_score)
     } else {
         let path_text = match path_text {
@@ -242,11 +238,6 @@ fn project_symbol_term_score<'a>(
     }
 }
 
-/// Scores a case-insensitive in-order subsequence match of `query` against a
-/// symbol name. Returns `Some(45)` when every query character lands on a
-/// camelCase/snake_case word start ("lip" on "LiveIndexProbe"), `Some(30)`
-/// for a plain subsequence ("liveindex" on "LiveIndexProbe"), and `None`
-/// when the query is not a subsequence.
 fn project_symbol_subsequence_score(name: &str, query: &str) -> Option<i32> {
     let mut query_chars = query.chars().peekable();
     let mut all_on_word_starts = true;
@@ -400,8 +391,6 @@ mod tests {
         ];
         let paths = vec![Arc::from("src/a.rs"), Arc::from("src/b.rs")];
 
-        // "lip" lands on L/I/P word starts in LiveIndexProbe (45) and only
-        // on a plain subsequence in sLoopImp (30).
         let results = workspace_symbols(&symbols, &paths, "lip", 10);
 
         assert_eq!(names(&results), vec!["LiveIndexProbe", "sLoopImp"]);
@@ -415,8 +404,6 @@ mod tests {
         ];
         let paths = vec![Arc::from("src/a.rs"), Arc::from("src/b.rs")];
 
-        // "index" is a prefix substring of IndexBar (80) and only a fuzzy
-        // match in LiveIndexProbe (30).
         let results = workspace_symbols(&symbols, &paths, "index", 10);
 
         assert_eq!(names(&results), vec!["IndexBar", "LiveIndexProbe"]);
@@ -428,7 +415,7 @@ mod tests {
         let paths = vec![Arc::from("src/a.rs")];
 
         assert!(workspace_symbols(&symbols, &paths, "zzz", 10).is_empty());
-        // Reversed order is not a subsequence.
+
         assert!(workspace_symbols(&symbols, &paths, "xedit", 10).is_empty());
     }
 }

@@ -169,12 +169,6 @@ pub(crate) fn vim_collapse_selection_for_insert(buffer: &mut TextBuffer) {
     buffer.set_cursors(cursors);
 }
 
-/// Vim processes every key against a single cursor. When several carets are
-/// active (ctrl+click multi-cursor) and vim keybindings are enabled, an edit
-/// would otherwise apply to only the primary cursor while the other carets
-/// stay visible and silently diverge, so vim key handling collapses the
-/// selections to that primary cursor first. Single-cursor (and visual
-/// selection) buffers are untouched.
 pub(crate) fn vim_collapse_multi_cursor_selection(buffer: &mut TextBuffer) {
     if buffer.selections().len() > 1 {
         buffer.set_single_cursor(buffer.cursor());
@@ -308,11 +302,6 @@ pub(crate) fn handle_vim_editor_key_event_with_settings_and_indent(
     vim_settings: &EditorVimSettings,
     indent_unit: &str,
 ) -> VimKeyResult {
-    // A whole insert session (the change that enters insert mode included,
-    // e.g. `ciwHello world<Esc>`) must undo in a single step. The group opens
-    // before the key is processed so an `o`/`ciw` edit is part of the session,
-    // and closes as soon as the event leaves insert mode. Normal-mode events
-    // open a group that closes unchanged, so they keep their own entries.
     buffer.begin_undo_group();
     let was_insert = matches!(*mode, EditorVimMode::Insert);
     let result = handle_vim_editor_key_event_grouped(
@@ -330,7 +319,6 @@ pub(crate) fn handle_vim_editor_key_event_with_settings_and_indent(
     if !matches!(*mode, EditorVimMode::Insert) {
         buffer.end_undo_group();
     } else if was_insert {
-        // Already inside an insert session: keep the session's group open.
         buffer.begin_undo_group();
     }
     result

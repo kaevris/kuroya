@@ -432,10 +432,7 @@ pub(super) fn handle_git_scanned_event(
     if previous_operation_root != next_operation_root {
         app.invalidate_source_control_load_requests();
     }
-    // A cold scan builds a fresh snapshot that cannot know the revision it
-    // replaces; keep revisions monotonic so revision-keyed UI caches (the
-    // source control row cache) invalidate even when the scan restarts the
-    // counter at 1.
+
     let previous_git_revision = app.git.revision();
     app.git = git;
     app.git.advance_revision_past(previous_git_revision);

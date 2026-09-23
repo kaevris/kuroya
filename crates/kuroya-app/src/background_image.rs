@@ -26,7 +26,6 @@ pub(crate) struct BackgroundImageGeometry {
     pub(crate) uv: Rect,
 }
 
-/// Computes the image destination and source crop without touching egui state.
 pub(crate) fn background_image_geometry(
     bounds: Rect,
     image_size: [usize; 2],

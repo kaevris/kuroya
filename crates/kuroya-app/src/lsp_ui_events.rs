@@ -134,9 +134,7 @@ pub(crate) enum LspUiEvent {
         references: Option<Vec<LspReference>>,
         error: Option<String>,
     },
-    /// `textDocument/prepareRename` result for the rename popup gate. `range`
-    /// is `None` when the server cannot rename at the position (null result,
-    /// malformed payload, or a transport-level error).
+
     PrepareRenameResult {
         id: BufferId,
         path: PathBuf,
@@ -305,9 +303,7 @@ pub(crate) enum LspUiEvent {
         root: PathBuf,
         generation: u64,
     },
-    /// Structured signal that a language server could not be started (spawn
-    /// failure, missing stdio, ...). Marks the language unavailable without
-    /// relying on status message text.
+
     ServerUnavailable {
         language: String,
         root: PathBuf,

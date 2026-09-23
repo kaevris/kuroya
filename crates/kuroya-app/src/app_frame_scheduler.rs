@@ -20,10 +20,7 @@ pub(crate) const DEVTOOLS_REPAINT_INTERVAL: Duration = Duration::from_millis(80)
 pub(crate) const PENDING_FORMAT_SAVE_REPAINT_INTERVAL: Duration = Duration::from_millis(80);
 pub(crate) const SESSION_SAVE_INTERVAL: Duration = Duration::from_secs(2);
 pub(crate) const STARTUP_REPAINT_WARMUP_FRAMES: u64 = 12;
-/// Upper bound on how long an idle window sleeps between repaints. Runtime
-/// work either schedules its own wakeup (debounces, save dialogs, update
-/// checks) or arrives through the UI event wake hook, so this is only a
-/// safety net for anything unscheduled — not a heartbeat.
+
 const MAX_REPAINT_AFTER: Duration = Duration::from_secs(30);
 
 impl KuroyaApp {
@@ -31,9 +28,6 @@ impl KuroyaApp {
         startup_repaint_warmup_active_for_frame(self.next_repaint_diagnostic_id)
     }
 
-    /// Counts one rendered frame toward startup repaint warmup without
-    /// recording a repaint diagnostic sample; `record_repaint_diagnostics`
-    /// advances the same counter when it records a sample.
     pub(crate) fn advance_startup_warmup_frame_counter(&mut self) {
         next_devtools_trace_id(&mut self.next_repaint_diagnostic_id);
     }
@@ -190,8 +184,7 @@ impl KuroyaApp {
         ) {
             return Duration::ZERO;
         }
-        // No scheduled runtime work: let the window sleep until the safety
-        // poll bound instead of heartbeating for an unchanged session.
+
         next.unwrap_or(MAX_REPAINT_AFTER)
     }
 
@@ -280,9 +273,6 @@ fn session_save_wakeup_after(
     delayed_wakeup_after(last_session_save, now, SESSION_SAVE_INTERVAL)
 }
 
-/// The session-save heartbeat only stays armed while session state may hold
-/// unsaved changes: either the last save tick staged a save, or this frame
-/// ran runtime activity that could have touched session state.
 fn session_save_wake_due(
     activity: RepaintFrameActivity,
     session_save_persisted_changes: bool,

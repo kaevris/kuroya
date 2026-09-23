@@ -73,9 +73,7 @@ impl KuroyaApp {
         match load_app_settings(&self.workspace.root) {
             Ok(loaded) => {
                 let source = loaded.source;
-                // Decide whether the panel holds unsaved edits BEFORE the
-                // settings are replaced: the draft is compared against the
-                // settings the user is currently looking at.
+
                 let keep_settings_panel_draft = self.settings_panel_has_pending_inputs();
                 let previous_settings = std::mem::replace(&mut self.settings, loaded.settings);
                 for buffer in &mut self.buffers {
@@ -166,12 +164,6 @@ impl KuroyaApp {
                 self.terminal
                     .set_mouse_wheel_zoom(self.settings.terminal_mouse_wheel_zoom);
                 if keep_settings_panel_draft {
-                    // The Settings panel is open with unsaved draft edits, so
-                    // keep the draft instead of replacing it with the freshly
-                    // loaded settings. The draft's base is the pre-reload
-                    // configuration, but Apply builds its candidate from the
-                    // current (reloaded) settings plus the draft fields, so
-                    // applying the draft afterwards stays well-defined.
                 } else {
                     self.sync_settings_panel_inputs();
                 }

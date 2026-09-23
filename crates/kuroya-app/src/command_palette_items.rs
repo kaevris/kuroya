@@ -732,9 +732,6 @@ fn command_palette_match_score_with_aliases_non_empty(
         .max(alias_score)
 }
 
-/// Mirrors quick open's filename bonuses: starting a label with the query or
-/// matching at a word boundary is a stronger signal than skim's raw score
-/// alone ("save" should rank "Save All Files" above "Autosave Interval").
 fn command_palette_label_bonus(label: &str, query: &str) -> i64 {
     if label.len() >= query.len() {
         let prefix = &label[..query.len()];
@@ -1305,8 +1302,7 @@ mod tests {
     #[test]
     fn uppercase_queries_still_match_via_case_fallback() {
         let matcher = SkimMatcherV2::default();
-        // "SCM" is uppercase, so skim's smart case makes the plain pass
-        // case-sensitive; the alias "scm" only matches through the fallback.
+
         let score = command_palette_match_score_with_aliases_non_empty(
             &matcher,
             "Source Control",

@@ -11,10 +11,6 @@ fn minimap_mark_regex_cache() -> &'static Mutex<HashMap<String, Option<Regex>>> 
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Compiles each distinct mark-header pattern at most once per process. The
-/// pattern is user-configurable, so entries are keyed by pattern, and failed
-/// compiles are cached too so an invalid setting is not re-parsed on every
-/// rescan.
 fn minimap_cached_mark_regex(pattern: &str) -> Option<Regex> {
     let mut cache = minimap_mark_regex_cache()
         .lock()

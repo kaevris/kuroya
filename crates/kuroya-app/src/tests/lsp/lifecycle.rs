@@ -161,7 +161,6 @@ fn lsp_server_configs_for_buffer_returns_every_matching_config_in_order() {
 
     let matches = lsp_server_configs_for_buffer(&configs, &plugin_languages, &buffer);
 
-    // Settings order preserved; the duplicate of the first entry collapses.
     assert_eq!(
         matches
             .iter()
@@ -177,7 +176,6 @@ fn lsp_server_configs_for_buffer_returns_every_matching_config_in_order() {
         assert_eq!(language.as_ref(), "rust");
     }
 
-    // The primary is the first match.
     let (primary, _) = lsp_server_config_for_buffer(&configs, &plugin_languages, &buffer)
         .expect("rust config should be present");
     assert_eq!(primary.command, "rust-analyzer");

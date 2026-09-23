@@ -13,11 +13,6 @@ use std::{
     sync::{LazyLock, Mutex, MutexGuard},
 };
 
-/// One bracket-pair guide with its buffer positions resolved once per frame.
-///
-/// The paint path used to call `buffer.char_position` twice per guide per
-/// visible row (rope walks in O(rows x pairs)); resolving up front keeps the
-/// row loop free of rope work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ResolvedBracketPairGuide {
     open_idx: usize,
@@ -30,10 +25,6 @@ struct ResolvedBracketPairGuide {
     close_column: usize,
 }
 
-/// Identity of the inputs the guide buckets are derived from. Bucketing is
-/// frame-scoped, so the key must detect every change that alters resolution:
-/// buffer edits (version + length), guide list replacement (fingerprint),
-/// active-pair changes (fingerprint) and guide mode changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BracketPairGuideBucketKey {
     buffer_id: u64,
@@ -105,15 +96,12 @@ fn build_bracket_pair_guide_buckets(
             close_column: close_pos.column,
         };
         if vertical_shows {
-            // Vertical guides paint on every line between the pair ends.
             let start = resolved.open_line.min(resolved.close_line);
             let end = resolved.open_line.max(resolved.close_line);
             for line in start..=end {
                 buckets.entry(line).or_default().push(resolved);
             }
         } else {
-            // `guide_mode_shows_any` passed, so horizontal guides show here;
-            // they paint only on the two endpoint lines.
             buckets
                 .entry(resolved.open_line)
                 .or_default()
@@ -468,7 +456,6 @@ mod tests {
         assert_eq!(resolved.depth, 1);
         assert!(!resolved.active);
 
-        // Horizontal-only guides are only bucketed on the endpoint lines.
         let horizontal = build_bracket_pair_guide_buckets(
             &buffer,
             &guides,
@@ -505,8 +492,6 @@ mod tests {
             EditorBracketPairGuideMode::Off,
         );
 
-        // Both guides span line 1; the bucket preserves the source slice order
-        // so paint output stays identical to the flat per-row iteration.
         let line = &buckets[&1];
         assert_eq!(line.len(), 2);
         assert_eq!(line[0].open_idx, 2);

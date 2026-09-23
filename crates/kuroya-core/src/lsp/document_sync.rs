@@ -1,30 +1,15 @@
 use serde_json::Value;
 
-/// Negotiated `textDocumentSync` change kind for a language server.
-///
-/// Parsed from `initialize` result `capabilities.textDocumentSync`, which is
-/// either a bare [`TextDocumentSyncKind`] number or a
-/// `TextDocumentSyncOptions` object with a `change` number. Anything that
-/// cannot be determined falls back to [`TextDocumentSyncKindSetting::Full`],
-/// which matches the full-document sync the client historically performed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TextDocumentSyncKindSetting {
-    /// `TextDocumentSyncKind.None` (0): the server does not want content.
     None,
-    /// `TextDocumentSyncKind.Full` (1): resend the whole document. Also the
-    /// fallback when the sync kind is absent or unparseable.
+
     #[default]
     Full,
-    /// `TextDocumentSyncKind.Incremental` (2): send ranged change events.
+
     Incremental,
 }
 
-/// Parses the `capabilities.textDocumentSync` JSON value into a sync setting.
-///
-/// Tolerant by design: numbers outside the spec (or non-numbers where a
-/// number is expected) map to [`TextDocumentSyncKindSetting::Full`]. An
-/// options object without a `change` field also maps to `Full` so unknown
-/// servers keep today's full-document behavior.
 pub fn parse_text_document_sync_kind(value: &Value) -> TextDocumentSyncKindSetting {
     match value
         .as_u64()
@@ -32,17 +17,11 @@ pub fn parse_text_document_sync_kind(value: &Value) -> TextDocumentSyncKindSetti
     {
         Some(0) => TextDocumentSyncKindSetting::None,
         Some(2) => TextDocumentSyncKindSetting::Incremental,
-        // 1, absent, out-of-range, and type-mismatched values all mean
-        // "sync with full documents", the pre-negotiation behavior.
+
         _ => TextDocumentSyncKindSetting::Full,
     }
 }
 
-/// A single ranged LSP content change event.
-///
-/// The range is expressed in the text as it existed *before* the change,
-/// with zero-based `line`s and zero-based `character`s counted in UTF-16
-/// code units, exactly as LSP positions require.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentChange {
     pub start_line: usize,
@@ -52,17 +31,6 @@ pub struct ContentChange {
     pub text: String,
 }
 
-/// Computes the smallest ranged content change turning `old_text` into
-/// `new_text`, or `None` when the texts are identical (a version bump with
-/// unchanged text needs no `contentChanges` entry; LSP servers ignore no-op
-/// edits, so the notification can be skipped entirely).
-///
-/// The diff trims the common character prefix and suffix, so its cost is
-/// O(prefix + suffix + changed span) plus one scan of `old_text` up to the
-/// end of the replaced range to build (line, UTF-16 character) positions.
-/// Comparisons are byte-exact, so `\r\n` line endings participate in the
-/// diff like any other content; the editor normalizes to `\n`, making mixed
-/// endings rare in practice.
 pub fn text_document_content_change_event(old_text: &str, new_text: &str) -> Option<ContentChange> {
     if old_text == new_text {
         return None;
@@ -87,9 +55,6 @@ pub fn text_document_content_change_event(old_text: &str, new_text: &str) -> Opt
     })
 }
 
-/// Byte length of the longest common character prefix. A pure append (the
-/// whole old text being a prefix of the new text) therefore yields the full
-/// old length, which becomes an empty range at end-of-old.
 fn common_char_prefix_len(old_text: &str, new_text: &str) -> usize {
     old_text
         .char_indices()
@@ -100,8 +65,6 @@ fn common_char_prefix_len(old_text: &str, new_text: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// Byte lengths of the longest common character suffix within the tails that
-/// follow the common prefix, so the suffix can never overlap the prefix.
 fn common_char_suffix_lens(old_tail: &str, new_tail: &str) -> (usize, usize) {
     let mut old_end = old_tail.len();
     let mut new_end = new_tail.len();
@@ -117,10 +80,6 @@ fn common_char_suffix_lens(old_tail: &str, new_tail: &str) -> (usize, usize) {
     (old_tail.len() - old_end, new_tail.len() - new_end)
 }
 
-/// Converts two byte offsets of `text` (character boundaries,
-/// `start_byte <= end_byte`) into zero-based (line, UTF-16 character)
-/// positions in a single pass. Offsets at end-of-text resolve to the
-/// position just past the final character.
 fn lsp_positions_at_bytes(
     text: &str,
     start_byte: usize,
@@ -150,7 +109,6 @@ fn lsp_positions_at_bytes(
         }
     }
 
-    // Offsets at end-of-text never match a char index.
     let tail_position = (line, character);
     (start.unwrap_or(tail_position), end.unwrap_or(tail_position))
 }
@@ -333,8 +291,6 @@ mod tests {
 
     #[test]
     fn content_change_counts_astral_characters_as_utf16_units() {
-        // U+1F980 CRAB is one char but two UTF-16 code units, so 'b' sits at
-        // UTF-16 column 3 and the replacement range covers column 3..4.
         let change = text_document_content_change_event("a🦀b", "a🦀c")
             .expect("emoji edit should produce a change");
         assert_eq!(
@@ -364,9 +320,6 @@ mod tests {
 
     #[test]
     fn content_change_treats_crlf_as_plain_content() {
-        // Byte-exact comparison: the terminator's `\r` participates in the
-        // diff. The editor is LF-normalized, so this only guards against
-        // position drift for externally supplied CRLF text.
         let change = text_document_content_change_event("a\r\nb", "a\r\nc")
             .expect("CRLF edit should produce a change");
 

@@ -640,11 +640,6 @@ fn default_plugin_settings_enabled() -> bool {
     true
 }
 
-/// Discord Rich Presence settings. Presence is opt-in: nothing connects,
-/// spawns a thread, or touches the Discord IPC socket until the user both
-/// enables it and configures their own application client id. The show flags
-/// omit their field from the activity payload entirely, so hidden content
-/// never reaches Discord.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiscordSettings {
@@ -957,8 +952,7 @@ pub struct EditorSettings {
     pub devtools_profiling_enabled: bool,
     #[serde(default = "default_server_configs")]
     pub lsp_servers: Vec<LspServerConfig>,
-    /// Offers to enable a shipped language server when a file whose server is
-    /// disabled opens. Off by default: no prompts unless asked for.
+
     #[serde(default)]
     pub lsp_suggest_missing_servers: bool,
     pub window_zoom_level: f32,
@@ -1264,16 +1258,11 @@ pub struct EditorSettings {
 pub struct EditorSettingsLoad {
     pub settings: EditorSettings,
     pub quarantined_path: Option<PathBuf>,
-    /// Some(schema_version) when the settings file declares a schema_version
-    /// newer than this build supports: the file was written by a newer Kuroya,
-    /// so it is kept on disk untouched and this session runs on defaults.
+
     pub future_schema_version: Option<u32>,
 }
 
 impl EditorSettingsLoad {
-    /// Distinct status for a settings file written by a newer build: unlike a
-    /// corrupt file it is never quarantined or rewritten, so the message must
-    /// not call it corrupt.
     pub fn future_schema_version_status(&self) -> Option<String> {
         self.future_schema_version.map(|version| {
             format!(
@@ -1285,18 +1274,11 @@ impl EditorSettingsLoad {
     }
 }
 
-/// The configured server list is authoritative: settings hold the full list,
-/// including entries that came from the built-in defaults. This only
-/// normalizes; it no longer merges implicit defaults.
 pub fn effective_lsp_server_configs(settings_servers: &[LspServerConfig]) -> Vec<LspServerConfig> {
     let (servers, _) = normalize_lsp_server_configs(settings_servers.iter().cloned());
     servers
 }
 
-/// Old (schema <= 3) settings stored only overrides: the first configured
-/// entry for a language replaced the built-in default in place and extra
-/// entries for the same language were appended. Used by the schema 4
-/// migration to materialize defaults into the settings list.
 pub(crate) fn merge_lsp_server_configs_with_defaults(
     settings_servers: &[LspServerConfig],
 ) -> Vec<LspServerConfig> {
@@ -1322,16 +1304,12 @@ pub(crate) fn merge_lsp_server_configs_with_defaults(
     servers
 }
 
-/// Built-in default server for a language ID, if one exists.
 pub fn default_lsp_server_for_language(language: &str) -> Option<LspServerConfig> {
     default_server_configs()
         .into_iter()
         .find(|server| server.language == language)
 }
 
-/// True when the entry still has the built-in default configuration for its
-/// language. The enabled switch is ignored: turning a server off does not
-/// change its configuration.
 pub fn lsp_server_matches_builtin(server: &LspServerConfig) -> bool {
     default_lsp_server_for_language(&server.language).is_some_and(|default| {
         default.command == server.command
@@ -1341,7 +1319,6 @@ pub fn lsp_server_matches_builtin(server: &LspServerConfig) -> bool {
     })
 }
 
-/// Built-in defaults whose language has no configured entry.
 pub fn missing_builtin_lsp_servers(configured: &[LspServerConfig]) -> Vec<LspServerConfig> {
     default_server_configs()
         .into_iter()
@@ -1353,8 +1330,6 @@ pub fn missing_builtin_lsp_servers(configured: &[LspServerConfig]) -> Vec<LspSer
         .collect()
 }
 
-/// Appends built-in defaults that are missing from the list. Returns true
-/// when anything was added.
 pub fn restore_builtin_lsp_servers(servers: &mut Vec<LspServerConfig>) -> bool {
     let missing = missing_builtin_lsp_servers(servers);
     let changed = !missing.is_empty();
@@ -1388,8 +1363,7 @@ fn normalize_lsp_server_configs(
             continue;
         };
         changed |= server != original_server;
-        // Multiple servers per language are allowed; only exact duplicates of
-        // an already-normalized entry collapse (last-wins is a no-op there).
+
         if normalized.contains(&server) {
             changed = true;
         } else {

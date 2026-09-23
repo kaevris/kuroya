@@ -2,9 +2,6 @@ use super::super::wire::write_message;
 use kuroya_core::LspWireMessage;
 use tokio::process::ChildStdin;
 
-/// Writes the LSP `shutdown` request and `exit` notification. The child
-/// watchdog grants the server a bounded grace period to exit on its own and
-/// kills it afterwards, so no immediate kill happens here.
 pub(super) async fn handle_shutdown_messages(writer: &mut ChildStdin) {
     let _ = write_message(writer, &LspWireMessage::shutdown(2).to_json()).await;
     let _ = write_message(writer, &LspWireMessage::exit().to_json()).await;

@@ -67,9 +67,7 @@ impl KuroyaApp {
         self.editor_selection_drag = None;
         self.editor_selection_clipboard = None;
         self.buffers.clear();
-        // Stale vim session state from the old workspace must not alias the
-        // freshly created buffers: marks, registers, searches and the search/
-        // Ex inputs are thread-locals or keyed by buffer id.
+
         self.vim_reset_session_state();
         self.virtual_buffer_labels.clear();
         self.diff_buffer_sources.clear();
@@ -369,8 +367,6 @@ mod tests {
         app.buffers
             .push(TextBuffer::from_text(7, None, "alpha\nbeta\n".to_owned()));
 
-        // `ma` stores a mark in the thread-local vim mark store and `yiw`
-        // fills the unnamed register.
         let mut mode = EditorVimMode::Normal;
         let mut pending: Option<EditorVimPendingKey> = None;
         let mut last_char_find = None;
@@ -501,9 +497,6 @@ mod tests {
             Some("Ctrl+Z".to_owned())
         );
 
-        // Arming only waits for a second Esc; it never persists anything
-        // (settings_path does not exist below), so reset cancels the capture
-        // cleanly without a forced clear.
         assert!(!settings_path(&root).exists());
         app.buffers.push(TextBuffer::from_text(
             7,

@@ -172,7 +172,7 @@ pub struct LspServerConfig {
     pub extensions: Vec<String>,
     #[serde(default)]
     pub root_markers: Vec<String>,
-    /// Entries missing from the settings file (older schemas) stay enabled.
+
     #[serde(default = "lsp_server_enabled_default")]
     pub enabled: bool,
 }
@@ -234,10 +234,6 @@ impl From<u64> for LspRequestId {
     }
 }
 
-/// One entry of a `workspace/didChangeWatchedFiles` notification.
-///
-/// `kind` uses the LSP `FileChangeType` numbering: 1 = Created,
-/// 2 = Changed, 3 = Deleted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchedFileChange {
     pub uri: String,
@@ -805,9 +801,6 @@ impl LspWireMessage {
         }
     }
 
-    /// Success reply for `client/registerCapability`. The empty
-    /// `capabilities` result is spec-valid; it only means the client accepted
-    /// the registration without extra server-side processing data.
     pub fn register_capability_response(id: impl Into<LspRequestId>) -> Self {
         Self::Response {
             id: id.into(),
@@ -815,8 +808,6 @@ impl LspWireMessage {
         }
     }
 
-    /// Success reply for `client/unregisterCapability`; same shape as the
-    /// registration reply.
     pub fn unregister_capability_response(id: impl Into<LspRequestId>) -> Self {
         Self::Response {
             id: id.into(),
@@ -883,9 +874,6 @@ pub struct LspDefinition {
     pub column: usize,
 }
 
-/// Valid `textDocument/prepareRename` result: the one-based range the server
-/// is willing to rename plus the optional placeholder the editor should
-/// prefill. Coordinates follow the parsed-range convention (one-based).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspPrepareRename {
     pub start_line: usize,
@@ -1035,8 +1023,6 @@ pub struct LspPosition {
     pub character: usize,
 }
 
-/// Languages whose built-in servers start enabled. Every other built-in
-/// ships disabled; users can switch servers on in the LSP settings.
 const DEFAULT_ENABLED_LANGUAGES: [&str; 7] = [
     "rust",
     "python",
@@ -1476,12 +1462,6 @@ pub fn parse_definition_response(value: &Value) -> Option<LspDefinition> {
     })
 }
 
-/// Parses a `textDocument/prepareRename` response. A null result means the
-/// server cannot rename the symbol at the requested position. The spec allows
-/// three success shapes: a bare `Range`, a `{ range, placeholder? }` object,
-/// and the deprecated `{ start, end }` object; all parse to the same result.
-/// Ranges must be well-formed and ordered (start <= end) like every other
-/// parsed LSP range.
 pub fn parse_prepare_rename_response(value: &Value) -> Option<LspPrepareRename> {
     let result = value.get("result")?;
     if result.is_null() {

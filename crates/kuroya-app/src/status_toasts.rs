@@ -70,10 +70,6 @@ fn toast_text_wrap_width() -> f32 {
 }
 
 impl KuroyaApp {
-    /// Writes the status bar text and ingests the toast immediately, so
-    /// drain-loop handlers that run several times within one frame each
-    /// surface a toast instead of only the final write surviving until the
-    /// per-frame ingest in the render pass.
     pub(crate) fn set_status_with_toast(&mut self, status: impl Into<String>) {
         self.status = status.into();
         self.ingest_status_toast();
@@ -93,8 +89,6 @@ impl KuroyaApp {
         if let Some(head) = self.status_toasts.first_mut()
             && head.message == message
         {
-            // Recurring identical messages refresh the head toast instead of
-            // stacking a duplicate, so repeated errors keep re-toasting.
             head.created = Instant::now();
             return;
         }

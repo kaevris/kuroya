@@ -17,9 +17,6 @@ enum LspEnablePromptAction {
 }
 
 impl KuroyaApp {
-    /// Shows the enable suggestion when the active file's built-in language
-    /// server ships disabled. The feature is opt-in via
-    /// [`kuroya_core::EditorSettings::lsp_suggest_missing_servers`].
     pub(crate) fn maybe_show_lsp_enable_prompt(&mut self) {
         if self.lsp_enable_prompt.is_some() {
             return;
@@ -203,9 +200,6 @@ impl KuroyaApp {
     }
 }
 
-/// Decides whether the active buffer warrants an enable suggestion. Only
-/// files whose built-in server exists but is not enabled (and was not
-/// already declined this session) prompt.
 pub(crate) fn lsp_enable_prompt_candidate(
     declined: &[String],
     configured_enabled_languages: &[String],

@@ -344,13 +344,7 @@ impl KuroyaApp {
                 self.notify_lsp_open(id);
             }
         }
-        // Recovered dirty buffers were pushed in recovery order; reorder them
-        // to their saved open-file positions so the restored tab order matches
-        // the previous session instead of recovered buffers jumping ahead of
-        // the files that were saved before them. Paths missing from the saved
-        // order (for example pathless recovered buffers) keep their relative
-        // order after the matched entries. The remaining open files load
-        // asynchronously after this point and are spawned in saved order.
+
         reorder_restored_buffers_to_saved_order(&mut self.buffers, &saved_open_file_order);
 
         let pane_weights = session.pane_weights;
@@ -743,10 +737,6 @@ fn pending_legacy_viewport_scroll(
     }
 }
 
-/// Stably reorders freshly restored buffers to match the saved open-file
-/// order, matching buffers by path (exact or lexical). Buffers whose path is
-/// absent from the saved order keep their relative order after the matched
-/// entries.
 fn reorder_restored_buffers_to_saved_order(buffers: &mut Vec<TextBuffer>, saved_order: &[PathBuf]) {
     if buffers.len() < 2 || saved_order.is_empty() {
         return;

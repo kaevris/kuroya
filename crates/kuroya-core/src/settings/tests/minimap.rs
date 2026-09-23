@@ -83,7 +83,6 @@ fn minimap_section_header_lines_reuse_cached_compiled_mark_regexes() {
     let headers = minimap_section_header_lines(&first, false, true, pattern);
     assert_eq!(headers.get(&1).map(String::as_str), Some("One"));
 
-    // A second scan with the same pattern must reuse the single cached compile.
     let second = TextBuffer::from_text(1, None, "// MARK: One\n// MARK: Two\n".to_owned());
     let rescanned = minimap_section_header_lines(&second, false, true, pattern);
     assert_eq!(rescanned.get(&2).map(String::as_str), Some("Two"));
@@ -100,7 +99,6 @@ fn minimap_section_header_lines_reuse_cached_compiled_mark_regexes() {
             .any(|(cached, compiled)| cached.as_str() == pattern && *compiled)
     );
 
-    // Failed compiles are cached too, so invalid settings are not re-parsed.
     let invalid = minimap_section_header_lines(&second, false, true, "(");
     assert!(invalid.is_empty());
     let entries = crate::settings::minimap::minimap_cached_mark_regexes_for_test();

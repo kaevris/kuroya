@@ -1010,8 +1010,7 @@ fn workspace_plugin_discovery_reports_duplicate_plugin_ids() {
     assert_eq!(discovery.errors.len(), 1);
     assert_eq!(discovery.errors[0].root, duplicate);
     assert!(discovery.errors[0].error.contains("duplicated"));
-    // The error names the plugin that won, so the author can find the copy
-    // to remove or rename.
+
     assert!(
         discovery.errors[0].error.contains(&path_string(&first)),
         "{}",
@@ -1027,7 +1026,7 @@ fn workspace_plugin_discovery_rejects_unknown_manifest_keys() {
     let plugins_dir = workspace_plugins_dir(&workspace);
     let root = plugins_dir.join("typo");
     fs::create_dir_all(&root).unwrap();
-    // A typo'd capability key must not parse into an invisible no-op plugin.
+
     fs::write(
         plugin_manifest_path(&root),
         r#"
@@ -1077,7 +1076,7 @@ fn workspace_plugin_discovery_reports_missing_entry_file() {
         )
         .unwrap();
     }
-    // Only the second plugin gets the wasm its manifest promises.
+
     let entry = present.join("bin/plugin.wasm");
     fs::create_dir_all(entry.parent().unwrap()).unwrap();
     fs::write(&entry, b"wasm").unwrap();
@@ -1415,8 +1414,7 @@ fn load_theme_settings_from_path_strips_control_chars_from_friendly_theme_name()
     let root = temp_root("friendly-theme-hostile-name");
     fs::create_dir_all(&root).unwrap();
     let path = root.join("friendly.toml");
-    // TOML escapes keep the invisible characters out of this source file:
-    // U+200B (zero-width space), a tab, and U+202E (right-to-left override).
+
     fs::write(
         &path,
         r##"

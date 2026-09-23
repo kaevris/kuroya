@@ -222,8 +222,6 @@ impl KuroyaApp {
     }
 
     pub(crate) fn open_all_file_changes(&mut self) {
-        // Borrow the sorted snapshot entries and lift only the fields the
-        // loop needs, so opening changes does not clone the entry list.
         let entries = self
             .git
             .entries_slice_sorted()
@@ -259,8 +257,6 @@ impl KuroyaApp {
     }
 
     fn open_all_file_changes_for_stage(&mut self, stage: GitChangeStage) {
-        // Borrow the sorted snapshot entries and keep only the matching
-        // paths, so stage-scoped opens do not clone the full entry list.
         let paths = self
             .git
             .entries_slice_sorted()
@@ -317,8 +313,6 @@ impl KuroyaApp {
     }
 
     pub(crate) fn copy_stage_patch(&mut self, _ctx: &Context, stage: GitChangeStage) {
-        // Borrow the sorted snapshot entries and clone only the entries in
-        // the requested stage.
         let entries = self
             .git
             .entries_slice_sorted()

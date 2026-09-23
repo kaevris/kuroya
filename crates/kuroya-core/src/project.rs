@@ -31,25 +31,13 @@ const MAX_SYMBOL_FILE_BYTES: u64 = 512 * 1024;
 const MAX_SYMBOL_LINE_BYTES: usize = 8 * 1024;
 const MAX_PROJECT_SYMBOL_QUERY_CHARS: usize = 512;
 const MAX_PROJECT_SYMBOL_QUERY_TERMS: usize = 32;
-/// Above this file count the full rebuild walk skips inline symbol extraction
-/// and publishes an empty symbol list: reading thousands of files dominates
-/// indexing time, and LSP workspace symbols remain the primary path for big
-/// projects. `apply_path_changes` still extracts symbols for individually
-/// changed files while the index stays at or below this limit.
+
 pub const PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT: usize = 5_000;
-/// Bump when symbol extraction changes (ordering, budgets, AST coverage) so
-/// startup reconciliation rebuilds caches carrying stale symbol sets even
-/// when the file entries themselves are unchanged.
+
 pub const PROJECT_INDEX_SYMBOL_POLICY_VERSION: u32 = 2;
-/// Source-byte budget for symbol extraction on projects larger than
-/// [`PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT`]. Files are scanned smallest
-/// first, so the budget buys maximum symbol coverage for the IO spent and
-/// huge generated/vendored files are naturally skipped.
+
 pub const PROJECT_INDEX_SYMBOL_SCAN_BUDGET_BYTES: u64 = 32 * 1024 * 1024;
-/// Safety ceiling for the number of indexed files, not the primary indexing
-/// tool. Bulk directories are expected to be skipped by the default exclude
-/// globs and the hidden-directory policy first; when the ceiling is still
-/// reached the walk stops early and the index reports `truncated`.
+
 pub const DEFAULT_PROJECT_INDEX_MAX_FILES: usize = 150_000;
 pub const MIN_PROJECT_INDEX_MAX_FILES: usize = 1_000;
 pub const MAX_PROJECT_INDEX_MAX_FILES: usize = 1_000_000;
@@ -86,10 +74,6 @@ pub fn default_project_index_exclude_globs() -> Vec<String> {
         .collect()
 }
 
-/// Merges user-configured exclude globs on top of the built-in defaults.
-///
-/// Defaults always stay in effect; user globs extend them. Exact duplicates
-/// (after trimming) keep their first occurrence.
 pub fn merged_exclude_globs(user_globs: &[String]) -> Vec<String> {
     let mut merged =
         Vec::with_capacity(DEFAULT_PROJECT_INDEX_EXCLUDE_GLOBS.len() + user_globs.len());
@@ -125,23 +109,18 @@ pub struct ProjectEntry {
     pub relative_path: PathBuf,
     pub is_dir: bool,
     pub depth: usize,
-    /// File size in bytes; directories and unavailable metadata report 0.
+
     #[serde(default)]
     pub len: u64,
-    /// Unix-style milliseconds since the epoch for the modification time;
-    /// 0 when unavailable. Directories report 0.
+
     #[serde(default)]
     pub modified_millis: u64,
-    /// Unix-style milliseconds since the epoch for the creation time;
-    /// 0 when unavailable. Directories report 0.
+
     #[serde(default)]
     pub created_millis: u64,
 }
 
 impl ProjectEntry {
-    /// Builds an entry from walk metadata. Directories report zeroed size and
-    /// timestamps so entries are stable regardless of directory metadata
-    /// churn; unavailable file metadata also reports zeros.
     pub fn from_metadata_parts(
         path: PathBuf,
         relative_path: PathBuf,
@@ -230,9 +209,7 @@ pub struct ProjectIndexOptions {
     pub max_files: usize,
     pub exclude_globs: Vec<String>,
     pub excluded_paths: Vec<PathBuf>,
-    /// When false (the default), directories whose file name starts with `.`
-    /// are skipped unless they are on the indexed hidden-dir whitelist.
-    /// Hidden files are always indexed.
+
     pub include_hidden_dirs: bool,
 }
 
@@ -298,22 +275,16 @@ struct ProjectIndexData {
     #[serde(skip)]
     symbol_search_paths: Vec<Arc<str>>,
     truncated: bool,
-    /// Index file cap this index was built with; drives the emergency brake
-    /// in `apply_path_changes`.
+
     #[serde(default)]
     max_files: usize,
-    /// Hidden-directory policy this index was built with, so incremental
-    /// updates prune the same directories the walk prunes.
+
     #[serde(default)]
     include_hidden_dirs: bool,
-    /// Source bytes spent on symbol extraction by the last rebuild, so
-    /// incremental updates keep filling the same budget instead of
-    /// re-scanning files the rebuild already skipped.
+
     #[serde(default)]
     symbol_budget_used: u64,
-    /// Exclude filter this index was built with. Rebuilt indexes carry the
-    /// exact filter; indexes deserialized from the disk cache have `None` and
-    /// rely on the caller-side filter plus the stored hidden-dir policy.
+
     #[serde(skip)]
     path_filter: Option<ProjectIndexPathFilter>,
 }
@@ -463,8 +434,7 @@ impl ProjectIndex {
             };
             let is_dir = file_type.is_dir();
             let is_file = file_type.is_file();
-            // Emergency brake only: bulk directories are expected to be
-            // skipped by exclude globs and the hidden-dir policy first.
+
             if is_file && file_count >= max_files {
                 truncated = true;
                 break;
@@ -494,10 +464,7 @@ impl ProjectIndex {
         entries.sort_unstable_by(|a, b| {
             project_index_entry_sort_cmp(&a.relative_path, a.is_dir, &b.relative_path, b.is_dir)
         });
-        // Small projects scan every file in walk order. Larger projects scan
-        // smallest-files-first within a byte budget instead of skipping
-        // symbols entirely, so monorepos keep symbols for their source files
-        // and only huge generated blobs fall back to LSP-only symbols.
+
         let mut symbol_budget_used = 0u64;
         if extract_symbols_requested {
             let (extracted, used) = collect_project_symbols(
@@ -534,40 +501,22 @@ impl ProjectIndex {
         &self.data.root
     }
 
-    /// True when this index holds real indexed data (a rebuild, a loaded
-    /// cache, or an applied update) rather than the pre-first-walk
-    /// placeholder, whose root is empty.
     pub fn is_warm(&self) -> bool {
         !self.data.root.as_os_str().is_empty()
     }
 
-    /// File cap this index was built with; 0 for the placeholder and test
-    /// helpers that bypass `rebuild_with_options`.
     pub fn max_files(&self) -> usize {
         self.data.max_files
     }
 
-    /// Deep-copies the index so `apply_path_changes` can mutate the copy
-    /// while readers keep using the current snapshot.
     pub fn clone_for_update(&self) -> Self {
         Self::from_data((*self.data).clone())
     }
 
-    /// Recomputes the index signature from the stored per-entry metadata, so
-    /// cache validation never needs a second stat walk: the rebuild walk and
-    /// incremental updates derive signatures from entries with the exact
-    /// same function.
     pub fn signature_from_entries(&self, options: &ProjectIndexOptions) -> ProjectIndexSignature {
         ProjectIndexSignature::from_stored_entries(options, self.data.truncated, &self.data.entries)
     }
 
-    /// Applies watcher-reported path changes incrementally: files are
-    /// upserted or removed in place, and directories are re-scanned as a
-    /// subtree. Paths outside `root`, inside `.git`/`.kuroya`, or matching
-    /// the index's exclude/hidden-dir policy are ignored. Returns whether
-    /// the index changed. Falls back to a full rebuild at the caller when
-    /// this returns without covering the change (for example the batch
-    /// touches the workspace root itself).
     pub fn apply_path_changes(&mut self, root: &Path, changed: &[PathBuf]) -> bool {
         if !self.is_warm() || root.as_os_str() != self.data.root.as_os_str() {
             return false;
@@ -589,8 +538,7 @@ impl ProjectIndex {
             let Some(path) = normalize_child_path(&data.root, raw_path) else {
                 continue;
             };
-            // The workspace root itself needs a full rebuild; the caller
-            // falls back when its batch contains the root.
+
             if path.as_os_str() == data.root.as_os_str() {
                 continue;
             }
@@ -612,8 +560,6 @@ impl ProjectIndex {
             }
 
             if !is_dir && !is_file {
-                // Missing, or neither file nor directory: a rebuild would
-                // not index it either way.
                 let removed = project_index_remove_subtree(&mut data.entries, &path);
                 if !removed.is_empty() {
                     file_count = file_count
@@ -674,8 +620,6 @@ impl ProjectIndex {
                 symbols_changed |= project_index_retain_symbols_outside(&mut data.symbols, &path);
 
                 if data.max_files > 0 && file_count >= data.max_files {
-                    // Emergency brake: the workspace outgrew the cap, so new
-                    // files stay unindexed and the index reports truncation.
                     truncated = true;
                     changed_any = true;
                     continue;
@@ -689,8 +633,6 @@ impl ProjectIndex {
                     )
                 });
                 let Err(insert_at) = position else {
-                    // Exact matches were handled above, and the previous
-                    // subtree removal cleared any entry at this path.
                     continue;
                 };
                 data.entries.insert(insert_at, fresh);
@@ -719,9 +661,7 @@ impl ProjectIndex {
             .filter(|entry| !entry.is_dir)
             .map(|entry| entry.path.clone())
             .collect();
-        // A batch that hit the cap sets `truncated` for this update; once
-        // deletions bring the file count back under the cap the flag clears
-        // (previously it stuck until the next full rebuild).
+
         data.truncated = truncated && file_count >= data.max_files;
         if file_count > PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT {
             data.symbol_budget_used =
@@ -794,8 +734,7 @@ fn project_index_entry_is_not_pruned(
     if entry.depth() == 0 {
         return true;
     }
-    // Returning false for a directory prunes it, so its children are never
-    // visited. Hidden files stay indexed.
+
     if !include_hidden_dirs
         && entry
             .file_type()
@@ -808,9 +747,6 @@ fn project_index_entry_is_not_pruned(
     !path_filter.is_excluded(entry.path())
 }
 
-/// True for directories whose file name starts with `.` and that are not on
-/// the indexed hidden-dir whitelist. Protected workspace dirs (`.git`,
-/// `.kuroya`) are excluded separately and never indexed.
 fn project_index_dir_is_hidden(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
@@ -1000,9 +936,6 @@ fn project_index_initial_entry_capacity(max_files: usize) -> usize {
 }
 
 impl ProjectIndexSignature {
-    /// Derives the signature from stored entry metadata. The rebuild walk,
-    /// cache writes, and incremental updates all use this single derivation,
-    /// so cache validation never needs a second stat walk.
     fn from_stored_entries(
         options: &ProjectIndexOptions,
         truncated: bool,
@@ -1096,8 +1029,6 @@ fn metadata_created_millis(metadata: &fs::Metadata) -> u64 {
         .unwrap_or_default()
 }
 
-/// File allowance left under the emergency brake; `usize::MAX` when the
-/// index carries no cap (placeholder/test indexes with `max_files == 0`).
 fn max_files_remaining(file_count: usize, max_files: usize) -> usize {
     if max_files == 0 {
         usize::MAX
@@ -1106,10 +1037,6 @@ fn max_files_remaining(file_count: usize, max_files: usize) -> usize {
     }
 }
 
-/// True when an incremental update must ignore a changed path: protected
-/// workspace dirs, the exclude filter, or the hidden-directory policy. Files
-/// under hidden directories are pruned by their ancestors; the directory
-/// itself is additionally checked when the entry is a directory.
 fn project_index_path_is_ignored_by_policy(
     relative_path: &Path,
     is_dir_entry: bool,
@@ -1159,8 +1086,6 @@ fn project_index_relative_path_is_protected(relative_path: &Path) -> bool {
     })
 }
 
-/// Removes the entry at `absolute` plus everything below it, returning the
-/// removed entries so callers can adjust counts and detect no-ops.
 fn project_index_remove_subtree(
     entries: &mut Vec<ProjectEntry>,
     absolute: &Path,
@@ -1177,12 +1102,6 @@ fn project_index_remove_subtree(
     removed
 }
 
-/// `Path::starts_with` against stored index paths, case-folded on Windows:
-/// the filesystem there is case-insensitive, so a case-only rename reports
-/// the new spelling while stored entries keep the casing seen at index time.
-/// Matching exactly would leave the stale entry behind as a ghost beside the
-/// re-indexed file. The upsert lookup needs no folding: this removal runs
-/// first and clears any case-variant entry before the fresh one is inserted.
 fn project_index_entry_starts_with(entry_path: &Path, prefix: &Path) -> bool {
     #[cfg(not(windows))]
     {
@@ -1233,9 +1152,6 @@ fn project_index_retain_symbols_outside(symbols: &mut Vec<ProjectSymbol>, absolu
     symbols.len() != before
 }
 
-/// Re-scans only the subtree at `subtree_root` with the same walk rules and
-/// caps as the full rebuild. Returns the collected entries (workspace-relative
-/// paths, sorted) and whether the file cap stopped the scan early.
 fn project_index_scan_subtree(
     workspace_root: &Path,
     subtree_root: &Path,
@@ -1263,8 +1179,6 @@ fn project_index_scan_subtree(
 
     for entry in walker.flatten() {
         if entry.depth() == 0 {
-            // The subtree root itself is part of the index (unlike the
-            // workspace root in the full walk): report it as a directory.
             entries.push(ProjectEntry::from_metadata_parts(
                 subtree_root.to_path_buf(),
                 subtree_root
@@ -1333,19 +1247,6 @@ fn project_index_find_file_entry<'a>(
     (!entry.is_dir && entry.relative_path == relative_path).then_some(entry)
 }
 
-/// Symbol-extraction policy shared by rebuild and incremental updates.
-///
-/// Files are always scanned smallest-first so the symbol cap buys maximum
-/// coverage: without the ordering, files early in the alphabet consume the
-/// whole [`MAX_PROJECT_SYMBOLS`] cap and late-alphabetical files get nothing
-/// even in small projects. Projects above [`PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT`]
-/// additionally stop after [`PROJECT_INDEX_SYMBOL_SCAN_BUDGET_BYTES`] of
-/// source is consumed.
-///
-/// Returns the extracted symbols plus the source bytes spent attempting
-/// extraction (charged per scanned file, including files that yielded no
-/// symbols, to bound IO as well as memory). The returned spend is 0 for
-/// small projects, which never budget.
 fn collect_project_symbols(
     entries: &[ProjectEntry],
     total_file_count: usize,
@@ -1380,10 +1281,6 @@ fn collect_project_symbols(
     (symbols, budget_used)
 }
 
-/// Extracts symbols for newly added file entries, mirroring the rebuild
-/// policy: small projects scan every added file; large projects scan the
-/// added file only while its size fits the remaining byte budget, so
-/// incremental updates keep filling the same budget the rebuild used.
 fn project_index_extract_symbols_for_new_entries(
     symbols: &mut Vec<ProjectSymbol>,
     new_entries: &[ProjectEntry],
@@ -1397,8 +1294,7 @@ fn project_index_extract_symbols_for_new_entries(
     if total_file_count > PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT && *budget_remaining == 0 {
         return false;
     }
-    // Small projects have no byte budget; their incrementals get the full
-    // AST parse budget. Large projects share what the rebuild left over.
+
     let mut ast_budget = if total_file_count > PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT {
         RUST_AST_PARSE_BUDGET_BYTES.min((*budget_remaining).max(1))
     } else {
@@ -1544,8 +1440,7 @@ mod tests {
 
         assert_eq!(index.files().len(), 1);
         assert_eq!(signature, rebuilt_again);
-        // Cache writes and validation derive the signature from stored entry
-        // metadata with the same function, so this must round-trip exactly.
+
         assert_eq!(index.signature_from_entries(&options), signature);
         assert_eq!(signature.file_count, 1);
         assert!(!signature.truncated);
@@ -1731,8 +1626,7 @@ mod tests {
             default_options.options_fingerprint(),
             include_options.options_fingerprint()
         );
-        // Signatures built with one policy must not satisfy the other, so
-        // on-disk caches indexed with the old policy are treated as stale.
+
         let default_signature =
             ProjectIndex::rebuild_with_signature_options(&root, &default_options).1;
         assert!(default_signature.matches_options(&default_options));
@@ -2277,8 +2171,6 @@ mod tests {
         let mut ast = 1u64 << 20;
         let symbols = extract_project_symbols(&path, Path::new("lib.rs"), None, 8, &mut ast);
 
-        // The AST path parses the whole file, so the oversized line no longer
-        // hides the declaration before it.
         assert_eq!(
             symbols
                 .iter()
@@ -2721,7 +2613,6 @@ mod tests {
             (0, 0, 0)
         );
 
-        // Metadata survives the disk-cache round trip.
         let bytes = serde_json::to_vec(&index).unwrap();
         let loaded = serde_json::from_slice::<ProjectIndex>(&bytes).unwrap();
         let loaded_entry = loaded
@@ -2741,8 +2632,6 @@ mod tests {
         let root = temp_project_dir("collect-symbols-budget");
         fs::create_dir_all(&root).unwrap();
 
-        // Three Rust files with symbols: one big (over the per-file AST and
-        // scan budget when charged), two small ones.
         fs::write(
             root.join("small_a.rs"),
             "fn small_a() {}
@@ -2777,10 +2666,8 @@ mod tests {
             .collect();
         let small_len = entries[0].len;
         assert!(small_len > 0);
-        assert_eq!(big_len, 4100); // "// " + 4096 x + newline
+        assert_eq!(big_len, 4100);
 
-        // Pretend the workspace is above the cliff: budget smaller than the
-        // big file, so only the two smallest files are scanned.
         let budget = small_len * 2;
         let (symbols, used) = collect_project_symbols(
             &entries,
@@ -2795,26 +2682,21 @@ mod tests {
             "spend {used} must stay within budget {budget}"
         );
 
-        // No directory entries are scanned even when present.
         entries.clear();
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn symbol_cap_does_not_starve_late_alphabetical_files() {
-        // Regression: the cap used to be consumed in walk (alphabetical)
-        // order, so a small file sorting late lost its symbols to early
-        // files. Smallest-first ordering must keep it indexed.
         let root = temp_project_dir("symbol-cap-fairness");
         fs::create_dir_all(&root).unwrap();
 
-        // Alphabetically early files stuffed with symbols to exhaust the cap.
         let stuffing = "fn filler() {}
 "
         .repeat(200);
         fs::write(root.join("a_file.rs"), stuffing.clone()).unwrap();
         fs::write(root.join("b_file.rs"), stuffing).unwrap();
-        // Tiny file sorts after them but must win under smallest-first.
+
         fs::write(
             root.join("z_tiny.rs"),
             "pub struct TinySymbol;
@@ -2829,7 +2711,7 @@ mod tests {
             names.contains(&"TinySymbol"),
             "the tiny late-alphabetical file must be scanned first: {names:?}"
         );
-        // The cap forced some filler symbols out instead.
+
         let fillers = names.iter().filter(|name| **name == "filler").count();
         assert!(
             fillers < 400,
@@ -2843,8 +2725,7 @@ mod tests {
     fn rust_ast_extraction_beats_the_line_scanner_on_string_literals() {
         let root = temp_project_dir("rust-ast-vs-line-scan");
         fs::create_dir_all(&root).unwrap();
-        // The line scanner sees "fn fake()" at text position; only the AST
-        // path knows it is inside a string literal.
+
         fs::write(
             root.join("lib.rs"),
             "const SNIPPET: &str = \"fn fake() {}\";
@@ -2871,8 +2752,7 @@ fn real() {}
         for index in 0..PROJECT_INDEX_SYMBOL_SCAN_FILE_LIMIT {
             let _ = fs::write(root.join("src").join(format!("mod_{index}.rs")), "");
         }
-        // One real source file: even above the scan cliff its symbols must
-        // survive under the smallest-first budget policy.
+
         fs::write(
             root.join("src").join("lib.rs"),
             "pub struct BudgetedSymbol;
@@ -2925,14 +2805,12 @@ fn real() {}
         let options = ProjectIndexOptions::new(40_000);
         let mut index = ProjectIndex::rebuild_with_options(&root, &options);
 
-        // Unchanged path: apply must be a no-op.
         assert!(!index.apply_path_changes(&root, &[root.join("src/a.rs")]));
 
-        // New file inserts in sorted position.
         fs::write(root.join("src/b.rs"), "fn b() {}\n").unwrap();
-        // Changed file updates metadata.
+
         fs::write(root.join("src/a.rs"), "fn a() {}\nfn more() {}\n").unwrap();
-        // Deleted file disappears with its entry.
+
         let deleted = root.join("src/a.rs");
         fs::remove_file(&deleted).unwrap();
 
@@ -2975,12 +2853,8 @@ fn real() {}
         let mut index = ProjectIndex::rebuild_with_options(&root, &options);
         assert_eq!(index.files(), &[root.join("src/Foo.rs")]);
 
-        // Case-only rename on a case-insensitive filesystem.
         fs::rename(root.join("src/Foo.rs"), root.join("src/foo.rs")).unwrap();
 
-        // A later batch that only carries the new spelling (the From/To pair
-        // collapsed in an earlier batch) must remove the stored old casing
-        // instead of ghosting `Foo.rs` beside `foo.rs`.
         assert!(index.apply_path_changes(&root, &[root.join("src/foo.rs")]));
         assert_eq!(index.files(), &[root.join("src/foo.rs")]);
         assert!(
@@ -2990,8 +2864,6 @@ fn real() {}
                 .all(|entry| entry.path != root.join("src/Foo.rs"))
         );
 
-        // Feeding the parent directory (the dedupe substitution) rescans the
-        // subtree and rebuilds the entry with the real on-disk casing.
         fs::rename(root.join("src/foo.rs"), root.join("src/Foo.rs")).unwrap();
         assert!(index.apply_path_changes(&root, &[root.join("src")]));
         assert_eq!(index.files(), &[root.join("src/Foo.rs")]);
@@ -3195,7 +3067,6 @@ fn real() {}
                     || symbol.name == "extra")
         );
 
-        // Deleting the file removes its symbols too.
         fs::remove_file(root.join("src/lib.rs")).unwrap();
         assert!(index.apply_path_changes(&root, &[root.join("src/lib.rs")]));
         assert!(

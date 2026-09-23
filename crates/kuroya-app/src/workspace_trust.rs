@@ -49,8 +49,6 @@ pub(crate) fn trusted_workspace_paths_match(left: &Path, right: &Path) -> bool {
     workspace_trust_path_matches_key(left, &right)
 }
 
-/// Root of the workspace trust prompt to arm, if any: only a real (non
-/// placeholder) workspace that is currently untrusted asks for trust.
 pub(crate) fn workspace_trust_prompt_root(
     workspace_placeholder: bool,
     workspace_trusted: bool,

@@ -876,24 +876,21 @@ fn diagnostic_tag_spans_stay_governed_by_tag_settings_not_validation_gate() {
             deprecated: false,
         }],
     );
-    // Severity decorations off, tag styling on.
+
     app.settings.render_validation_decorations = EditorRenderValidationDecorations::Off;
     app.settings.show_unused = true;
     app.settings.show_deprecated = true;
 
     let data = app.prepare_editor_pane_data(7, 0, 8.0, true, true);
 
-    // The validation gate holds for the severity maps ...
     assert!(data.diagnostics_by_line.is_empty());
     assert!(data.diagnostic_messages.is_empty());
-    // ... while tag spans follow their own show_unused/show_deprecated
-    // toggles, independent of the validation setting.
+
     assert_eq!(
         data.diagnostic_tag_spans,
         vec![(0..5, crate::editor_pane_support::DiagnosticTagKind::Unused)]
     );
 
-    // Turning the tag's own toggle off clears the tag spans.
     app.settings.show_unused = false;
     let data = app.prepare_editor_pane_data(7, 0, 8.0, true, true);
     assert!(data.diagnostic_tag_spans.is_empty());

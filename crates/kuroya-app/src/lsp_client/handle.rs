@@ -23,33 +23,18 @@ use tokio::{
 pub(crate) const LSP_COMMAND_QUEUE_CAPACITY: usize = 1024;
 static NEXT_LSP_CLIENT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// Upper bound on didOpen paths tracked per client so a pathological session
-/// cannot grow the table without limit. Beyond the cap the OLDEST insertion
-/// order is not preserved (HashSet); tracking simply stops accepting new
-/// paths, which only degrades didClose filtering back to the fallback.
 const MAX_TRACKED_OPEN_DOCUMENTS_PER_CLIENT: usize = 4_096;
 
-/// Provider capabilities the server advertised in its initialize result.
-/// Everything defaults to `false`; readers treat "unknown" (no handshake yet)
-/// the same as "not advertised" except where a fallback keeps legacy servers
-/// working (see the document-sync refresh gates).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct LspServerCapabilities {
-    /// `renameProvider` was advertised (bool or object shape).
     pub(crate) rename_provider: bool,
-    /// `renameProvider.prepareProvider` was advertised; implies
-    /// `textDocument/prepareRename` is available.
+
     pub(crate) prepare_rename_supported: bool,
     pub(crate) semantic_tokens_provider: bool,
     pub(crate) inlay_hint_provider: bool,
     pub(crate) code_lens_provider: bool,
 }
 
-/// Set-once shared view of the negotiated [`LspServerCapabilities`]. The
-/// runtime task writes it when the initialize response arrives; the app frame
-/// loop reads it through the handle to gate requests the server never
-/// advertised. Sharing mirrors the watched-files state: one allocation on the
-/// handle, cheap clones on both sides.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LspServerCapabilitiesState {
     inner: Arc<Mutex<Option<LspServerCapabilities>>>,
@@ -62,8 +47,6 @@ impl LspServerCapabilitiesState {
         }
     }
 
-    /// The negotiated capabilities, or `None` until the initialize response
-    /// has been processed (spawned-but-not-ready clients and test handles).
     pub(crate) fn get(&self) -> Option<LspServerCapabilities> {
         self.inner
             .lock()
@@ -73,10 +56,6 @@ impl LspServerCapabilitiesState {
     }
 }
 
-/// Per-client table of document paths that were opened with
-/// `textDocument/didOpen` and not yet closed. Written by the app frame loop
-/// when a didOpen queues successfully; read back to keep didClose fan-out
-/// limited to clients that actually hold the document.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LspOpenDocumentsState {
     inner: Arc<Mutex<HashSet<PathBuf>>>,
@@ -120,22 +99,14 @@ impl LspOpenDocumentsState {
 pub struct LspClientHandle {
     pub(super) tx: CommandSender<LspClientCommand>,
     shutdown_tx: ShutdownSender<bool>,
-    /// Shared ring of the server's stderr output / window/logMessage text.
-    /// Carried on the handle so app-side diagnostics can read it; the
-    /// runtime task and its stderr reader share the same ring via clones.
+
     #[allow(dead_code)]
     pub(super) stderr_log: LspStderrLog,
-    /// Shared table of the server's dynamically registered
-    /// `workspace/didChangeWatchedFiles` watchers. The runtime task writes
-    /// it when `client/registerCapability` / `client/unregisterCapability`
-    /// arrive; the app frame loop reads it to forward filesystem events.
+
     pub(super) watched_files: LspWatchedFilesState,
-    /// Shared negotiated provider capabilities, written by the runtime task
-    /// during the initialize handshake and read through the handle to gate
-    /// capability-blind feature requests.
+
     pub(super) capabilities: LspServerCapabilitiesState,
-    /// Shared table of didOpen'd document paths used to scope didClose
-    /// fan-out to clients that actually hold the document open.
+
     pub(super) open_documents: LspOpenDocumentsState,
     pub(super) generation: u64,
 }
@@ -185,14 +156,10 @@ impl LspClientHandle {
         self.generation
     }
 
-    /// The negotiated server capabilities, or `None` until the initialize
-    /// response has been processed for this client.
     pub(crate) fn capabilities(&self) -> Option<LspServerCapabilities> {
         self.capabilities.get()
     }
 
-    /// The tracked open-document table for this client (didClose fan-out
-    /// filtering).
     pub(crate) fn open_documents(&self) -> &LspOpenDocumentsState {
         &self.open_documents
     }

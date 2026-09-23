@@ -29,11 +29,6 @@ impl KuroyaApp {
             return;
         };
 
-        // prepareRename gate: when the popup flow retained a validated
-        // prepare result (server advertised prepareProvider), the position
-        // must still match and the cursor must still sit inside the
-        // server-provided range. Without a retained result (server without
-        // prepare support) the rename is sent directly, as before.
         if let Some(prepare) = &self.lsp_rename_prepare {
             if !prepare.matches_position(id, &path, version, line, character) {
                 self.status = "Rename position changed; cancel and rename again".to_owned();
@@ -189,8 +184,7 @@ mod tests {
         let version = open_active_buffer(&mut app, 7, source.clone(), 3);
         app.lsp_rename_open = true;
         app.lsp_rename_input = "renamed_symbol".to_owned();
-        // The prepare validated a different buffer version than the current
-        // one: the result is stale and the rename must be refused.
+
         app.lsp_rename_prepare = Some(LspRenamePrepareTarget {
             id: 7,
             path: source,

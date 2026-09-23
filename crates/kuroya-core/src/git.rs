@@ -190,10 +190,7 @@ pub const MIN_GIT_COMMIT_SHORT_HASH_LENGTH: usize = 7;
 pub const DEFAULT_GIT_COMMIT_SHORT_HASH_LENGTH: usize = 7;
 pub const MAX_GIT_COMMIT_SHORT_HASH_LENGTH: usize = 40;
 const MAX_GIT_COMMIT_HISTORY_LIMIT: usize = 10_000;
-/// Upper bound for the rendered patch text of a commit or stash diff.
-/// Matches the app-side `GIT_DIFF_MAX_BYTES` cap in kuroya-app's
-/// git_diff_state so opening a commit that regenerates huge files cannot
-/// balloon the virtual diff buffer into gigabytes of patch text.
+
 const MAX_GIT_COMMIT_DIFF_PATCH_BYTES: usize = 3 * 1024 * 1024;
 pub const MIN_GIT_STATUS_LIMIT: usize = 0;
 pub const DEFAULT_GIT_STATUS_LIMIT: usize = 10_000;
@@ -269,19 +266,12 @@ pub struct GitSnapshot {
     status_limited: bool,
     remote_divergence: Option<GitRemoteDivergence>,
     scan_error: Option<String>,
-    /// Monotonic marker for entry-affecting mutations: a full scan starts it
-    /// at 1 and [`GitSnapshot::merge_scoped_statuses`] increments it whenever
-    /// it changes entries. Per-frame caches keyed on display rows compare it
-    /// to detect git state changes without diffing entry lists.
+
     revision: u64,
 }
 
 const MAX_GIT_SCAN_ERROR_CHARS: usize = 200;
 
-/// Status entries restricted to an explicit set of queried paths, produced by
-/// [`status_entries_for_paths`]. Entry paths are absolute and classified with
-/// the same rules as [`GitSnapshot::scan`], so scoped entries can be merged
-/// into an existing snapshot without a cold rescan.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitScopedStatus {
     pub entries: Vec<GitStatusEntry>,
@@ -381,10 +371,6 @@ impl GitSnapshot {
         self.root.as_deref()
     }
 
-    /// True when this snapshot is bound to an opened repository workdir.
-    /// Snapshots without a repository (git disabled or not found) report
-    /// `false`; snapshots that failed mid-scan keep their root and report
-    /// `true` alongside [`GitSnapshot::scan_error`].
     pub fn has_repository(&self) -> bool {
         self.root.is_some()
     }
@@ -407,35 +393,20 @@ impl GitSnapshot {
         &self.entries
     }
 
-    /// Borrow the status entries in display order. Entries are maintained
-    /// sorted by (stage, path) at every mutation, so this is already the
-    /// order the source control views render. Callers that only read the
-    /// entries should prefer this over [`GitSnapshot::entries`] to avoid
-    /// cloning the whole list every frame.
     pub fn entries_slice_sorted(&self) -> &[GitStatusEntry] {
         debug_assert!(entries_are_display_sorted(&self.entries));
         &self.entries
     }
 
-    /// Clone of the status entries in display order. Entries are maintained
-    /// sorted by (stage, path) at every mutation, so no re-sort happens here;
-    /// prefer [`GitSnapshot::entries_slice_sorted`] when a borrow suffices.
     pub fn entries(&self) -> Vec<GitStatusEntry> {
         debug_assert!(entries_are_display_sorted(&self.entries));
         self.entries.clone()
     }
 
-    /// Monotonic revision counter for entry-affecting mutations. See the
-    /// `revision` field documentation.
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// Ensures this snapshot's revision sorts strictly after
-    /// `previous_revision`. A cold scan builds a fresh snapshot that cannot
-    /// know the revision it replaces, so callers installing a rescanned
-    /// snapshot pass the previous revision here to keep revisions monotonic
-    /// for revision-keyed caches.
     pub fn advance_revision_past(&mut self, previous_revision: u64) {
         if self.revision <= previous_revision {
             self.revision = previous_revision.wrapping_add(1);
@@ -471,19 +442,6 @@ impl GitSnapshot {
         self.statuses.is_empty()
     }
 
-    /// Folds a scoped status query back into this snapshot without a cold
-    /// rescan. `queried_paths` may be absolute or relative to `root`; every
-    /// queried path absent from `result_entries` is treated as clean and its
-    /// entry is removed, while each result entry is upserted.
-    ///
-    /// Scoped updates never change `branch`, `remote_divergence`, or
-    /// `scan_error`: those describe HEAD and upstream state, which path-level
-    /// mutations do not touch. Counts are rebuilt from the merged status map
-    /// and entries keep the (stage, path) sort order. When `result_entries`
-    /// reaches `status_limit`, `status_limited` is raised like the full scan
-    /// does (it is never cleared here; a cold rescan resets it).
-    ///
-    /// Returns whether any entry actually changed.
     pub fn merge_scoped_statuses(
         &mut self,
         root: &Path,
@@ -574,9 +532,6 @@ fn sort_status_entries(entries: &mut [GitStatusEntry]) {
     });
 }
 
-/// Debug guard for the display-order invariant: `GitSnapshot` maintains its
-/// entries sorted by (stage, path) at every mutation, so accessors can hand
-/// them out without re-sorting.
 fn entries_are_display_sorted(entries: &[GitStatusEntry]) -> bool {
     use std::cmp::Ordering;
     entries.windows(2).all(|window| {
@@ -595,9 +550,6 @@ struct CollectedStatusEntries {
     status_limited: bool,
 }
 
-/// Builds snapshot entries from a libgit2 status list. Shared by the full
-/// scan and the pathspec-scoped query so both paths classify deltas
-/// identically.
 fn collect_status_entries(
     statuses: &Statuses<'_>,
     workdir: &Path,
@@ -689,16 +641,6 @@ fn scan_repository(
     }
 }
 
-/// Status for an explicit set of paths, classified exactly like
-/// [`GitSnapshot::scan`] but restricted to `paths` through libgit2
-/// pathspecs. `paths` are absolute worktree paths (the same form used by
-/// [`GitSnapshot`] entries); pass the result to
-/// [`GitSnapshot::merge_scoped_statuses`] to update an existing snapshot.
-///
-/// Untracked directories are always recursed: libgit2 resolves a file
-/// pathspec inside a fresh untracked directory only when recursion is on,
-/// and a directory pathspec would otherwise collapse to a single untracked
-/// directory entry instead of the files the full scan reports.
 pub fn status_entries_for_paths(
     repo: &Repository,
     paths: &[PathBuf],
@@ -742,16 +684,6 @@ fn scoped_status_path_error(error: anyhow::Error) -> git2::Error {
     git2::Error::from_str(&error.to_string())
 }
 
-/// Opens the repository backing `snapshot`, queries status for `paths` only,
-/// and merges the result back into a clone of `snapshot` via
-/// [`GitSnapshot::merge_scoped_statuses`]. `paths` are absolute worktree
-/// paths (relative paths are resolved against the snapshot root by the
-/// merge). Branch, divergence, and scan-error metadata are preserved.
-///
-/// Returns `None` when the snapshot has no repository, the repository cannot
-/// be opened, or the scoped query fails; callers should fall back to a full
-/// scan. This is the app-facing entry point for incremental refreshes so
-/// git2 usage stays inside kuroya-core.
 #[allow(clippy::too_many_arguments)]
 pub fn git_scoped_status_snapshot(
     snapshot: &GitSnapshot,
@@ -922,10 +854,7 @@ pub fn list_commit_history_with_timeline_date(
 
     let short_hash_length = clamp_git_commit_short_hash_length(short_hash_length);
     let repo = Repository::discover(workspace_root)?;
-    // A freshly initialized repository has an unborn HEAD, so
-    // `revwalk.push_head` below fails there; report an empty history and let
-    // the history panel render its "no commits yet" state instead of a
-    // failure.
+
     if let Err(error) = repo.head() {
         if error.code() == git2::ErrorCode::UnbornBranch {
             return Ok(Vec::new());
@@ -962,9 +891,6 @@ pub fn list_commit_history_with_timeline_date(
     Ok(commits)
 }
 
-/// Rename detection for commit and stash diffs, mirroring `git diff`
-/// defaults so a moved file renders as one rename delta instead of an
-/// unrelated delete plus add.
 fn commit_diff_find_options() -> DiffFindOptions {
     let mut find_options = DiffFindOptions::new();
     find_options.renames(true);
@@ -1563,11 +1489,6 @@ pub fn stage_paths<'a>(
         return Ok(());
     }
 
-    // A rename is a single status entry with two paths, but callers (and the
-    // source control panel) only ever name one side. Resolve the matching
-    // status deltas so both sides are staged together: staging only the new
-    // path would leave the old path's deletion unstaged and a commit would
-    // contain both files.
     let mut targets = requested.clone();
     targets.extend(status_matched_paths(&repo, &requested)?);
 
@@ -1585,10 +1506,6 @@ pub fn stage_paths<'a>(
     Ok(())
 }
 
-/// Collects the worktree-relative paths of every non-conflicted status entry
-/// whose paths (including both sides of rename deltas) intersect `requested`.
-/// The full status list is required because libgit2 only pairs rename deltas
-/// on an unscoped scan.
 fn status_matched_paths(
     repo: &Repository,
     requested: &BTreeSet<PathBuf>,
@@ -1691,10 +1608,6 @@ pub fn unstage_paths<'a>(
         return Ok(());
     }
 
-    // Callers name a staged rename by its new path only, but resetting just
-    // that path would leave the old path's deletion staged. Reset both sides
-    // of the rename back to HEAD so the change returns to a plain unstaged
-    // rename with a clean index.
     let mut targets = requested.clone();
     targets.extend(status_matched_paths(&repo, &requested)?);
 
@@ -1733,9 +1646,6 @@ pub fn discard_paths<'a>(
         return Ok(());
     }
 
-    // Scoped status over just the discarded paths; keep the plan's option
-    // parity with the historical full scan (no submodule exclusion, default
-    // rename threshold).
     let absolute_paths = requested
         .iter()
         .map(|path| worktree.absolute_path(&path.relative))

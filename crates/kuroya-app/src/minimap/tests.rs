@@ -237,7 +237,6 @@ fn minimap_row_count_prefers_fold_filtered_rows_and_clamps_to_buffer() {
 
 #[test]
 fn minimap_thumb_math_uses_fold_filtered_row_space() {
-    // 1000 buffer lines, but folding collapses them to 40 scrollable rows.
     let row_count = minimap_row_count(&[], 40, 1000);
     assert_eq!(row_count, 40);
     let visible_lines = minimap_visible_line_count(200.0, 20.0, row_count);
@@ -247,7 +246,7 @@ fn minimap_thumb_math_uses_fold_filtered_row_space() {
 
     let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(80.0, 200.0));
     let viewport = minimap_viewport_rect(rect, first_visible_row, visible_lines, row_count);
-    // Height: 10/40 * 200 = 50 clamps to 44; travel = 156; top ratio = 10/30.
+
     assert!((viewport.height() - 44.0).abs() < 0.0001);
     let expected_top = (10.0f64 / 30.0) * (200.0 - 44.0);
     assert!((f64::from(viewport.top()) - expected_top).abs() < 0.0001);
@@ -258,17 +257,16 @@ fn minimap_click_maps_fold_filtered_row_to_buffer_line() {
     let visible_line_indices = vec![0usize, 1, 5, 6, 9];
     let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(80.0, 100.0));
 
-    // Click near the bottom: center row 4 -> target row 3 -> buffer line 6.
     assert_eq!(
         minimap_jump_line_from_y(100.0, rect, 10, 5, 2, &visible_line_indices),
         6
     );
-    // Click at the top maps to the first visible buffer line.
+
     assert_eq!(
         minimap_jump_line_from_y(0.0, rect, 10, 5, 2, &visible_line_indices),
         0
     );
-    // Without folds the fold-filtered row is the buffer line.
+
     assert_eq!(minimap_jump_line_from_y(100.0, rect, 10, 5, 2, &[]), 3);
 }
 
@@ -740,14 +738,11 @@ fn minimap_section_header_cache_debounces_version_rescans_within_window() {
     buffer.set_single_cursor(buffer.len_chars());
     buffer.insert_at_cursor("#region Later\n");
 
-    // Within the rescan debounce window the previous headers are reused
-    // without scanning the new buffer version.
     let debounced = cache.headers_for(&buffer, true, false, "");
     assert!(Arc::ptr_eq(&first, &debounced));
     assert_eq!(cache.len(), 1);
     assert_eq!(cache.hits(), 0);
 
-    // Once the window elapses the next frame rescans the new version.
     cache.entries[0].last_rescan = Instant::now() - Duration::from_secs(2);
     let refreshed = cache.headers_for(&buffer, true, false, "");
     assert!(!Arc::ptr_eq(&first, &refreshed));

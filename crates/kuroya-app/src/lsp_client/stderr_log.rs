@@ -3,15 +3,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// Maximum stderr text retained per language server (a bounded ring of the
-/// most recent lines).
 pub(crate) const LSP_STDERR_LOG_MAX_CHARS: usize = 64 * 1024;
 
-/// How many stderr characters are surfaced in a stopped status message.
 pub(crate) const LSP_STDERR_STATUS_TAIL_CHARS: usize = 96;
 
-/// Shared ring buffer of the most recent server stderr output (and
-/// `window/logMessage` text). Cloning shares the same ring.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LspStderrLog(Arc<Mutex<LspStderrLogState>>);
 
@@ -22,8 +17,6 @@ struct LspStderrLogState {
 }
 
 impl LspStderrLog {
-    /// Append one stderr line, evicting the oldest lines once the ring
-    /// exceeds [`LSP_STDERR_LOG_MAX_CHARS`]. Oversized lines are truncated.
     pub(crate) fn push_line(&self, line: &str) {
         let line = bounded_line(line);
         let mut state = match self.0.lock() {
@@ -41,10 +34,6 @@ impl LspStderrLog {
         }
     }
 
-    /// Last lines joined with newlines, bounded to `max_chars` characters
-    /// (empty when nothing was captured). A single oversized newest line is
-    /// truncated to the budget rather than dropped. The result is not
-    /// display-safe on its own; callers must sanitize before showing it.
     pub(crate) fn tail_chars(&self, max_chars: usize) -> String {
         let state = match self.0.lock() {
             Ok(state) => state,
@@ -57,7 +46,6 @@ impl LspStderrLog {
             let separator = usize::from(!selected.is_empty());
             if used + line_chars + separator > max_chars {
                 if selected.is_empty() && max_chars > 0 {
-                    // Always surface the newest line, truncated to budget.
                     return line.chars().take(max_chars).collect();
                 }
                 break;
@@ -103,11 +91,10 @@ mod tests {
         log.push_line("beta");
         log.push_line("gamma");
 
-        // "beta" + newline + "gamma" is exactly 10 chars.
         assert_eq!(log.tail_chars(10), "beta\ngamma");
-        // One char short only fits the newest line whole.
+
         assert_eq!(log.tail_chars(9), "gamma");
-        // The newest line alone overflows the budget, so it is truncated.
+
         assert_eq!(log.tail_chars(4), "gamm");
     }
 
@@ -130,9 +117,7 @@ mod tests {
 
         let tail = log.tail_chars(LSP_STDERR_LOG_MAX_CHARS);
         assert!(tail.chars().count() <= LSP_STDERR_LOG_MAX_CHARS);
-        // The ring holds 64 lines of 1024 chars; the tail budget of 64 KiB
-        // must additionally fit the joining newlines, so only 63 whole lines
-        // are surfaced: 63 * 1024 + 62 separators <= 64 KiB.
+
         let surfaced_lines = LSP_STDERR_LOG_MAX_CHARS / line_chars - 1;
         assert_eq!(tail.lines().count(), surfaced_lines);
     }

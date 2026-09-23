@@ -135,8 +135,7 @@ impl KuroyaApp {
         ) {
             self.set_active_buffer(id);
         }
-        // The `had_bom` flag on DecodedText cannot flow through the UiEvent plumbing, so the
-        // on-disk BOM is re-sniffed here to make the (stripped, save-dropping) BOM visible.
+
         let bom_note = if !binary
             && (path_has_utf8_bom(&path)
                 || self

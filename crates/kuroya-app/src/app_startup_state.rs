@@ -128,6 +128,7 @@ impl KuroyaApp {
             update_check_in_flight: false,
             update_check_manual: false,
             update_download_in_flight: false,
+            update_downloaded_bytes: Arc::new(AtomicU64::new(0)),
             available_update: None,
             pending_update_install: None,
             next_automatic_update_check_at: initial_automatic_update_check_at(now),

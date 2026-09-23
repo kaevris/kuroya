@@ -100,7 +100,6 @@ fn local_history_browser_command_requires_active_file_then_toggles_state() {
     let path = root.join("src/main.rs");
     let mut app = app_for_test(root.clone());
 
-    // Without a file-backed active buffer the browser must not open.
     assert!(app.run_ui_command(&Command::OpenLocalHistoryBrowser));
     assert!(!app.local_history_browser_open);
     assert_eq!(app.local_history_browser_path, None);
@@ -137,7 +136,6 @@ fn local_history_browser_loaded_results_replace_rows_and_clamp_selection() {
     app.local_history_browser_loading = true;
     let generation = app.workspace_event_generation;
 
-    // Stale generation results are dropped.
     app.apply_local_history_browser_loaded(
         root.clone(),
         generation + 1,
@@ -146,7 +144,6 @@ fn local_history_browser_loaded_results_replace_rows_and_clamp_selection() {
     );
     assert!(app.local_history_browser_snapshots.is_empty());
 
-    // Results for another file are dropped.
     app.apply_local_history_browser_loaded(
         root.clone(),
         generation,

@@ -27,12 +27,11 @@ const LSP_RENAME_PREVIEW_MAX_EDITS: usize = 2_000;
 const LSP_RENAME_PREVIEW_MAX_FILES: usize = 512;
 const LSP_RENAME_PREVIEW_MAX_ROWS: usize =
     LSP_RENAME_PREVIEW_MAX_EDITS + LSP_RENAME_PREVIEW_MAX_FILES;
-// The preview version map stores only u64s; this sentinel means the target was unopened.
+
 const LSP_RENAME_PREVIEW_UNOPENED_VERSION: u64 = u64::MAX;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LspRenamePreviewRow {
-    // Raw variants support manually seeded preview state; normal preparation uses cached labels.
     #[cfg(test)]
     Header {
         path: PathBuf,

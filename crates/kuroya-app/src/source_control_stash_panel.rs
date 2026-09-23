@@ -1450,12 +1450,9 @@ mod tests {
             stash(2, "cccc2222", "On dev: experiment"),
         ];
 
-        // Empty and whitespace-only queries keep every stash row.
         assert_eq!(stash_filter_rows(&stashes, ""), vec![0, 1, 2]);
         assert_eq!(stash_filter_rows(&stashes, "   "), vec![0, 1, 2]);
 
-        // ALL whitespace-separated terms must match, ASCII-case-insensitively,
-        // against the short oid or the message.
         assert_eq!(stash_filter_rows(&stashes, "bbbb ROUTER"), vec![1]);
         assert_eq!(stash_filter_rows(&stashes, "MAIN progress"), vec![0]);
         assert_eq!(stash_filter_rows(&stashes, "aaaa main"), vec![0]);
@@ -1488,8 +1485,6 @@ mod tests {
             vec![0, 9]
         );
 
-        // Rendering the filtered rows keeps every row bound to its stash:
-        // positions shift, but stash refs and action targets do not.
         let displays = source_control_stash_visible_rows(&filtered, 0..10)
             .row_displays()
             .collect::<Vec<_>>();
@@ -1503,8 +1498,6 @@ mod tests {
         );
         assert_eq!(
             displays[1].target(),
-            // The action target row is the stash's row in the full list,
-            // while the stash ref keeps the original git stash index.
             SourceControlStashActionTarget::new(2, &stashes[2])
         );
         assert_eq!(displays[1].stash_ref(), "stash@{9}");
@@ -1519,7 +1512,6 @@ mod tests {
         ];
         let filtered = source_control_filtered_stash_rows(&stashes, "experiment");
 
-        // The single match sits at filtered position 0 (stash row 1).
         assert_eq!(
             source_control_visible_selected_stash_row(&filtered, 0, 0..1),
             Some(0)
@@ -1529,7 +1521,7 @@ mod tests {
                 .map(|(target, _)| target),
             Some(SourceControlStashActionTarget::new(1, &stashes[1]))
         );
-        // Filtered-out stash rows are unreachable at their old positions.
+
         assert!(
             source_control_visible_selected_stash_action_target_at(&filtered, 1, 0..1).is_none()
         );

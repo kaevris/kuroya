@@ -287,10 +287,9 @@ fn session_deserialize_bounds_restored_strings_paths_and_lists() {
     .unwrap();
 
     assert_eq!(session.open_files.len(), PERSISTED_SESSION_PATHS_MAX);
-    // Over-length paths are pruned from path lists instead of being
-    // restored as empty placeholder paths.
+
     assert_eq!(session.open_files[0], workspace.join("src/file-0.rs"));
-    // An over-length single path restores as absent rather than empty.
+
     assert_eq!(session.active_path, None);
     assert_eq!(
         session.project_search_query.chars().count(),
@@ -343,8 +342,7 @@ fn session_deserialize_bounds_restored_strings_paths_and_lists() {
         session.recovery.len(),
         PERSISTED_SESSION_RECOVERY_BUFFERS_MAX
     );
-    // The over-length path is dropped so no empty placeholder path is kept,
-    // while the recovered text survives as an untitled buffer.
+
     assert_eq!(session.recovery[0].path, None);
     assert_eq!(
         session.recovery[0].display_name.chars().count(),

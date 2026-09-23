@@ -37,16 +37,11 @@ impl KuroyaApp {
             .unwrap_or_default();
 
         let Some(client) = self.ensure_lsp_for_buffer(id) else {
-            // No server available: keep the legacy behavior (the popup opens
-            // and submit reports the missing server).
             self.lsp_rename_open = true;
             self.status = "Rename symbol".to_owned();
             return;
         };
 
-        // Capability gate: without an advertised prepareProvider the server
-        // may not answer textDocument/prepareRename at all, so skip straight
-        // to the legacy popup (and the direct textDocument/rename submission).
         let prepare_supported = client
             .capabilities()
             .map(|capabilities| capabilities.prepare_rename_supported)
@@ -57,8 +52,6 @@ impl KuroyaApp {
             return;
         }
 
-        // Prepare-supported server: validate the position first. The popup
-        // only opens once the response reports a renamable range.
         if !client.prepare_rename(id, path.clone(), version, line, character) {
             self.status = lsp_command_queue_failed_status("textDocument/prepareRename");
             return;
@@ -82,10 +75,6 @@ impl KuroyaApp {
         self.status = "Checking rename target...".to_owned();
     }
 
-    /// Handles the `textDocument/prepareRename` response that gates the
-    /// rename popup. Only the newest pending request counts; responses for a
-    /// different position (stale or raced) are dropped, the popup must still
-    /// be closed, and the cursor must not have moved since the request.
     pub(crate) fn handle_lsp_prepare_rename_result(
         &mut self,
         id: BufferId,
@@ -105,8 +94,6 @@ impl KuroyaApp {
             || pending.line != line
             || pending.character != column
         {
-            // A stale or raced response must NOT consume the pending marker:
-            // the real response for the live request can still arrive after.
             return;
         }
         self.lsp_rename_prepare_pending = None;
@@ -121,13 +108,10 @@ impl KuroyaApp {
         }
 
         let Some(range) = range else {
-            // Null/malformed result: the server cannot rename this symbol.
             self.status = "Rename is not available at this position".to_owned();
             return;
         };
 
-        // The prepare result describes the position at request time; if the
-        // cursor or buffer moved since, the validation is stale.
         if self.active_lsp_position() != Some((id, path.clone(), version, line, column)) {
             self.status = "Rename position changed; start rename again".to_owned();
             return;
@@ -318,7 +302,6 @@ mod tests {
         });
         app.status = "Checking rename target...".to_owned();
 
-        // Null result: nothing renamable at the requested position.
         app.handle_lsp_prepare_rename_result(7, source, version, 0, 3, None, None);
 
         assert!(!app.lsp_rename_open);
@@ -341,8 +324,6 @@ mod tests {
             character: 3,
         });
 
-        // A response for a different position must not consume the pending
-        // marker nor open the popup.
         app.handle_lsp_prepare_rename_result(
             7,
             source,
@@ -375,8 +356,6 @@ mod tests {
         }
     }
 
-    /// Pushes the buffer, gives it a cursor on `cursor_char`, and makes it
-    /// the active buffer. Returns the buffer version.
     fn open_active_buffer(
         app: &mut KuroyaApp,
         id: kuroya_core::BufferId,

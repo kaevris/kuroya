@@ -6,22 +6,9 @@ use crate::{
 use kuroya_core::{WatchedFileChange, lsp::path_to_file_uri};
 use std::path::{Path, PathBuf};
 
-/// Upper bound on filesystem events batched into a single
-/// `workspace/didChangeWatchedFiles` notification per client per frame.
-/// Excess events are dropped for that frame; servers re-stat on the next
-/// event, and watcher overflows already trigger a workspace refresh.
 pub(crate) const LSP_WATCHED_FILES_MAX_EVENTS_PER_FRAME: usize = 256;
 
 impl KuroyaApp {
-    /// Forwards this frame's external filesystem changes to every live LSP
-    /// client that registered a matching `workspace/didChangeWatchedFiles`
-    /// watcher, one batched notification per interested client.
-    ///
-    /// The watcher drain carries bare paths (change kinds are lost at the
-    /// watcher channel), so every event is reported as `Changed` (type 2):
-    /// servers re-stat the path, which resolves created and deleted files as
-    /// well. Events under `.git` or app-owned state directories never reach
-    /// the servers.
     pub(crate) fn forward_external_changes_to_lsp_watchers(&mut self, changed: &[PathBuf]) {
         if self.lsp_clients.is_empty() || changed.is_empty() {
             return;
@@ -55,10 +42,6 @@ impl KuroyaApp {
     }
 }
 
-/// Turns drained watcher paths into batched didChangeWatchedFiles events:
-/// `.git` internals, app-owned state directories, and directories are
-/// skipped, and the batch is capped per frame. Returns the kept
-/// `(path, change)` pairs plus the number of dropped events.
 fn lsp_watched_file_events(
     changed: &[PathBuf],
     workspace_root: &Path,

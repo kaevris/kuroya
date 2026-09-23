@@ -55,14 +55,11 @@ pub(super) fn prepare_lsp_process_io(
         child,
         writer,
         reader: BufReader::new(stdout),
-        // Overwritten with the negotiated kind once the handshake completes.
+
         sync_kind: TextDocumentSyncKindSetting::default(),
     })
 }
 
-/// Spawns the detached task that drains the server's stderr into the shared
-/// ring. The task ends on its own once the child exits (its stderr pipe
-/// closes); `kill_on_drop` on the child bounds its lifetime otherwise.
 pub(super) fn spawn_lsp_stderr_reader(stderr: ChildStderr, stderr_log: LspStderrLog) {
     tokio::spawn(copy_lsp_stderr_into_log(stderr, stderr_log));
 }
@@ -86,8 +83,6 @@ fn lsp_process_command(config: &LspServerConfig, root: &Path) -> Command {
     command
 }
 
-/// Structured counterpart to the "LSP unavailable" status message so the app
-/// can mark the language unavailable without parsing the status text.
 pub(super) fn send_lsp_server_unavailable(
     config: &LspServerConfig,
     root: &Path,

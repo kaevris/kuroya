@@ -88,13 +88,9 @@ pub(crate) struct FileWatcher {
     root: PathBuf,
     rx: Receiver<PathBuf>,
     overflowed: Arc<AtomicBool>,
-    /// Resolved git directories with a registered watch (the workspace
-    /// `.git` directory, or the gitdir a worktree-style `.git` file points
-    /// at). Watcher events under these directories must refresh git even
-    /// when they land outside the workspace root.
+
     git_watch_dirs: Vec<PathBuf>,
-    /// Repository roots whose `.git` resolution was already attempted, so
-    /// unwatchable gitdirs degrade silently instead of retrying every tick.
+
     attempted_git_roots: Vec<PathBuf>,
 }
 
@@ -130,16 +126,10 @@ impl FileWatcher {
         &self.root
     }
 
-    /// Resolved git directories covered by a watch on this watcher; watcher
-    /// events under any of them count as git metadata changes.
     pub(crate) fn git_watch_dirs(&self) -> &[PathBuf] {
         &self.git_watch_dirs
     }
 
-    /// Registers a recursive watch on the `.git` directory of `repo_root` so
-    /// repositories resolved outside the workspace tree (a parent repository
-    /// or a linked worktree gitdir) still trigger git refreshes. Each root is
-    /// resolved once; failures degrade silently.
     pub(crate) fn ensure_git_dir_watched(&mut self, repo_root: &Path) {
         if self
             .attempted_git_roots
@@ -229,8 +219,7 @@ fn auxiliary_root_watcher(
         enqueue_watcher_event_filtered(&tx, &overflowed, &path_filter, event);
     })
     .ok()?;
-    // Best-effort initial watches; the watcher is kept even when they fail
-    // so `ensure_git_dir_watched` can register git directories later.
+
     let _ = watcher.watch(&app_state_dir(), RecursiveMode::NonRecursive);
     let dot_git = root.join(".git");
     if dot_git.is_dir() {
@@ -241,10 +230,6 @@ fn auxiliary_root_watcher(
     Some(watcher)
 }
 
-/// Resolves the git directory to watch for `repo_root`: the `.git` directory
-/// itself, or the gitdir a worktree/submodule-style `.git` file points at.
-/// Returns `None` when neither exists or cannot be resolved; callers degrade
-/// to watching nothing extra.
 fn resolve_git_watch_dir(repo_root: &Path) -> Option<PathBuf> {
     let dot_git = repo_root.join(".git");
     if dot_git.is_dir() {
@@ -253,8 +238,6 @@ fn resolve_git_watch_dir(repo_root: &Path) -> Option<PathBuf> {
     git_dir_from_gitfile(&dot_git)
 }
 
-/// Parses a worktree-style `.git` file (`gitdir: <path>`, possibly relative)
-/// and returns the resolved git directory when it exists.
 fn git_dir_from_gitfile(dot_git: &Path) -> Option<PathBuf> {
     let contents = fs::read_to_string(dot_git).ok()?;
     let target = contents
@@ -276,8 +259,6 @@ fn git_dir_from_gitfile(dot_git: &Path) -> Option<PathBuf> {
     resolved.is_dir().then_some(resolved)
 }
 
-/// Collapses `.` and resolvable `..` components so resolved gitdir paths
-/// compare equal to their canonical spellings.
 fn normalize_lexical_path(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     let mut has_root = false;
@@ -306,9 +287,6 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
     normalized
 }
 
-/// The git directories watched for a workspace root, used to attribute
-/// watcher events to git metadata changes even when they resolve outside the
-/// workspace (worktree-style `.git` files).
 fn workspace_git_watch_dirs(root: &Path) -> Vec<PathBuf> {
     resolve_git_watch_dir(root).into_iter().collect()
 }
@@ -404,20 +382,7 @@ fn enqueue_watched_path(tx: &Sender<PathBuf>, overflowed: &AtomicBool, path: Pat
     }
 }
 
-/// Deduplicates watcher paths by their case-folded key, replacing paths that
-/// share a key while their raw spellings disagree with the shared parent
-/// directory.
-///
-/// Windows reports a case-only rename (`Foo.rs` -> `foo.rs`) as `From(old)` +
-/// `To(new)` events whose case-folded keys are identical; keeping either
-/// spelling alone makes attribution stat the stale path, miss, and drop the
-/// file from the project index until the next full rewalk. The substituted
-/// parent directory survives attribution and makes the incremental index
-/// update rescan the directory, restoring the real casing from the walk.
 pub(crate) fn collapse_case_only_path_collisions(paths: &mut Vec<PathBuf>) {
-    // First spelling per case-folded key, plus which keys carry spellings
-    // that disagree beyond lexical `.`/`..` normalization (case-only
-    // renames). Merely lexical variants keep the plain first-wins dedupe.
     let mut representatives: HashMap<WatcherPathKey, usize> = HashMap::with_capacity(paths.len());
     let mut colliding_keys: HashSet<WatcherPathKey> = HashSet::new();
     for (index, path) in paths.iter().enumerate() {
@@ -435,7 +400,6 @@ pub(crate) fn collapse_case_only_path_collisions(paths: &mut Vec<PathBuf>) {
         }
     }
     if colliding_keys.is_empty() {
-        // Plain first-wins dedupe still applies.
         let mut seen = HashSet::with_capacity(representatives.len());
         paths.retain(|path| seen.insert(watcher_path_key(path)));
         return;
@@ -446,8 +410,6 @@ pub(crate) fn collapse_case_only_path_collisions(paths: &mut Vec<PathBuf>) {
         let key = watcher_path_key(path);
         if colliding_keys.contains(&key) {
             if representatives[&key] != index {
-                // Later spellings of a renamed path are covered by the
-                // substituted parent directory (or the kept spelling).
                 continue;
             }
             match path
@@ -458,11 +420,8 @@ pub(crate) fn collapse_case_only_path_collisions(paths: &mut Vec<PathBuf>) {
                     if seen.insert(watcher_path_key(parent)) {
                         deduped.push(parent.to_path_buf());
                     }
-                    // A parent already present in the batch covers the whole
-                    // group; nothing more is needed.
                 }
-                // No parent directory to rescan (a bare relative name):
-                // keep the first spelling so attribution still sees it.
+
                 None => {
                     if seen.insert(key) {
                         deduped.push(path.clone());
@@ -996,9 +955,6 @@ mod tests {
         let old = PathBuf::from("workspace/src/Foo.rs");
         let new = PathBuf::from("workspace/src/foo.rs");
 
-        // A case-only rename reaches the channel as From(old) + To(new);
-        // keeping either spelling alone would make attribution stat the stale
-        // path and lose the file, so the pair must become the parent dir.
         enqueue_watcher_event(
             &tx,
             &overflowed,
@@ -1084,16 +1040,12 @@ mod git_watch_tests {
         let dot_git = root.join("worktree").join(".git");
         fs::create_dir_all(dot_git.parent().unwrap()).unwrap();
 
-        // Relative gitdir targets resolve against the directory holding
-        // the `.git` file.
         fs::write(&dot_git, "gitdir: ../parent-repo/.git\n").unwrap();
         assert_eq!(git_dir_from_gitfile(&dot_git), Some(git_dir.clone()));
 
-        // Absolute targets pass through.
         fs::write(&dot_git, format!("gitdir: {}", git_dir.display())).unwrap();
         assert_eq!(git_dir_from_gitfile(&dot_git), Some(git_dir));
 
-        // Malformed files and missing targets degrade to None.
         fs::write(&dot_git, "not a gitdir file").unwrap();
         assert_eq!(git_dir_from_gitfile(&dot_git), None);
         fs::write(&dot_git, "gitdir: ../missing/.git").unwrap();
@@ -1120,7 +1072,6 @@ mod git_watch_tests {
         assert_eq!(workspace_git_watch_dirs(&plain), vec![plain.join(".git")]);
         assert_eq!(workspace_git_watch_dirs(&linked), vec![git_dir]);
 
-        // No `.git` at all resolves to nothing.
         let bare = root.join("bare");
         fs::create_dir_all(&bare).unwrap();
         assert!(workspace_git_watch_dirs(&bare).is_empty());
@@ -1137,13 +1088,10 @@ mod git_watch_tests {
         fs::create_dir_all(&parent_git).unwrap();
         let mut watcher = FileWatcher::new(&workspace).expect("watcher on temp workspace");
 
-        // The workspace itself has no `.git`, so only the parent repository
-        // git dir ends up watched.
         assert!(watcher.git_watch_dirs().is_empty());
         watcher.ensure_git_dir_watched(parent_git.parent().unwrap());
         assert_eq!(watcher.git_watch_dirs(), std::slice::from_ref(&parent_git));
 
-        // Later calls are no-ops (tracked by attempted roots).
         watcher.ensure_git_dir_watched(parent_git.parent().unwrap());
         assert_eq!(watcher.git_watch_dirs(), std::slice::from_ref(&parent_git));
 

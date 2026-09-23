@@ -34,20 +34,9 @@ pub(crate) fn state_dir(workspace_root: &Path) -> PathBuf {
     external_workspace_state_dir(&normalized)
 }
 
-/// Buckets workspace state by the canonical workspace root so the same
-/// folder opened through different spellings — case differences, junctions,
-/// subst drives, `.`/`..` segments — hashes to a single bucket instead of
-/// silently stranding the session and re-arming the trust prompt.
-/// Canonicalization needs the path to exist; when it fails (fresh or
-/// inaccessible root) the lexical normalization below is used, which keeps
-/// such buckets stable. Sessions saved before canonicalization stay under
-/// the old raw-text bucket; the canonical bucket starts fresh (accepted
-/// one-time migration cost for already-saved workspaces).
 fn canonical_workspace_root_for_storage(workspace_root: &Path) -> PathBuf {
     let normalized = normalize_workspace_root_for_storage(workspace_root);
     match fs::canonicalize(&normalized) {
-        // canonicalize yields `\\?\`-prefixed verbatim paths on Windows;
-        // strip the prefix so the hashed text matches plain spellings.
         Ok(canonical) => normalize_native_path(canonical),
         Err(_) => normalized,
     }
@@ -490,8 +479,6 @@ mod tests {
         fs::create_dir_all(workspace.join("src")).unwrap();
         let dotted = workspace.join("src").join("..");
 
-        // Canonicalization resolves `.`/`..` spellings of an existing root
-        // to one bucket.
         assert_eq!(state_dir(&dotted), state_dir(&workspace));
 
         fs::remove_dir_all(workspace).unwrap();
@@ -502,8 +489,6 @@ mod tests {
         let workspace = temp_path("canonical-missing-root");
         let dotted = workspace.join(".").join("sub").join("..");
 
-        // Neither spelling exists, so canonicalization fails for both and
-        // the lexical normalization keeps one bucket.
         assert_eq!(state_dir(&dotted), state_dir(&workspace));
     }
 
@@ -515,8 +500,6 @@ mod tests {
         let lower_spelling = PathBuf::from(workspace.to_string_lossy().to_ascii_lowercase());
         assert_ne!(lower_spelling, workspace);
 
-        // Canonicalization resolves both spellings to the true on-disk
-        // casing, so one folder hashes to one bucket either way.
         assert_eq!(state_dir(&lower_spelling), state_dir(&workspace));
 
         fs::remove_dir_all(&workspace).unwrap();

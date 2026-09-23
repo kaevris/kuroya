@@ -76,9 +76,6 @@ pub struct AppState {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct PersistedSession {
-    // `default` keeps a session JSON that is missing `workspace_root` from
-    // failing the whole parse: it restores with an empty root, which the
-    // restore path already treats as a placeholder session.
     #[serde(default, deserialize_with = "deserialize_session_path")]
     pub workspace_root: PathBuf,
     #[serde(default, deserialize_with = "deserialize_session_paths")]
@@ -677,9 +674,6 @@ fn deserialize_session_path<'de, D>(deserializer: D) -> Result<PathBuf, D::Error
 where
     D: Deserializer<'de>,
 {
-    // A rejected single path falls back to an empty path, which the restore
-    // normalization already prunes, so one corrupt entry cannot fail the
-    // whole session parse.
     Ok(BoundedPath::deserialize(deserializer)?
         .into_restored_entry()
         .unwrap_or_default())
@@ -773,8 +767,7 @@ where
             let Some(value) = seq.next_element::<Raw>()? else {
                 return Ok(values);
             };
-            // Rejected entries are pruned instead of persisted as empty
-            // placeholders that would occupy one of the bounded slots.
+
             if let Some(mapped) = value.into_restored_entry() {
                 values.push(mapped);
             }
@@ -784,8 +777,6 @@ where
     }
 }
 
-/// Maps one raw restored entry onto its session value, rejecting entries
-/// whose stored text cannot be restored safely.
 trait RestoredEntry<T> {
     fn into_restored_entry(self) -> Option<T>;
 }
@@ -859,9 +850,6 @@ impl<'de, const CHARS: usize> Deserialize<'de> for BoundedString<CHARS> {
     }
 }
 
-/// A restored path that was accepted: `None` marks a rejected entry (over
-/// the restored-path char budget, or carrying control characters), which
-/// bounded list visitors prune instead of storing as an empty path.
 struct BoundedPath(Option<PathBuf>);
 
 impl<'de> Deserialize<'de> for BoundedPath {
@@ -906,10 +894,6 @@ impl<'de> Visitor<'de> for BoundedPathVisitor {
     }
 }
 
-/// Rejects (rather than silently storing) restored paths that exceed the
-/// char budget or carry control characters. Rejected entries are pruned by
-/// the bounded visitors so they cannot displace real entries from bounded
-/// lists with empty placeholder paths.
 fn bounded_path(value: &str) -> Option<PathBuf> {
     if value.chars().count() > PERSISTED_SESSION_PATH_TEXT_MAX_CHARS {
         return None;
@@ -920,9 +904,6 @@ fn bounded_path(value: &str) -> Option<PathBuf> {
     Some(PathBuf::from(value))
 }
 
-/// Mirrors kuroya-core `workspace_paths::path_contains_control`: JSON can
-/// smuggle `\u0000` and other control or bidirectional-format characters
-/// into restored paths, so they are rejected outright.
 fn path_text_contains_control(value: &str) -> bool {
     value.chars().any(is_unsafe_path_char)
 }
@@ -939,9 +920,6 @@ fn is_unsafe_path_char(ch: char) -> bool {
         )
 }
 
-/// A restored optional path list entry: `Kept` carries a real entry (a JSON
-/// `null` stays a `None` pane slot), `Rejected` marks a path that failed the
-/// bounded-path checks and is pruned by the visitor.
 enum BoundedOptionalPath {
     Kept(Option<PathBuf>),
     Rejected,

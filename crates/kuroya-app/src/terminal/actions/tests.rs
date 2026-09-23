@@ -640,7 +640,6 @@ fn terminal_response_flush_preserves_scrollback_position() {
     let before = scroll_process_session_back(&mut pane, 0);
     assert!(before > 0);
 
-    // A cursor-position report synthesized while the user reads scrollback.
     pane.sessions[0]
         .parser
         .callbacks_mut()

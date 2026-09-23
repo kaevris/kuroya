@@ -63,10 +63,7 @@ pub(crate) use ranking::{
 pub(crate) const MAX_QUICK_OPEN_RECENT_FILES: usize = 80;
 pub(crate) const MAX_QUICK_OPEN_QUERY_MEMORY: usize = 128;
 pub(crate) const QUICK_OPEN_RESULT_LIMIT: usize = 80;
-/// Matches retained for prefix-extension reuse. The displayed list is the
-/// top [`QUICK_OPEN_RESULT_LIMIT`], but reuse needs the wider matched set:
-/// narrowing to the displayed rows would silently drop files that ranked
-/// below the cut yet are the best matches for the extended query.
+
 pub(crate) const QUICK_OPEN_REUSE_LIMIT: usize = 4_096;
 pub(crate) const QUICK_OPEN_RESULT_LABEL_MAX_CHARS: usize = 160;
 
@@ -100,21 +97,14 @@ impl QuickOpenBackgroundRank {
     }
 }
 
-/// A completed background ranking, kept per overlay session so a strict query
-/// extension can narrow the next candidate set to the paths that already
-/// matched (see `candidates_for_query` in `quick_open_overlay.rs`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QuickOpenCompletedRanking {
-    /// Sanitized query pattern the ranking was run for.
     pub(crate) query: String,
-    /// Project index generation the ranking was computed against.
+
     pub(crate) generation: u64,
-    /// Ranked match paths retained for prefix-extension reuse, bounded by
-    /// [`QUICK_OPEN_REUSE_LIMIT`] (wider than the displayed result list).
+
     pub(crate) matched_paths: Vec<PathBuf>,
-    /// True when the ranking hit the reuse limit, meaning `matched_paths` is
-    /// a truncated subset of the real match set and must not be used to
-    /// narrow a longer query.
+
     pub(crate) matched_paths_truncated: bool,
 }
 
@@ -169,10 +159,9 @@ pub(crate) struct QuickOpenResultsCache {
     pub(crate) result_labels: Vec<String>,
     pub(crate) results: Vec<QuickOpenResult>,
     pub(crate) background_rank: Option<QuickOpenBackgroundRank>,
-    /// When the query text was last edited while the overlay is open; ranking
-    /// re-runs are debounced until `QUICK_OPEN_RANK_DEBOUNCE` has elapsed.
+
     pub(crate) last_query_changed_at: Option<Instant>,
-    /// Last accepted background ranking, kept for prefix candidate reuse.
+
     pub(crate) completed_ranking: Option<QuickOpenCompletedRanking>,
 }
 

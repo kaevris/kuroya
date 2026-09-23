@@ -540,9 +540,6 @@ impl MinimapSectionHeaderCache {
                 .unwrap_or_else(minimap_empty_section_headers);
         }
 
-        // The buffer changed since the last scan. Debounce the full-buffer
-        // rescan so typing does not rescan every keystroke: reuse the previous
-        // headers until the debounce window elapses since the last rescan.
         let now = Instant::now();
         if self.rescan_debounce > Duration::ZERO
             && let Some(entry) = self
@@ -694,9 +691,7 @@ pub(crate) fn render_minimap(
 ) -> Option<usize> {
     let size = minimap_render_size(ui.available_width(), ui.available_height())?;
     let line_count = buffer.len_lines().max(1);
-    // The editor scrolls in fold-filtered row space, so the thumb and click
-    // mapping must use the same row count the ScrollArea renders, not the raw
-    // buffer line count.
+
     let row_count = minimap_row_count(visible_line_indices, visible_row_count, line_count);
     let visible_lines = minimap_visible_line_count(viewport_height, row_height, row_count);
     let first_visible_row = minimap_first_visible_line(scroll_offset_y, row_height, row_count);
@@ -854,9 +849,6 @@ fn minimap_background_color(visuals: &egui::Visuals, background_image_active: bo
     minimap_background_fill(visuals.code_bg_color, background_image_active)
 }
 
-// The minimap base slab is opaque chrome over the editor background, so while
-// a background image is active it must go away entirely and let the image show
-// through, exactly like the editor rows and their overlays do.
 fn minimap_background_fill(bg_color: Color32, background_image_active: bool) -> Color32 {
     if background_image_active {
         Color32::TRANSPARENT

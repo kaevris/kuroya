@@ -256,10 +256,6 @@ fn status_language_display_label(language: &str) -> Cow<'_, str> {
         .unwrap_or(Cow::Borrowed("PlainText"))
 }
 
-/// Best-effort encoding label for the active buffer from reachable open-file metadata.
-/// Per-buffer BOM state is not tracked, so "UTF-8 BOM" reflects a BOM character still
-/// present in the buffer text; freshly decoded files have the BOM stripped and are
-/// surfaced via the "(UTF-8 BOM)" note in the file-open status message instead.
 fn encoding_status_label(buffer: &TextBuffer, binary_preview: bool) -> &'static str {
     if binary_preview {
         let first_line_prefix = buffer

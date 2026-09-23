@@ -28,42 +28,23 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Minimum time between a query edit and the next background ranking run.
 const QUICK_OPEN_RANK_DEBOUNCE: Duration = Duration::from_millis(150);
 
-/// Pure decision helper: a ranking re-run is due only once the debounce window
-/// has fully elapsed since the last query edit.
 fn ranking_due(last_change: Instant, now: Instant) -> bool {
     now.saturating_duration_since(last_change) >= QUICK_OPEN_RANK_DEBOUNCE
 }
 
-/// Remaining time to repaint after: the rest of the debounce window.
 fn quick_open_rank_debounce_delay(last_change: Instant, now: Instant) -> Duration {
     QUICK_OPEN_RANK_DEBOUNCE.saturating_sub(now.saturating_duration_since(last_change))
 }
 
-/// Candidate set for the next background ranking run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CandidateSource<'a> {
-    /// Rank every indexed file (plus open buffers).
     Full,
-    /// Rank only the paths matched by the previous completed ranking.
+
     Reuse(&'a [PathBuf]),
 }
 
-/// Decides which candidate set a ranking re-run may scan.
-///
-/// When the new query extends the previous completed query (including the
-/// identical query, e.g. line/column suffix edits) and the project index
-/// generation is unchanged, the candidate set is restricted to the previous
-/// matched set: skim's matcher is subsequence-based, so any path matching the
-/// longer query also matched the prefix query, and narrowing cannot lose
-/// matches. Scores are recomputed fresh on the subset. The retained set is
-/// the previous ranking's result paths, so it is bounded by
-/// `QUICK_OPEN_RESULT_LIMIT`. An empty previous query never reuses: its
-/// "matches" are the unfiltered default-view slice, not a filtered match
-/// set. Any other edit (backspace, unrelated change) or an index generation
-/// change falls back to the full candidate set.
 fn candidates_for_query<'a>(
     previous: Option<(&'a str, &'a [PathBuf], bool)>,
     new_query: &str,
@@ -73,8 +54,6 @@ fn candidates_for_query<'a>(
         return CandidateSource::Full;
     };
     if previous_truncated {
-        // The previous ranking hit the reuse cap, so its match set is a
-        // subset of the real matches; narrowing it would hide files.
         return CandidateSource::Full;
     }
     if previous_query.is_empty() {
@@ -86,7 +65,6 @@ fn candidates_for_query<'a>(
     CandidateSource::Reuse(previous_paths)
 }
 
-/// The file universe handed to a background ranking run.
 #[derive(Debug)]
 enum QuickOpenRankCandidates {
     Index(kuroya_core::ProjectIndex),
@@ -349,9 +327,6 @@ impl KuroyaApp {
             return quick_open_refresh_stale_display_metadata(cache);
         }
 
-        // Debounce: do not spawn a ranking run on every keystroke. Until the
-        // debounce window has elapsed since the last query edit, keep showing
-        // the previous (stale) result rows and repaint when the window ends.
         let now = Instant::now();
         if let Some(last_change) = self
             .quick_open_results_cache
@@ -453,8 +428,7 @@ impl KuroyaApp {
             .current_navigation_location
             .clone_from(&key.current_navigation_location);
         cache.parsed_query = parsed_query;
-        // Keep every match for prefix-extension reuse; only the top rows are
-        // displayed.
+
         cache.completed_ranking = Some(QuickOpenCompletedRanking {
             query: cache.parsed_query.pattern.clone(),
             generation: key.index_generation,
@@ -1097,8 +1071,6 @@ mod tests {
         .expect("project index should deserialize")
     }
 
-    /// A cache holding a completed ranking for `query` whose retained matched
-    /// set is exactly `rels` (no outstanding background rank, no debounce).
     fn seeded_completed_cache(
         generation: u64,
         query: &str,
@@ -1283,8 +1255,6 @@ mod tests {
             .expect("initial rank should be outstanding")
             .request_id;
 
-        // An edit inside the debounce window keeps the outstanding rank and
-        // shows the previous rows instead of spawning a new run.
         app.quick_open_results_cache
             .as_mut()
             .unwrap()
@@ -1304,7 +1274,6 @@ mod tests {
             first_request_id
         );
 
-        // Once the debounce window has elapsed the re-run spawns.
         let last_change = Instant::now()
             .checked_sub(Duration::from_millis(151))
             .expect("test instant underflow");
@@ -1459,7 +1428,7 @@ mod tests {
             candidates_for_query(Some(("al", previous_paths.as_slice(), false)), "alph", true);
 
         assert_eq!(source, CandidateSource::Reuse(previous_paths.as_slice()));
-        // An identical pattern (e.g. only line/column suffix edits) also reuses.
+
         assert_eq!(
             candidates_for_query(
                 Some(("alph", previous_paths.as_slice(), false)),
@@ -1472,8 +1441,6 @@ mod tests {
 
     #[test]
     fn candidates_for_query_falls_back_to_full_after_an_empty_query() {
-        // The empty query's "matched paths" are the unfiltered default-view
-        // slice, so extending it must rescan the full candidate set.
         let default_view_paths = [PathBuf::from("workspace/src/alpha.rs")];
 
         assert_eq!(
@@ -1490,17 +1457,16 @@ mod tests {
     fn candidates_for_query_falls_back_to_full_scan_without_prefix_extension() {
         let previous_paths = [PathBuf::from("workspace/src/alpha.rs")];
 
-        // No completed ranking yet.
         assert_eq!(
             candidates_for_query(None, "alph", true),
             CandidateSource::Full
         );
-        // Backspace shortens the query.
+
         assert_eq!(
             candidates_for_query(Some(("alph", previous_paths.as_slice(), false)), "al", true),
             CandidateSource::Full
         );
-        // Unrelated edit replaces the query.
+
         assert_eq!(
             candidates_for_query(
                 Some(("alph", previous_paths.as_slice(), false)),
@@ -1509,7 +1475,7 @@ mod tests {
             ),
             CandidateSource::Full
         );
-        // Clearing the query never reuses the previous set.
+
         assert_eq!(
             candidates_for_query(Some(("alph", previous_paths.as_slice(), false)), "", true),
             CandidateSource::Full
@@ -1540,9 +1506,7 @@ mod tests {
             "workspace/src/xray_2.rs",
         ]);
         app.project_index_generation = 3;
-        // Simulate a completed ranking for "a" whose retained matched set is
-        // truncated (QUICK_OPEN_RESULT_LIMIT): "xray_2.rs" also matched "a"
-        // but is not in the retained set, which makes the narrowing observable.
+
         app.quick_open_results_cache = Some(seeded_completed_cache(
             3,
             "a",

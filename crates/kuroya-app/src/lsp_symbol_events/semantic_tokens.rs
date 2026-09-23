@@ -118,9 +118,6 @@ mod tests {
             vec![
                 token(1, 1, 5, "function"),
                 token(2, 2, 3, "variable"),
-                // A length reaching past the line is a multi-line token (e.g.
-                // block comment): kept at intake, clamped to the first line at
-                // rendering time.
                 token(1, 1, 6, "multi-line"),
                 token(2, 5, 1, "at-end"),
                 token(3, 1, 1, "missing"),

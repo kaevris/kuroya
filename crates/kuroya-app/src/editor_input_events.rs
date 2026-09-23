@@ -258,7 +258,6 @@ fn push_editor_input_event_from_egui_event(
                 classified.includes_mutation
             } else {
                 if matches!(event, Event::Key { pressed: true, .. }) {
-                    // A filtered printable key is a new input action, not a paste/IME echo.
                     *pending_text_echo = None;
                 }
                 false
@@ -412,11 +411,6 @@ impl KuroyaApp {
         buffer_id: BufferId,
     ) {
         if self.focused_pane == Some(pane_id) && !self.editor_accepts_text_input(ctx, pane_id) {
-            // The focused editor stopped accepting input: an overlay opened,
-            // the terminal took the keyboard, or a dialog appeared. Like Vim
-            // losing its window, the half-typed operator/search/Ex sequence
-            // dies here instead of leaking into the next context. Mode,
-            // registers, marks and the last change survive.
             self.vim_discard_half_typed_sequence();
             return;
         }
@@ -577,10 +571,6 @@ impl KuroyaApp {
                     );
                 }
                 EditorInputEvent::ImePreedit(text) => {
-                    // Composition preview belongs to text input. With vim
-                    // active it must only paint while the editor accepts text
-                    // (insert mode): in normal/visual mode the composition
-                    // would render into the buffer area on a stale anchor.
                     if !vim_keybindings || self.editor_vim_mode.accepts_text_input() {
                         self.set_editor_ime_preedit(buffer_id, text);
                         keep_cursor_visible = true;
@@ -671,16 +661,10 @@ impl KuroyaApp {
                         let mut next_pending = self.editor_vim_pending_key;
                         let mut next_last_char_find = self.editor_vim_last_char_find;
                         let mut next_unnamed_register = self.editor_vim_unnamed_register.take();
-                        // The last change is per buffer: load this buffer's
-                        // entry for the key handler and store it back after.
+
                         let mut next_last_change = self.editor_vim_last_change.remove(&buffer_id);
                         let vim_settings = self.settings.vim.clone();
                         let vim_result = self.buffer_mut(buffer_id).map(|buffer| {
-                            // Vim processes keys against a single cursor: with
-                            // vim active, extra multi-cursor carets would stay
-                            // visible while only the primary one edits, so
-                            // collapse them before processing. Insert-mode
-                            // typing keeps its own selection collapse path.
                             if !previous_mode.accepts_text_input() {
                                 vim_collapse_multi_cursor_selection(buffer);
                             }
@@ -704,10 +688,7 @@ impl KuroyaApp {
                         if let Some(last_change) = next_last_change {
                             self.editor_vim_last_change.insert(buffer_id, last_change);
                         }
-                        // Vim mode is app-global but the insert session's undo
-                        // group lives in exactly one buffer: leaving a key with
-                        // the editor in insert mode means the open group belongs
-                        // to this buffer; otherwise no session group is open.
+
                         self.editor_vim_insert_undo_group_buffer =
                             matches!(self.editor_vim_mode, EditorVimMode::Insert)
                                 .then_some(buffer_id);
@@ -724,9 +705,6 @@ impl KuroyaApp {
                             if previous_mode != self.editor_vim_mode {
                                 self.status = editor_vim_mode_status(self.editor_vim_mode);
                                 if !self.editor_vim_mode.accepts_text_input() {
-                                    // Leaving insert mode ends text input: a
-                                    // composition preview must not stay painted
-                                    // on its now-stale anchor.
                                     self.clear_editor_ime_preedit_for_buffer(buffer_id);
                                 }
                             }
@@ -852,25 +830,13 @@ impl KuroyaApp {
         self.ime_preedit = Some(EditorImePreedit { buffer_id, text });
     }
 
-    /// Drops the half-typed vim sequence (pending operator, count, search
-    /// input, Ex input). Called on context switches — buffer/tab activation,
-    /// pane focus changes, overlay opens — where Vim would cancel the
-    /// in-flight keys. Mode, registers, marks and the last change survive.
     pub(crate) fn vim_discard_half_typed_sequence(&mut self) {
         if self.editor_vim_pending_key.take().is_some() {
-            // The search/Ex thread-locals only hold text while a search or
-            // command input pending is active, so clearing both here exactly
-            // matches "a search/command was in flight".
             vim_clear_search_input();
             vim_clear_command_input();
         }
     }
 
-    /// Ends an insert session's open undo group that belongs to a buffer other
-    /// than `active_buffer_id`. Vim mode is app-global while undo groups are
-    /// per buffer, so an insert session left open on one buffer must be closed
-    /// on that buffer when the user switches away, or every later edit on that
-    /// buffer merges into one giant undo step.
     pub(crate) fn close_stale_vim_insert_undo_group(&mut self, active_buffer_id: BufferId) {
         let Some(session_buffer) = self.editor_vim_insert_undo_group_buffer.take() else {
             return;
@@ -884,9 +850,6 @@ impl KuroyaApp {
         }
     }
 
-    /// Ends a still-open insert session undo group on whichever buffer owns
-    /// it. Used when vim state is reset wholesale (settings change, workspace
-    /// reset, buffer close).
     pub(crate) fn close_vim_insert_undo_group(&mut self) {
         if let Some(session_buffer) = self.editor_vim_insert_undo_group_buffer.take()
             && let Some(buffer) = self.buffer_mut(session_buffer)
@@ -895,10 +858,6 @@ impl KuroyaApp {
         }
     }
 
-    /// Clears every piece of vim session state that must not survive a vim
-    /// settings change: mode, the half-typed sequence, char-find, registers,
-    /// marks, searches, the search/Ex inputs and the per-buffer last changes.
-    /// Every settings-apply path funnels through here so they stay in sync.
     pub(crate) fn vim_reset_session_state(&mut self) {
         self.editor_vim_mode = EditorVimMode::Normal;
         self.editor_vim_pending_key = None;

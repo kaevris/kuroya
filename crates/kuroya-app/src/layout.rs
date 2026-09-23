@@ -143,16 +143,10 @@ pub(crate) fn terminal_open_height(available_height: f32) -> f32 {
     )
 }
 
-/// Largest sensible size for a floating popup window: the viewport minus
-/// margins, floored at a usable minimum so the window can never grow past
-/// the screen (egui persists window sizes, and anchored windows that
-/// overflow the screen leave no reachable resize handle).
 pub(crate) fn popup_window_max_size(ctx: &eframe::egui::Context) -> eframe::egui::Vec2 {
     popup_window_max_size_with_top_margin(ctx, 24.0)
 }
 
-/// Same as [`popup_window_max_size`] for windows anchored near the top of
-/// the screen: `top_margin` reserves the anchor offset plus a bottom margin.
 pub(crate) fn popup_window_max_size_with_top_margin(
     ctx: &eframe::egui::Context,
     top_margin: f32,

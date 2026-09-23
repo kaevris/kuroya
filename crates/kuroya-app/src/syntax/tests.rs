@@ -762,7 +762,6 @@ fn visible_highlighting_rebuilds_theme_colors_on_theme_identity_change() {
     assert_ne!(dark_theme_key, light_theme_key);
     assert!(highlighter.caches.contains_key(&light_theme_key));
 
-    // The rebuild must not serve stale colors from the old theme's cache.
     let jobs = highlighter.layout_visible(&buffer, 13.0, 4, 0..1, true, light_theme_text, -1);
     assert_eq!(jobs[0].sections[0].format.color, light_theme_text);
 }

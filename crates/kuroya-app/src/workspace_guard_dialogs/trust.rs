@@ -26,7 +26,6 @@ pub(super) fn render_workspace_trust_prompt(app: &mut KuroyaApp, ctx: &Context, 
 
             ui.add_space(6.0);
 
-            // Header: accent-tinted icon badge next to the heading.
             ui.horizontal(|ui| {
                 let (badge_rect, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
                 let badge_rect = badge_rect.shrink(3.0);

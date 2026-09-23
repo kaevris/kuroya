@@ -1,20 +1,12 @@
 use std::{io, process::ExitStatus, time::Duration};
 use tokio::{process::Child, sync::mpsc, time::timeout};
 
-/// How long a shutting-down language server gets to exit on its own after
-/// receiving `shutdown` + `exit` before the watchdog kills it.
 pub(crate) const LSP_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
-/// Extra window used when the runtime loop reaps a death notification that
-/// raced with a stdout EOF (the pipes close as the process exits, so this
-/// only ever waits for the kernel to finish reaping).
 pub(super) const LSP_CHILD_DEATH_REAP_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LspChildControl {
-    /// Exit politely: wait up to the grace period for the child to leave on
-    /// its own, then kill it. The runtime loop has already written the
-    /// `shutdown` + `exit` LSP messages before sending this.
     ExitGracefully,
 }
 
@@ -24,10 +16,6 @@ pub(super) struct LspChildWatchdog {
 }
 
 impl LspChildWatchdog {
-    /// Ask the watchdog to let the child finish shutting down (killing it
-    /// after the grace period) and wait for the death notification so the
-    /// child is reaped before the runtime task returns. Returns the reaped
-    /// exit status when one was observed.
     pub(super) async fn request_graceful_exit(&mut self) -> Option<io::Result<ExitStatus>> {
         if self
             .control_tx
@@ -35,8 +23,6 @@ impl LspChildWatchdog {
             .await
             .is_err()
         {
-            // Watchdog is gone; either the child already died or kill_on_drop
-            // remains as the last resort.
             return None;
         }
         timeout(
@@ -63,9 +49,6 @@ fn spawn_lsp_child_watchdog_with_grace(child: Child, grace: Duration) -> LspChil
     }
 }
 
-/// Owns the child process and reports its death through `death_tx`. The
-/// stdin/stdout/stderr handles are taken out of the child before this task
-/// is spawned, so `wait` is the only remaining operation on it.
 async fn run_lsp_child_watchdog(
     mut child: Child,
     mut control_rx: mpsc::Receiver<LspChildControl>,
@@ -87,8 +70,7 @@ async fn run_lsp_child_watchdog(
                     let _ = death_tx.send(status).await;
                 }
                 None => {
-                    // The runtime loop is gone without a shutdown request;
-                    // kill so this task cannot linger on a hung process.
+
                     let _ = child.kill().await;
                 }
             }
@@ -99,7 +81,6 @@ async fn run_lsp_child_watchdog(
     }
 }
 
-/// Bounded, human-readable description of how the server process ended.
 pub(super) fn lsp_exit_status_label(status: &ExitStatus) -> String {
     match status.code() {
         Some(code) => format!("exit code {code}"),

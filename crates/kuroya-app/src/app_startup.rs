@@ -11,15 +11,12 @@ impl KuroyaApp {
         startup_target: Option<StartupTarget>,
     ) -> anyhow::Result<Self> {
         let context = AppStartupContext::load(cc)?;
-        // Startup no longer carries the session on the context: it is loaded
-        // off-thread and delivered via `UiEvent::StartupSessionLoaded`. The
-        // field stays because the crate's test context constructions set it.
+
         let _ = &context.saved_session;
         let mut app = Self::from_startup_context(context);
         app.set_background_image_repaint_context(&cc.egui_ctx);
         app.sync_background_image(false);
-        // Discord Rich Presence is fully opt-in: this is inert (no thread, no
-        // IPC) unless the user enabled it and configured their own client id.
+
         app.sync_discord_presence_runtime();
         if app.workspace_placeholder {
             let _ = app.save_app_state();
@@ -30,14 +27,7 @@ impl KuroyaApp {
             }
             return Ok(app);
         }
-        // The saved session is loaded off-thread and applied when the
-        // critical `UiEvent::StartupSessionLoaded` arrives, so the first
-        // frame is not blocked on session disk I/O. The startup target
-        // (open file / open folder) rides along on that event: applying it
-        // only after the restore keeps the ordering of the previous
-        // synchronous startup, where `restore_session` ran before the target
-        // was handled (opening a folder re-saves the restored session for
-        // the previous workspace, so it must observe the restored state).
+
         app.record_recent_project(app.workspace.root.clone());
         let startup_target_deferred = startup_target.is_some();
         spawn_startup_session_load(
@@ -57,10 +47,6 @@ impl KuroyaApp {
         Ok(app)
     }
 
-    /// Writes the persisted app state on the blocking thread pool instead of
-    /// the startup path. The state snapshot is taken synchronously here; the
-    /// disk write only needs to finish before exit, and the shutdown path
-    /// (`prepare_shutdown`) saves the app state synchronously again.
     fn spawn_save_app_state(&mut self) {
         let app_state = AppState {
             recent_projects: self.recent_projects.clone(),

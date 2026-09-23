@@ -12,7 +12,7 @@ use std::{
 
 const IMAGE_PREVIEW_MAX_PIXELS: u64 = 4096 * 4096;
 const IMAGE_PREVIEW_MAX_RGBA_BYTES: u64 = IMAGE_PREVIEW_MAX_PIXELS * 4;
-// Keep room for the active image plus one newly loaded or background preview.
+
 const IMAGE_PREVIEW_RETAINED_BYTES_CAP: usize = IMAGE_PREVIEW_MAX_RGBA_BYTES as usize * 2;
 const IMAGE_PREVIEW_MAX_SIDE: u32 = 16_384;
 const IMAGE_PREVIEW_MARGIN: f32 = 24.0;

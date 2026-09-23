@@ -18,7 +18,6 @@ pub(super) async fn handle_save_close_command(
 
     let write_ok = write_message(writer, &message).await.is_ok();
     if write_ok {
-        // didClose ends tracking of what the server holds for the document.
         if let Some(path) = closed_path {
             sync_state.forget_synced_text(&path);
         }

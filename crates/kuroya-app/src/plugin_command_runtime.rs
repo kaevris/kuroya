@@ -33,11 +33,7 @@ const PLUGIN_COMMAND_LOG_MAX_CHARS: usize = 240;
 const PLUGIN_COMMAND_PATH_MAX_BYTES: usize = 4096;
 pub(crate) const MAX_PLUGIN_READ_FILE_BYTES: usize = 256 * 1024;
 pub(crate) const PLUGIN_COMMAND_BUFFER_CAPTURE_MAX: usize = 8_000_000;
-/// Negative return codes shared by every string-returning host function. The
-/// numbering is part of the plugin ABI: each condition maps to exactly one
-/// code, so a guest can branch on it regardless of which host call failed.
-/// -4 is reserved exclusively for "no active buffer"; every oversize
-/// condition (file, buffer text, or host-call argument) reports -7.
+
 pub(crate) const PLUGIN_HOST_ERROR_ALLOC_FAILED: i32 = -1;
 pub(crate) const PLUGIN_HOST_ERROR_NOT_FOUND: i32 = -2;
 pub(crate) const PLUGIN_HOST_ERROR_ESCAPES_WORKSPACE: i32 = -3;
@@ -45,10 +41,7 @@ pub(crate) const PLUGIN_HOST_ERROR_NO_ACTIVE_BUFFER: i32 = -4;
 pub(crate) const PLUGIN_HOST_ERROR_CAPABILITY_DENIED: i32 = -5;
 pub(crate) const PLUGIN_HOST_ERROR_MISC: i32 = -6;
 pub(crate) const PLUGIN_HOST_ERROR_TOO_LARGE: i32 = -7;
-/// Wall-clock budget for one plugin command run. Enforced at host-call
-/// boundaries (`plugin_wall_clock_checkpoint`), the only points where the
-/// host regains control from a running guest; compute-only plugins stay
-/// bounded by fuel alone.
+
 const PLUGIN_COMMAND_WALL_CLOCK_LIMIT: Duration = Duration::from_secs(30);
 const PLUGIN_COMMAND_MEMORY_EXPORT: &str = "memory";
 const PLUGIN_COMMAND_ALLOC_EXPORT: &str = "kuroya_alloc";
@@ -61,10 +54,6 @@ static PLUGIN_COMMAND_MODULE_CACHE: OnceLock<Mutex<PluginCommandModuleCache>> = 
 static PLUGIN_COMMAND_CACHED_MODULE_COMPILES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// Immutable copy of the buffer that was active when the plugin command run
-/// started. Captured on the UI thread before the blocking wasm run so guest
-/// reads see a consistent snapshot, and so a staged write can be attributed
-/// to a concrete buffer path after the run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActiveBufferSnapshot {
     pub(crate) path: PathBuf,
@@ -73,10 +62,6 @@ pub(crate) struct ActiveBufferSnapshot {
 }
 
 impl ActiveBufferSnapshot {
-    /// Returns `None` for untitled buffers, which have no workspace path a
-    /// plugin could address. Buffers over `PLUGIN_COMMAND_BUFFER_CAPTURE_MAX`
-    /// bytes keep only their path; `buffer_get_text` then reports
-    /// `PLUGIN_HOST_ERROR_TOO_LARGE` instead of returning text.
     pub(crate) fn capture(buffer: &TextBuffer) -> Option<Self> {
         let path = buffer.path()?.to_path_buf();
         let snapshot = buffer.text_snapshot();
@@ -126,13 +111,9 @@ struct PluginCommandHostState {
     host: PluginHostContext,
     limits: StoreLimits,
     pending_buffer_text: Option<(PathBuf, String)>,
-    /// Wall-clock instant the run began, captured when the store is created.
-    /// Every host call compares its elapsed time against
-    /// `PLUGIN_COMMAND_WALL_CLOCK_LIMIT`.
+
     started_at: Instant,
-    /// Set by `plugin_wall_clock_checkpoint` once it exhausted the store's
-    /// fuel because the run passed its wall-clock budget; lets the error path
-    /// report the budget instead of a raw out-of-fuel trap.
+
     budget_exhausted: bool,
 }
 
@@ -215,11 +196,7 @@ fn validate_plugin_command_capabilities(capabilities: &PluginCapabilities) -> an
 
 fn unsupported_runtime_capabilities(capabilities: &PluginCapabilities) -> Vec<&'static str> {
     let mut unsupported = Vec::new();
-    // workspace_read gates the read host calls (workspace_root,
-    // active_buffer_path, open_buffer, read_file, buffer_get_text) and
-    // workspace_write gates the buffer write (buffer_set_text), so both are
-    // supported runtime capabilities; process_spawn and network still fail
-    // closed.
+
     if capabilities.process_spawn {
         unsupported.push("process_spawn");
     }
@@ -417,9 +394,7 @@ fn execute_plugin_command_module(
         .context("failed to start plugin wasm")?;
     let (command, used_default_export) = plugin_command_func(&instance, &store, command_id)?;
     let call_result = command.call(&mut store, ());
-    // Staged buffer text survives a failed run on purpose: a plugin that set
-    // the buffer text and then trapped (or exited nonzero) still has its last
-    // staged write applied to the captured buffer.
+
     let pending_buffer_text = store.data_mut().pending_buffer_text.take();
     let exit_code = call_result.map_err(|error| {
         let budget_exhausted = store.data().budget_exhausted;
@@ -495,11 +470,6 @@ fn plugin_command_call_error(
     ))
 }
 
-/// Renders the user-facing failure text for a trapped plugin command run. A
-/// run the wall-clock checkpoint cut short reports the budget; any other fuel
-/// trap keeps the generic fuel wording, and everything else reports the raw
-/// trap. Fuel is matched case-insensitively in the trap text because wasmi
-/// 0.46 renders `TrapCode::OutOfFuel` as "all fuel consumed by WebAssembly".
 fn plugin_command_trap_error_text(error: &str, budget_exhausted: bool, plugin_id: &str) -> String {
     if budget_exhausted {
         return format!(
@@ -514,15 +484,6 @@ fn plugin_command_trap_error_text(error: &str, budget_exhausted: bool, plugin_id
     format!("plugin command trapped: {error}")
 }
 
-/// Wall-clock checkpoint at a plugin host-call boundary. Host calls are the
-/// only points where the host regains control from a running guest, so this
-/// is the one place a wall-clock deadline can be enforced: once the run has
-/// spent its budget the checkpoint zeroes the store's remaining fuel so the
-/// very next guest instruction traps out of fuel and the run fails through
-/// the ordinary error path with the budget message. Compute-only plugins
-/// that never call into the host keep fuel (`PLUGIN_COMMAND_FUEL`) as their
-/// only bound; host-calling plugins get the wall-clock guarantee at every
-/// host-call boundary.
 fn plugin_wall_clock_checkpoint(
     caller: &mut Caller<'_, PluginCommandHostState>,
 ) -> Result<(), wasmi::Error> {
@@ -534,16 +495,12 @@ fn plugin_wall_clock_checkpoint(
         return Ok(());
     }
     caller.data_mut().budget_exhausted = true;
-    // wasmi 0.46: `Caller::set_fuel` updates the store's remaining fuel while
-    // host code runs; with zero fuel the next guest instruction traps.
+
     caller.set_fuel(0).map_err(|error| {
         wasmi::Error::new(format!("failed to exhaust plugin time budget: {error}"))
     })
 }
 
-/// Pure budget check behind `plugin_wall_clock_checkpoint`. The limit is a
-/// parameter so tests can pin it without faking `Instant`; production passes
-/// `PLUGIN_COMMAND_WALL_CLOCK_LIMIT`.
 fn plugin_wall_clock_budget_exhausted(started_at: Instant, now: Instant, limit: Duration) -> bool {
     now.saturating_duration_since(started_at) >= limit
 }
@@ -697,8 +654,7 @@ fn plugin_buffer_get_text_host_call(
     plugin_wall_clock_checkpoint(&mut caller)?;
     let snapshot = {
         let state = caller.data_mut();
-        // Reading the buffer is a read: gated on workspace_read like the
-        // other read host calls; only buffer_set_text needs workspace_write.
+
         if let Err(code) = plugin_require_workspace_read(state, "buffer_get_text") {
             return Ok(code);
         }
@@ -741,8 +697,7 @@ fn plugin_buffer_set_text_host_call(
     if !plugin_guest_path_matches_active_buffer(&mut caller, &snapshot, path_ptr, path_len)? {
         return Ok(PLUGIN_HOST_ERROR_NOT_FOUND);
     }
-    // Same failure channel as every other host call: an oversized or
-    // malformed staged text reports a negative code (never a trap).
+
     let bytes = match plugin_read_guest_bytes(
         &caller,
         text_ptr,
@@ -756,21 +711,12 @@ fn plugin_buffer_set_text_host_call(
         Ok(text) => text,
         Err(_) => return Ok(PLUGIN_HOST_ERROR_MISC),
     };
-    // Staged, not applied: the run must finish before the UI thread touches
-    // the buffer. Multiple buffer_set_text calls overwrite the staged text,
-    // so the last call before the run ends wins. The snapshot path (the
-    // buffer's own stored path) is staged so the UI handler can match the
-    // open buffer exactly.
+
     let state = caller.data_mut();
     state.pending_buffer_text = Some((snapshot.path, text));
     Ok(0)
 }
 
-/// Reads a guest path and reports whether it addresses the captured active
-/// buffer: non-empty, confined to the workspace root, and lexically equal to
-/// the captured buffer path. A path the host cannot read at all is simply not
-/// the active buffer, so every failure collapses to `false` (reported by the
-/// caller as `PLUGIN_HOST_ERROR_NOT_FOUND`).
 fn plugin_guest_path_matches_active_buffer(
     caller: &mut Caller<'_, PluginCommandHostState>,
     snapshot: &ActiveBufferSnapshot,
@@ -792,13 +738,6 @@ fn plugin_guest_path_matches_active_buffer(
     }
 }
 
-/// The one failure channel for guest-memory and argument reads: every
-/// malformed argument or guest-memory failure becomes a negative
-/// `PLUGIN_HOST_ERROR_*` code instead of a trap, so a guest always gets a
-/// chance to observe and report the failure. Oversized lengths report
-/// `PLUGIN_HOST_ERROR_TOO_LARGE`; everything else (negative pointer or
-/// length, missing exported memory, failed read, and — for the string
-/// variant — invalid UTF-8) reports `PLUGIN_HOST_ERROR_MISC`.
 fn plugin_read_guest_bytes(
     caller: &Caller<'_, PluginCommandHostState>,
     ptr: i32,
@@ -898,16 +837,6 @@ fn read_confined_workspace_file(resolved: &Path) -> Result<Vec<u8>, i32> {
     Ok(bytes)
 }
 
-/// Copies `bytes` into guest memory through the guest's `kuroya_alloc` and
-/// returns the byte length. Like the read helper this never traps: every
-/// guest-memory failure (broken allocator, missing memory, unwritable
-/// buffer) becomes a negative `PLUGIN_HOST_ERROR_*` code, so a hostile or
-/// buggy guest costs the call, not the whole run. An empty payload returns
-/// `Ok(0)` only when the content itself is genuinely empty (an empty
-/// workspace file, an empty buffer); absent contexts never reach this far
-/// because their callers gate first — `workspace_root` returns
-/// `PLUGIN_HOST_ERROR_CAPABILITY_DENIED` without `workspace_read` or a root,
-/// and `active_buffer_path` returns `PLUGIN_HOST_ERROR_NO_ACTIVE_BUFFER`.
 fn plugin_send_bytes_to_guest(
     mut caller: Caller<'_, PluginCommandHostState>,
     bytes: &[u8],
@@ -1456,8 +1385,6 @@ mod tests {
 
     #[test]
     fn execute_plugin_command_reports_error_codes_instead_of_trapping() {
-        // Malformed status/log arguments used to trap the whole run; they now
-        // report the shared negative codes and let the run continue.
         let oversize = PLUGIN_COMMAND_STATUS_MAX_BYTES + 1;
         let guest = format!(
             r#"
@@ -1760,8 +1687,7 @@ mod tests {
 
         assert_eq!(execution.exit_code, 0);
         assert_eq!(execution.status.as_deref(), Some("known text"));
-        // The last buffer_set_text call wins; the path is the buffer's own
-        // stored path so the UI handler can match it exactly.
+
         assert_eq!(
             execution.pending_buffer_text,
             Some((path, "replacement text".to_owned()))
@@ -1774,13 +1700,13 @@ mod tests {
         let path = temp.root().join("notes.md");
         fs::write(&path, b"known text").expect("write captured buffer file");
         let captured = TextBuffer::from_text(1, Some(path), "known text".to_owned());
-        // workspace_read alone: buffer_get_text is a read, so it is allowed.
+
         let read_only = host_context_full(
             temp.root().to_path_buf(),
             workspace_read_capabilities(),
             ActiveBufferSnapshot::capture(&captured),
         );
-        // workspace_write alone without workspace_read: neither call runs.
+
         let write_only = host_context_full(
             temp.root().to_path_buf(),
             workspace_write_capabilities(),
@@ -1916,19 +1842,19 @@ mod tests {
             now,
             PLUGIN_COMMAND_WALL_CLOCK_LIMIT
         ));
-        // The boundary is inclusive: a run as old as the limit is exhausted.
+
         assert!(plugin_wall_clock_budget_exhausted(
             now - PLUGIN_COMMAND_WALL_CLOCK_LIMIT,
             now,
             PLUGIN_COMMAND_WALL_CLOCK_LIMIT
         ));
-        // A fresh run keeps its budget.
+
         assert!(!plugin_wall_clock_budget_exhausted(
             now,
             now,
             PLUGIN_COMMAND_WALL_CLOCK_LIMIT
         ));
-        // The limit is a parameter so tests can pin it without faking Instant.
+
         assert!(!plugin_wall_clock_budget_exhausted(
             now - Duration::from_secs(1),
             now,
@@ -1943,8 +1869,6 @@ mod tests {
 
     #[test]
     fn plugin_command_trap_error_text_reports_budget_and_fuel_distinctly() {
-        // A run the wall-clock checkpoint cut short gets the budget message
-        // instead of the raw out-of-fuel trap text.
         assert_eq!(
             plugin_command_trap_error_text(
                 "all fuel consumed by WebAssembly",
@@ -1953,8 +1877,7 @@ mod tests {
             ),
             "Plugin example.plugin exceeded its 30s time budget"
         );
-        // Plain fuel exhaustion keeps the generic fuel wording (wasmi 0.46
-        // renders TrapCode::OutOfFuel as "all fuel consumed by WebAssembly").
+
         assert_eq!(
             plugin_command_trap_error_text(
                 "all fuel consumed by WebAssembly",
@@ -1967,12 +1890,12 @@ mod tests {
             plugin_command_trap_error_text("Trapped: Out Of Fuel", false, "example.plugin"),
             "plugin command exceeded the execution fuel limit"
         );
-        // Non-fuel traps keep the raw trap text.
+
         assert_eq!(
             plugin_command_trap_error_text("unknown trap", false, "example.plugin"),
             "plugin command trapped: unknown trap"
         );
-        // The plugin id is sanitized and bounded like other status text.
+
         let hostile = plugin_command_trap_error_text(
             "unknown trap",
             true,
@@ -1986,9 +1909,6 @@ mod tests {
 
     #[test]
     fn execute_plugin_command_host_call_loop_completes_within_wall_clock_budget() {
-        // A guest that makes many host calls must keep completing: the
-        // wall-clock checkpoint installed in every host call must not
-        // exhaust fuel before the 30s budget is actually spent.
         let execution = execute_plugin_command_wasm(
             &wasm_bytes(
                 r#"
@@ -2110,10 +2030,6 @@ mod tests {
 
     #[test]
     fn example_plugin_wat_module_compiles_and_runs_against_host_abi() {
-        // The shipped example module is documentation as well as a fixture:
-        // its status/log imports return i32, so its call sites must drop the
-        // results or the module fails validation, and it must keep running
-        // against the live linker unchanged.
         let wat = include_str!("../../../examples/plugin-example/plugin.wat");
         let execution = execute_plugin_command_wasm(
             &wasm_bytes(wat),

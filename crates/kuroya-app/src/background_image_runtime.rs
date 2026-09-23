@@ -22,9 +22,6 @@ use tokio::sync::Semaphore;
 
 const BACKGROUND_IMAGE_DECODE_CONCURRENCY: usize = 1;
 
-/// How long a failed background image load suppresses respawning loads for the
-/// same configured path. Without this latch, the per-frame sync would retry
-/// (spawning a task and decode attempt) every frame forever.
 const BACKGROUND_IMAGE_FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,9 +161,7 @@ impl KuroyaApp {
         {
             return;
         }
-        // Failure latch: while the configured path equals a path that recently
-        // failed, skip respawning until the cooldown elapses. An explicit reload
-        // (`force`) or a changed path bypasses it.
+
         if !force
             && self
                 .background_image_runtime
@@ -593,13 +588,11 @@ mod tests {
             "a failed load must latch the configured path"
         );
 
-        // Within the cooldown, repeated syncs must not respawn a load.
         for _ in 0..3 {
             app.sync_background_image(false);
             assert!(app.background_image_runtime.pending.is_none());
         }
 
-        // Changing the configured path clears the latch and loads the new image.
         app.settings.background_image_path = Some(replacement.display().to_string());
         app.sync_background_image(false);
         assert!(app.background_image_runtime.failed.is_none());

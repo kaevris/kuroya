@@ -110,9 +110,7 @@ pub(crate) fn classify_watched_paths_with_filter(
 
     for raw_path in changed {
         let path = lexical_normalize_path(raw_path);
-        // The app's own writes (e.g. saving settings from the preferences
-        // panel) must not be classified as external settings changes, or the
-        // watcher would immediately reload them back over the saved state.
+
         if !is_recent_app_write(raw_path) && trusted_workspace_paths_match(&path, &settings) {
             classified.settings_changed = true;
             continue;
@@ -360,12 +358,7 @@ fn changed_path_affects_buffer_path(changed_path: &Path, buffer_path: &Path) -> 
     if workspace_path_contains_lexically(changed_path, buffer_path) {
         return true;
     }
-    // A buffer opened through a symlink (`workspace\link.rs` backed by a
-    // target elsewhere) never lexically matches the target path the watcher
-    // reports for writes; compare canonical spellings (symlinks resolved on
-    // both sides) as well. Limitation: writes to a target that sits outside
-    // every watched root still produce no events to attribute — watching the
-    // target itself would be needed and is out of scope here.
+
     let Some(changed_canonical) = canonicalize_path_cached(changed_path) else {
         return false;
     };
@@ -375,9 +368,6 @@ fn changed_path_affects_buffer_path(changed_path: &Path, buffer_path: &Path) -> 
     workspace_path_contains_lexically(&changed_canonical, &buffer_canonical)
 }
 
-/// Upper bound on cached canonicalizations; hitting it clears the cache
-/// rather than growing unbounded across a long session (entries can also go
-/// stale when a symlink is re-pointed, so caching forever would be wrong).
 const CANONICAL_PATH_CACHE_CAPACITY: usize = 256;
 
 fn canonicalize_path_cached(path: &Path) -> Option<PathBuf> {
@@ -615,9 +605,6 @@ mod tests {
             return;
         }
 
-        // The buffer was opened through the in-workspace symlink while the
-        // watcher reports the resolved target path; only canonical matching
-        // attributes the event back to the buffer.
         let buffer = TextBuffer::from_text(7, Some(link.clone()), "opened".to_owned());
         let buffers = vec![buffer];
 

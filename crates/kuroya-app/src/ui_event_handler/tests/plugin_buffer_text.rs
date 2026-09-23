@@ -48,7 +48,6 @@ fn plugin_buffer_text_apply_replaces_open_buffer_text_and_invalidates_caches() {
     assert!(!app.minimap_line_length_cache.contains_buffer_for_test(1));
     assert_eq!(app.status, "Plugin updated notes.md");
 
-    // the replacement lands in undo history like a manual edit
     assert!(app.buffer_mut(1).expect("open buffer").undo());
     assert_eq!(
         app.buffer(1).expect("open buffer").text_snapshot().text(),

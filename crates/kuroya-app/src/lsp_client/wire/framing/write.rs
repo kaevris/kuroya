@@ -50,8 +50,6 @@ pub(in crate::lsp_client) async fn write_did_change_full_document(
     write_full_document_text_message(stdin, prefix.as_bytes(), text, suffix.as_bytes()).await
 }
 
-/// Writes an incremental `textDocument/didChange` carrying a single ranged
-/// content change (`rangeLength` is omitted; it is optional and redundant).
 pub(in crate::lsp_client) async fn write_did_change_incremental(
     stdin: &mut ChildStdin,
     path: &Path,
@@ -89,8 +87,6 @@ where
     .await
 }
 
-/// Streams a frame whose body is `prefix` + JSON-escaped text chunks +
-/// `suffix`, with a Content-Length header matching the exact byte count.
 async fn write_json_escaped_text_message<'a, W, I>(
     writer: &mut W,
     prefix: &[u8],
@@ -710,7 +706,7 @@ mod tests {
             value["params"]["contentChanges"][0]["text"],
             "brave \"world\"\n"
         );
-        // rangeLength is optional and intentionally omitted.
+
         assert!(
             value["params"]["contentChanges"][0]
                 .get("rangeLength")

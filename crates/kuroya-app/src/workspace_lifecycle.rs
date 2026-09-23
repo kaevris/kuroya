@@ -140,8 +140,6 @@ pub(crate) fn already_in_workspace_status(path: &Path) -> String {
     format!("Already in {}", display_path_label_cow(path))
 }
 
-/// True when `path` is exactly the user's home directory (never for paths
-/// inside or above it). Pure so the guard is testable without the environment.
 pub(crate) fn is_home_directory(path: &Path, home: Option<&Path>) -> bool {
     home.is_some_and(|home| paths_match_lexically(path, home))
 }

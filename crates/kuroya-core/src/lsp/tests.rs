@@ -174,7 +174,7 @@ fn publish_diagnostics_without_severity_default_to_error() {
     let (_, _, diagnostics) = parse_publish_diagnostics(&value).unwrap();
 
     assert_eq!(diagnostics.len(), 1);
-    // A missing severity is an error per the LSP convention editors follow.
+
     assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Error);
 
     let params = PublishDiagnosticsParams {
@@ -285,15 +285,12 @@ fn parse_prepare_rename_response_reads_bare_range_and_deprecated_start_end_shape
 
 #[test]
 fn parse_prepare_rename_response_rejects_null_malformed_and_reversed_results() {
-    // Null result: the server cannot rename at this position.
     let null_result = json!({ "id": 9, "result": null });
     assert_eq!(parse_prepare_rename_response(&null_result), None);
 
-    // Missing range entirely.
     let missing_range = json!({ "id": 9, "result": { "placeholder": "orphan" } });
     assert_eq!(parse_prepare_rename_response(&missing_range), None);
 
-    // Reversed range is rejected like every other parsed LSP range.
     let reversed = json!({
         "id": 9,
         "result": {
@@ -305,7 +302,6 @@ fn parse_prepare_rename_response_rejects_null_malformed_and_reversed_results() {
     });
     assert_eq!(parse_prepare_rename_response(&reversed), None);
 
-    // Malformed coordinates.
     let malformed = json!({
         "id": 9,
         "result": {
@@ -317,7 +313,6 @@ fn parse_prepare_rename_response_rejects_null_malformed_and_reversed_results() {
     });
     assert_eq!(parse_prepare_rename_response(&malformed), None);
 
-    // Missing result object altogether.
     assert_eq!(parse_prepare_rename_response(&json!({ "id": 9 })), None);
 }
 
@@ -439,16 +434,12 @@ fn deserialized_diagnostics_skip_malformed_entries_instead_of_dropping_publish()
         ],
     };
 
-    // One malformed entry is skipped; the parseable rest still publishes so
-    // stale diagnostics are replaced.
     let (_, version, diagnostics) = diagnostics_from_lsp(params).unwrap();
     assert_eq!(version, Some(7));
     assert_eq!(diagnostics.len(), 1);
     assert_eq!(diagnostics[0].line, 3);
     assert_eq!(diagnostics[0].message, "good range");
 
-    // A publish whose entries are all malformed still replaces state (with an
-    // empty set); only an unusable URI fails the whole publish.
     let all_malformed = PublishDiagnosticsParams {
         uri,
         version: None,
@@ -518,12 +509,11 @@ fn deserialized_multi_line_ranges_store_line_end_sentinel() {
     let (_, _, diagnostics) = diagnostics_from_lsp(params).unwrap();
 
     assert_eq!(diagnostics.len(), 2);
-    // The end character sits on a later line, so the stored range keeps the
-    // start offset and a sentinel end for consumers to clamp to line end.
+
     assert_eq!(diagnostics[0].line, 3);
     assert_eq!(diagnostics[0].column, 5);
     assert_eq!(diagnostics[0].char_range, 4..usize::MAX);
-    // Single-line ranges keep the minimum positive width.
+
     assert_eq!(diagnostics[1].char_range, 3..4);
 }
 

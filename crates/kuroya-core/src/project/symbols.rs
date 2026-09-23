@@ -14,12 +14,8 @@ mod ast_symbols;
 #[cfg(test)]
 mod ast_tests;
 
-/// Source up to this size is parsed with tree-sitter for AST-accurate
-/// symbols; larger files fall back to line scanning.
 const AST_MAX_FILE_BYTES: usize = 256 * 1024;
 
-/// Per-rebuild source-byte budget for AST parsing. Line scanning stays free;
-/// only tree-sitter parses spend this, bounding worst-case rebuild cost.
 pub(super) const RUST_AST_PARSE_BUDGET_BYTES: u64 = 8 * 1024 * 1024;
 
 pub(super) fn extract_project_symbols(
@@ -43,9 +39,6 @@ pub(super) fn extract_project_symbols(
     };
     let per_file_limit = remaining.min(MAX_SYMBOLS_PER_FILE);
 
-    // AST-accurate path for languages with a registered grammar, within the
-    // parse budget; line scanning remains the fallback (no grammar, parse
-    // failure, oversize files, exhausted budget).
     if *ast_budget > 0
         && text.len() <= AST_MAX_FILE_BYTES
         && let Some(extracted) = ast_symbols::extract_ast_symbols(language, &text, per_file_limit)

@@ -74,7 +74,6 @@ fn newline_in_crlf_buffer_inserts_crlf_without_stray_cr() {
 
     buffer.insert_newline_with_indent();
 
-    // The bug inserted a bare "\n" here, producing "abc\n\r\ndef".
     assert_eq!(buffer.text(), "abc\r\n\r\ndef");
 }
 

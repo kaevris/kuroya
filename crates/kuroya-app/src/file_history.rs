@@ -25,9 +25,7 @@ pub(crate) struct LocalHistorySnapshot {
     pub(crate) sequence: u128,
     pub(crate) path: PathBuf,
     pub(crate) bytes: u64,
-    /// File modification time recorded when the snapshot was enumerated.
-    /// Only the enumeration used by the local history browser stats each
-    /// snapshot; the "latest snapshot" read path leaves this empty.
+
     pub(crate) modified: Option<SystemTime>,
 }
 
@@ -597,9 +595,6 @@ fn push_bounded_local_history_snapshot_candidate(
         }
         Err(0) if candidates.len() == max_candidates => {
             if Some(candidate.path.as_path()) == protected_path {
-                // The candidate sorts oldest in a full list because the
-                // system clock moved backwards after it was written; evict
-                // the next-oldest retained snapshot instead of it.
                 return evict_instead_of_protected_local_history_snapshot_candidate(
                     candidates, candidate,
                 );
@@ -628,8 +623,6 @@ fn evict_instead_of_protected_local_history_snapshot_candidate(
     protected: LocalHistorySnapshotCandidate,
 ) -> Option<LocalHistorySnapshotCandidate> {
     if candidates.is_empty() {
-        // Nothing else can be evicted: keep every snapshot. Being over cap
-        // by one is harmless; deleting the just-written snapshot is not.
         candidates.push(protected);
         return None;
     }
@@ -1210,9 +1203,7 @@ mod tests {
             )
             .unwrap();
         }
-        // Simulates the just-written snapshot after the system clock moved
-        // backwards: it exists on disk, but its sequence sorts below every
-        // snapshot retained from before the rollback.
+
         let just_written = dir.join("1.main.rs.bak");
 
         prune_local_history_snapshots_async(&dir, "main.rs", 1, &just_written)
@@ -1237,8 +1228,7 @@ mod tests {
             )
             .unwrap();
         }
-        // Snapshot 1 was just written but sorts oldest after a clock
-        // rollback, so eviction must skip it and drop snapshot 2 instead.
+
         let just_written = dir.join("1.main.rs.bak");
 
         prune_local_history_snapshots_async(&dir, "main.rs", 2, &just_written)

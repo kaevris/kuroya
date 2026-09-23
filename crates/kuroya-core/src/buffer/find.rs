@@ -606,9 +606,6 @@ fn find_regex_memo_store(query: &str, case_sensitive: bool, regex: Regex) {
     memo.push(((query.to_owned(), case_sensitive), regex));
 }
 
-/// Compiles `query` once per (`query`, `case_sensitive`) pair and reuses the
-/// compiled `Regex` for later lookups, so find-as-you-type does not recompile
-/// the same pattern every time a cache entry misses.
 pub(super) fn find_regex(query: &str, case_sensitive: bool) -> Result<Regex, regex::Error> {
     if let Some(regex) = find_regex_memo_lookup(query, case_sensitive) {
         return Ok(regex);

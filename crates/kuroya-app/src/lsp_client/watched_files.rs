@@ -7,46 +7,26 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// Upper bound on glob patterns tracked per server so a misbehaving server
-/// cannot grow the registration table without limit. Extra watchers beyond
-/// the cap are skipped (the server still hears the success response).
 pub(in crate::lsp_client) const MAX_REGISTERED_WATCHER_GLOBS_PER_SERVER: usize = 1024;
 
-/// Per-server `workspace/didChangeWatchedFiles` watcher registrations.
-///
-/// The runtime task writes it when the server sends
-/// `client/registerCapability` / `client/unregisterCapability`; the app frame
-/// loop reads it to decide which live clients should receive forwarded
-/// filesystem events. Sharing mirrors the stderr ring: one allocation on the
-/// handle, cheap clones on both sides.
-///
-/// Only plain string `globPattern` watchers are tracked today; object-shaped
-/// patterns (`{ baseUri, pattern }`) are ignored.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LspWatchedFilesState {
     inner: Arc<Mutex<RegisteredWatchers>>,
 }
 
 impl LspWatchedFilesState {
-    /// Records (or replaces) the watcher registration `id` with `globs`.
-    /// Invalid patterns are skipped; valid bare filename patterns are
-    /// expanded with `**/` so they match at any depth, mirroring the
-    /// project-index glob expansion.
     pub(crate) fn register(&self, id: &str, globs: Vec<String>) {
         if let Ok(mut watchers) = self.inner.lock() {
             watchers.register(id, globs);
         }
     }
 
-    /// Drops the registrations whose `client/registerCapability` id appears
-    /// in `ids` (unknown ids are ignored).
     pub(crate) fn unregister(&self, ids: &[String]) {
         if let Ok(mut watchers) = self.inner.lock() {
             watchers.unregister(ids);
         }
     }
 
-    /// Whether any registered watcher glob matches `path`.
     pub(crate) fn matches_any(&self, path: &Path) -> bool {
         self.inner
             .lock()
@@ -124,7 +104,6 @@ impl RegisteredWatchers {
     }
 }
 
-/// Caps and trims raw watcher glob strings before they are stored.
 fn bounded_watcher_globs(globs: Vec<String>) -> Vec<String> {
     globs
         .into_iter()
@@ -138,9 +117,7 @@ fn add_watcher_glob(builder: &mut GlobSetBuilder, added: &mut HashSet<String>, p
     if pattern.len() > MAX_REGISTERED_WATCHER_GLOB_PATTERN_BYTES {
         return;
     }
-    // Bare filename patterns (`name.rs`) only match at the workspace root in
-    // globset, while LSP servers expect them anywhere in the tree; expand to
-    // the anchored descendant form like the project-index globs do.
+
     let bare = !pattern.contains(['/', '\\']) && !pattern.starts_with("**");
     if add_single_watcher_glob(builder, added, pattern).is_err() {
         return;

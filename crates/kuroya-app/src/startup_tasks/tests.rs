@@ -1443,7 +1443,6 @@ fn git_scoped_refresh_is_supported_only_for_scopable_snapshots_and_paths() {
     let outside = PathBuf::from("kuroya-scoped-guard/other/src/lib.rs");
     let max = GIT_SCOPED_REFRESH_MAX_PATHS;
 
-    // Git disabled falls back to the full scan (which invalidates).
     assert!(!git_scoped_refresh_is_supported(
         false,
         Some(workspace),
@@ -1451,7 +1450,7 @@ fn git_scoped_refresh_is_supported_only_for_scopable_snapshots_and_paths() {
         std::slice::from_ref(&inside),
         max
     ));
-    // A snapshot without a repository falls back.
+
     assert!(!git_scoped_refresh_is_supported(
         true,
         None,
@@ -1459,7 +1458,7 @@ fn git_scoped_refresh_is_supported_only_for_scopable_snapshots_and_paths() {
         std::slice::from_ref(&inside),
         max
     ));
-    // A resolved scan root that drifted from the snapshot root falls back.
+
     assert!(!git_scoped_refresh_is_supported(
         true,
         Some(workspace),
@@ -1467,8 +1466,7 @@ fn git_scoped_refresh_is_supported_only_for_scopable_snapshots_and_paths() {
         std::slice::from_ref(&inside),
         max
     ));
-    // No resolved scan root (auto detection disabled or no repository
-    // found) falls back.
+
     assert!(!git_scoped_refresh_is_supported(
         true,
         Some(workspace),
@@ -1476,7 +1474,7 @@ fn git_scoped_refresh_is_supported_only_for_scopable_snapshots_and_paths() {
         std::slice::from_ref(&inside),
         max
     ));
-    // Empty and oversized batches fall back.
+
     assert!(!git_scoped_refresh_is_supported(
         true,
         Some(workspace),
@@ -1492,7 +1490,7 @@ fn git_scoped_refresh_is_supported_only_for_scopable_snapshots_and_paths() {
         &oversized,
         max
     ));
-    // Paths outside the snapshot root fall back.
+
     assert!(!git_scoped_refresh_is_supported(
         true,
         Some(workspace),
@@ -1501,8 +1499,6 @@ fn git_scoped_refresh_is_supported_only_for_scopable_snapshots_and_paths() {
         max
     ));
 
-    // The supported case, including a trailing separator on the snapshot
-    // root (libgit2 workdirs keep one).
     assert!(git_scoped_refresh_is_supported(
         true,
         Some(workspace),
@@ -1525,13 +1521,10 @@ fn spawn_git_scoped_refresh_falls_back_to_full_scan_without_a_repository() {
     fs::create_dir_all(&root).unwrap();
     let mut app = crate::source_control_runtime::source_control_app_for_test(root.clone(), true);
 
-    // The snapshot has no repository yet, so the scoped refresh falls back
-    // to the full scan request machinery.
     assert!(app.spawn_git_scoped_refresh(vec![root.join("src/main.rs")]));
     assert_eq!(app.git_scan_active_request_id, 1);
     assert_eq!(app.git_scan_in_flight_request_id, Some(1));
 
-    // A refresh while a scan is in flight coalesces like full scans do.
     assert!(!app.spawn_git_scoped_refresh(vec![root.join("src/main.rs")]));
     assert!(app.git_scan_refresh_queued);
 
@@ -1557,18 +1550,14 @@ fn git_refresh_for_changed_paths_gates_on_autorefresh_and_batch_size() {
     fs::create_dir_all(&root).unwrap();
     let mut app = crate::source_control_runtime::source_control_app_for_test(root.clone(), true);
 
-    // Autorefresh off: no refresh at all.
     app.settings.git_autorefresh = false;
     assert!(!app.spawn_git_refresh_for_changed_paths(vec![root.join("src/main.rs")]));
     assert_eq!(app.git_scan_in_flight_request_id, None);
 
-    // Autorefresh on with a small batch: the scoped refresh falls back to
-    // the full scan while the snapshot has no repository.
     app.settings.git_autorefresh = true;
     assert!(app.spawn_git_refresh_for_changed_paths(vec![root.join("src/main.rs")]));
     assert_eq!(app.git_scan_in_flight_request_id, Some(1));
 
-    // Oversized batches skip the scoped attempt entirely and still refresh.
     app.invalidate_git_scan_requests();
     let oversized = vec![root.join("src/main.rs"); GIT_SCOPED_REFRESH_MAX_PATHS + 1];
     assert!(app.spawn_git_refresh_for_changed_paths(oversized));
@@ -1584,12 +1573,9 @@ fn git_refresh_for_saved_path_scopes_paths_inside_the_workspace() {
     let mut app = crate::source_control_runtime::source_control_app_for_test(root.clone(), true);
     app.settings.git_autorefresh = true;
 
-    // Inside the workspace: the scoped refresh starts a git request (it
-    // falls back to the full scan while the snapshot has no repository).
     assert!(app.spawn_git_refresh_for_saved_path(&root.join("src/main.rs")));
     assert_eq!(app.git_scan_in_flight_request_id, Some(1));
 
-    // Outside the workspace: fall back to the full auto refresh.
     app.invalidate_git_scan_requests();
     assert!(app.spawn_git_refresh_for_saved_path(&PathBuf::from("kuroya-elsewhere/other.rs")));
     assert!(app.git_scan_in_flight_request_id.is_some());
@@ -1605,11 +1591,8 @@ fn pending_workspace_refresh_feeds_project_paths_to_the_git_refresh() {
     app.settings.git_autorefresh = true;
     app.schedule_workspace_refresh_with_paths(vec![root.join("src/main.rs")]);
 
-    // Not due yet: nothing runs.
     assert_eq!(app.flush_pending_workspace_refresh(), 0);
 
-    // Force the debounce window to elapse; the flush applies the index
-    // update and the git refresh (1) from the same batch.
     if let Some(pending) = app.pending_workspace_refresh.as_mut() {
         pending.first_seen -= WORKSPACE_REFRESH_MAX_WAIT + Duration::from_secs(1);
         pending.last_seen = pending.first_seen;
@@ -1623,14 +1606,13 @@ fn pending_workspace_refresh_feeds_project_paths_to_the_git_refresh() {
 fn workspace_refresh_batch_worth_patching_compares_batch_to_index_size() {
     use super::workspace_refresh_batch_worth_patching;
 
-    // Cold index: patching has nothing to patch against.
     assert!(!workspace_refresh_batch_worth_patching(10, 0));
-    // Small batches stay incremental even on small indexes.
+
     assert!(workspace_refresh_batch_worth_patching(64, 10_000));
-    // A batch approaching an eighth of the index is cheaper to re-walk.
+
     assert!(workspace_refresh_batch_worth_patching(120, 1_000));
     assert!(!workspace_refresh_batch_worth_patching(130, 1_000));
-    // The patching cap alone bounds batches on huge indexes.
+
     assert!(workspace_refresh_batch_worth_patching(512, 1_000_000));
 }
 
@@ -1647,11 +1629,11 @@ fn workspace_refresh_incremental_gate_accepts_batches_within_the_raised_cap() {
         .collect();
 
     assert!(workspace_refresh_paths_are_incremental(true, root, &batch));
-    // One path past the cap re-walks.
+
     let mut over = batch.clone();
     over.push(root.join("src/overflow.rs"));
     assert!(!workspace_refresh_paths_are_incremental(true, root, &over));
-    // Chunking must cover the whole batch.
+
     assert_eq!(
         WORKSPACE_INCREMENTAL_INDEX_MAX_PATHS,
         WORKSPACE_INCREMENTAL_CHUNK_PATHS * 8

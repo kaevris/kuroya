@@ -229,21 +229,11 @@ impl KuroyaApp {
         }
     }
 
-    /// Drops every stored diagnostic published by one server instance
-    /// (language + client generation) for all paths. The bucket key is scoped
-    /// to the exact client generation, so co-attached servers for the same
-    /// language and later restart generations keep their own diagnostics;
-    /// without this purge the crashed server's errors would linger on
-    /// untouched files forever. Pending (not yet flushed) payloads from the
-    /// stopped generation are dropped by the flush-time lifecycle check.
     pub(crate) fn purge_lsp_diagnostics_for_server(&mut self, language: &str, generation: u64) {
         let source_key = lsp_diagnostics_source_key(language, generation);
         self.diagnostics.purge_lsp_source(&source_key);
     }
 
-    /// Marks one server (by client key) as unavailable after a spawn/handshake
-    /// failure and unwinds everything that was waiting for it. Sibling servers
-    /// for the same language keep their own clients and restart ladders.
     pub(crate) fn mark_lsp_server_unavailable(&mut self, client_key: &str) {
         self.lsp_clients.remove(client_key);
         self.lsp_restart_attempts.remove(client_key);

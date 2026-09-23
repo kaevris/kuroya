@@ -21,7 +21,7 @@ pub(super) fn take_lsp_stdio(
         send_lsp_stdio_unavailable_status(config, root, generation, "missing stdout", ui_tx);
         return None;
     };
-    // stderr is optional for capture; servers without one simply log nothing.
+
     let stderr = child.stderr.take();
 
     Some((writer, stdout, stderr))

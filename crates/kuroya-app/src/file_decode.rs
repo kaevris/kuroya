@@ -3,14 +3,10 @@ pub(crate) struct DecodedText {
     pub(crate) text: String,
     pub(crate) lossy: bool,
     pub(crate) binary: bool,
-    /// The file carried a UTF-8 BOM that was stripped from `text`. Not yet
-    /// consumed by the UiEvent plumbing (buffer BOM state needs buffer.rs
-    /// coordination); surfaced for tests and upcoming BOM-indicator wiring.
+
     #[allow(dead_code)]
     pub(crate) had_bom: bool,
-    /// The bytes carried a UTF-16 LE/BE BOM; `text` is the unsupported-notice
-    /// preview. Detection from the opened buffer goes through
-    /// `utf16_unsupported_label` until the flag can ride the load event.
+
     #[allow(dead_code)]
     pub(crate) utf16: bool,
 }

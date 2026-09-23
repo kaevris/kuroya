@@ -565,8 +565,6 @@ mod tests {
         crate::editor_vim_key_events::vim_set_search_input_text_for_test("query");
         crate::editor_vim_key_events::vim_set_command_input_text_for_test("s/a/b");
 
-        // Turn vim off: every piece of session state resets, including the
-        // marks/registers/searches the field-by-field resets never touched.
         assert!(app.run_ui_command(&Command::ToggleVimMode));
 
         assert!(!app.settings.vim_keybindings);

@@ -350,8 +350,7 @@ fn folded_region_highlight_fill_uses_straight_alpha_channels() {
         folded_region_highlight_fill(base),
         Color32::from_rgba_unmultiplied(126, 136, 150, 44)
     );
-    // A highlight built from an opaque source must not equal its premultiplied
-    // form: that form keeps the full channels and paints far too strong.
+
     assert_ne!(
         folded_region_highlight_fill(base),
         Color32::from_rgba_premultiplied(126, 136, 150, 44)

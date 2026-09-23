@@ -315,7 +315,7 @@ fn partial_settings_toml_uses_defaults() {
         settings.paste_as_show_paste_selector,
         EditorPasteAsShowPasteSelector::AfterPaste
     );
-    // Autosave is opt-in: defaults must never write the user's file.
+
     assert!(!settings.autosave);
     assert_eq!(settings.autosave_mode, EditorAutoSaveMode::AfterDelay);
     assert_eq!(settings.effective_autosave_mode(), EditorAutoSaveMode::Off);
@@ -1502,8 +1502,7 @@ fn settings_save_sanitizes_lsp_server_configs() {
         parse_settings_text(&fs::read_to_string(&path).unwrap()).unwrap();
 
     assert!(!should_resave_saved);
-    // Both distinct rust servers survive sanitization; only the invalid
-    // entry (empty command) is dropped.
+
     assert_eq!(
         saved.lsp_servers,
         vec![
@@ -1555,8 +1554,7 @@ fn schema_3_settings_materialize_builtin_lsp_servers() {
 
     let servers = settings.lsp_servers;
     let defaults = crate::lsp::default_server_configs();
-    // The rust override replaced the built-in rust default in place and
-    // every other default was materialized.
+
     assert_eq!(servers.len(), defaults.len());
     let rust = servers
         .iter()

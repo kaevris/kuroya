@@ -276,12 +276,10 @@ mod tests {
 
         app.set_active_buffer(2);
 
-        // The half-typed operator, search input and Ex input die on the
-        // context switch...
         assert_eq!(app.editor_vim_pending_key, None);
         assert_eq!(vim_search_input_text_for_test(), "");
         assert_eq!(vim_command_input_text_for_test(), "");
-        // ...while mode and registers survive it, like Vim.
+
         assert_eq!(app.editor_vim_mode, EditorVimMode::Insert);
         assert_eq!(
             app.editor_vim_unnamed_register,
@@ -343,15 +341,11 @@ mod tests {
         });
         app.handle_editor_input(&ctx, 1, 1);
 
-        // `o` entered insert mode: the insert session's undo group is open on
-        // buffer 1.
         assert_eq!(app.editor_vim_mode, EditorVimMode::Insert);
         assert_eq!(app.editor_vim_insert_undo_group_buffer, Some(1));
 
         app.set_active_buffer(2);
 
-        // Switching buffers closes the session group on the buffer that opened
-        // it, so its undo granularity survives the mode being app-global.
         assert_eq!(app.editor_vim_insert_undo_group_buffer, None);
         let buffer_one = app.buffer_mut(1).expect("buffer 1 remains loaded");
         assert_eq!(buffer_one.text(), "one\n");

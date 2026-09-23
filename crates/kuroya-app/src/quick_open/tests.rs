@@ -174,8 +174,6 @@ fn results_cache_matches_current_inputs_without_rebuilt_vectors() {
         Some(&current_navigation_location),
     ));
 
-    // The index generation is the results cache's index identity: any accepted
-    // index update bumps it and must invalidate the cache.
     assert!(!cache.matches(
         "lib",
         8,
@@ -243,7 +241,6 @@ fn results_cache_ranking_inputs_match_equivalent_navigation_paths_without_line_c
         &changed_rank_inputs,
     ));
 
-    // A bumped index generation invalidates cached ranking inputs.
     assert!(!cache.ranking_inputs_match(
         "main",
         8,

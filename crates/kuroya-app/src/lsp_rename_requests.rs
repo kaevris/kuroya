@@ -8,10 +8,6 @@ use std::path::PathBuf;
 const LSP_RENAME_MAX_TARGET_CHARS: usize = 256;
 const LSP_RENAME_DISPLAY_LABEL_CHARS: usize = 64;
 
-/// The `textDocument/prepareRename` request that is waiting for its
-/// response. The rename popup stays closed until the response arrives; the
-/// pending marker also drops stale responses (a second begin supersedes the
-/// first, and responses for another position are ignored).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LspRenamePrepareAwait {
     pub(crate) id: BufferId,
@@ -21,9 +17,6 @@ pub(crate) struct LspRenamePrepareAwait {
     pub(crate) character: usize,
 }
 
-/// A validated prepareRename result retained while the rename popup is open.
-/// The one-based `start`/`end` coordinates are the range the server reported
-/// as renamable; submit revalidates that the cursor is still inside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LspRenamePrepareTarget {
     pub(crate) id: BufferId,
@@ -38,9 +31,6 @@ pub(crate) struct LspRenamePrepareTarget {
 }
 
 impl LspRenamePrepareTarget {
-    /// Whether the (zero-based) cursor position sits inside the server's
-    /// one-based prepare range (end inclusive, matching the LSP convention
-    /// that the end position may designate the last renamed character).
     pub(crate) fn contains_position(&self, line: usize, character: usize) -> bool {
         lsp_prepare_range_contains_position(
             self.start_line,
@@ -52,9 +42,6 @@ impl LspRenamePrepareTarget {
         )
     }
 
-    /// Whether this prepare result still describes exactly the given
-    /// buffer position. Any drift (edit, cursor move, buffer switch)
-    /// invalidates the prepare gate and forces a fresh prepareRename.
     pub(crate) fn matches_position(
         &self,
         id: BufferId,
@@ -71,7 +58,6 @@ impl LspRenamePrepareTarget {
     }
 }
 
-/// One-based inclusive range containment for a zero-based cursor position.
 pub(crate) fn lsp_prepare_range_contains_position(
     start_line: usize,
     start_column: usize,
@@ -209,7 +195,6 @@ mod tests {
 
     #[test]
     fn prepare_range_contains_only_positions_inside_the_symbol() {
-        // One-based range 3:5-3:12 covers zero-based columns 4..=11 on line 2.
         let (start_line, start_column, end_line, end_column) = (3, 5, 3, 12);
 
         assert!(lsp_prepare_range_contains_position(
@@ -237,7 +222,6 @@ mod tests {
             7
         ));
 
-        // Outside on both ends of the symbol.
         assert!(!lsp_prepare_range_contains_position(
             start_line,
             start_column,
@@ -254,7 +238,7 @@ mod tests {
             2,
             12
         ));
-        // Outside on neighboring lines (including zero-based underflow line).
+
         assert!(!lsp_prepare_range_contains_position(
             start_line,
             start_column,

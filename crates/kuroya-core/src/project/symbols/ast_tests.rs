@@ -27,8 +27,7 @@ fn read_input() {}
     ] {
         assert!(names.contains(&expected), "{expected} missing: {names:?}");
     }
-    // Trait methods are found through the trait body, impl methods through
-    // the impl body, and the fire/chill identifiers are not duplicated.
+
     assert_eq!(names.iter().filter(|name| **name == "fire").count(), 1);
 }
 

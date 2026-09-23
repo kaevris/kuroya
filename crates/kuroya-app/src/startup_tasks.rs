@@ -25,22 +25,11 @@ pub(crate) const WORKSPACE_PLUGIN_RELOAD_DEBOUNCE: Duration = Duration::from_mil
 pub(crate) const WORKSPACE_PLUGIN_RELOAD_MAX_WAIT: Duration = Duration::from_secs(2);
 pub(crate) const WORKSPACE_REFRESH_DEBOUNCE: Duration = Duration::from_millis(250);
 pub(crate) const WORKSPACE_REFRESH_MAX_WAIT: Duration = Duration::from_secs(2);
-/// Watcher batches with at most this many changed project paths are applied
-/// incrementally to the warm in-memory index; larger batches fall back to a
-/// full `spawn_index` re-walk because applying many individual updates costs
-/// more than one walk.
-/// Watcher batches up to this many paths are patched into the warm index
-/// incrementally (in chunks of [`WORKSPACE_INCREMENTAL_CHUNK_PATHS`]) instead
-/// of triggering a full re-walk, so bulk operations like branch switches keep
-/// indexing cheap.
+
 pub(crate) const WORKSPACE_INCREMENTAL_INDEX_MAX_PATHS: usize = 512;
-/// Paths applied per `apply_path_changes` call. One call per chunk keeps each
-/// incremental step bounded; the index Arc is already unique after
-/// `clone_for_update`, so chunking costs no extra deep copies.
+
 pub(crate) const WORKSPACE_INCREMENTAL_CHUNK_PATHS: usize = 64;
-/// Watcher/operation batches with at most this many affected paths refresh
-/// git through a pathspec-scoped status query instead of a full scan; larger
-/// batches fall back to `spawn_git_scan`.
+
 pub(crate) const GIT_SCOPED_REFRESH_MAX_PATHS: usize = 64;
 const GIT_REPOSITORY_SCAN_MAX_CHILDREN_PER_FOLDER: usize = 2_048;
 const GIT_REPOSITORY_SCAN_MAX_VISITED_FOLDERS: usize = 10_000;
@@ -123,9 +112,6 @@ impl KuroyaApp {
         let tx = self.tx.clone();
         self.record_async_task_started("Index Workspace", compact_path(&root));
         self.runtime.spawn_blocking(move || {
-            // Single full walk per startup: publish the validated disk cache
-            // immediately (quick open gets instant results), then reconcile
-            // it against one fresh rebuild.
             if let Some(cache) =
                 load_project_index_cache_unverified_with_options(&root, &index_options)
             {
@@ -175,10 +161,6 @@ impl KuroyaApp {
         });
     }
 
-    /// Applies a small watcher batch incrementally to the warm in-memory
-    /// index instead of re-walking the workspace. Falls back to the full
-    /// `spawn_index` walk when the index is cold, the batch is large, or the
-    /// batch contains the workspace root itself.
     pub(crate) fn spawn_incremental_index(&mut self, changed_paths: Vec<PathBuf>) {
         if self.workspace_placeholder {
             self.invalidate_workspace_index_requests();
@@ -190,9 +172,7 @@ impl KuroyaApp {
             self.spawn_index();
             return;
         }
-        // The batch-cost check must run before the request slot is reserved:
-        // falling back to `spawn_index` afterwards would find the slot taken
-        // by an id whose task never publishes, wedging the index permanently.
+
         let indexed_files = self.index.files().len();
         if !workspace_refresh_batch_worth_patching(changed_paths.len(), indexed_files) {
             self.spawn_index();
@@ -216,8 +196,6 @@ impl KuroyaApp {
                 changed_any |= updated.apply_path_changes(&root, chunk);
             }
             if !changed_any {
-                // Nothing changed on disk that affects the index; republish
-                // the unchanged snapshot to release the request slot.
                 let _ = crate::ui_event_channel::send_critical_ui_event(
                     &tx,
                     UiEvent::Indexed {
@@ -365,10 +343,6 @@ impl KuroyaApp {
         self.spawn_git_scan()
     }
 
-    /// Refreshes git after external file changes (watcher batches, saves):
-    /// small known batches scope the status query to the changed paths,
-    /// anything else falls back to a full scan. Gated on `git.autorefresh`
-    /// like the other automatic refresh entry points.
     pub(crate) fn spawn_git_refresh_for_changed_paths(&mut self, paths: Vec<PathBuf>) -> bool {
         if !git_auto_refresh_enabled(self.settings.git_enabled, self.settings.git_autorefresh) {
             return false;
@@ -379,9 +353,6 @@ impl KuroyaApp {
         self.spawn_git_scoped_refresh(paths)
     }
 
-    /// Refreshes git after a buffer save: the saved path scopes the status
-    /// query when it stays inside the workspace, otherwise this falls back to
-    /// the full auto refresh. Gated on `git.autorefresh`.
     pub(crate) fn spawn_git_refresh_for_saved_path(&mut self, path: &Path) -> bool {
         if !git_auto_refresh_enabled(self.settings.git_enabled, self.settings.git_autorefresh) {
             return false;
@@ -392,13 +363,6 @@ impl KuroyaApp {
         self.spawn_git_scoped_refresh(vec![path.to_path_buf()])
     }
 
-    /// Updates the current snapshot with a pathspec-scoped status query for
-    /// `paths` instead of rescanning the whole worktree. Falls back to the
-    /// full `spawn_git_scan` whenever the snapshot cannot be safely scoped:
-    /// git disabled, no repository, the resolved scan root no longer matching
-    /// the snapshot root, an ignored repository, empty/oversized batches, or
-    /// paths outside the snapshot root. Coalesces through the same request-id
-    /// machinery as full scans.
     pub(crate) fn spawn_git_scoped_refresh(&mut self, paths: Vec<PathBuf>) -> bool {
         if self.workspace_placeholder
             || git_repository_ignored(
@@ -462,9 +426,6 @@ impl KuroyaApp {
             git_scan_task_detail(request_id, &snapshot_root),
         );
         self.runtime.spawn_blocking(move || {
-            // A failed scoped query republishes the unchanged snapshot to
-            // release the request slot; the watcher or the next explicit
-            // refresh triggers the full rescan.
             let git = kuroya_core::git_scoped_status_snapshot(
                 &base_snapshot,
                 &paths,
@@ -1009,11 +970,6 @@ pub(crate) fn pending_refresh_is_due(pending: &PendingWorkspaceRefresh, now: Ins
         || now.saturating_duration_since(pending.first_seen) >= WORKSPACE_REFRESH_MAX_WAIT
 }
 
-/// True when a debounced watcher batch can be applied incrementally instead
-/// of triggering a full re-walk: the in-memory index must be warm, the batch
-/// must be small (`WORKSPACE_INCREMENTAL_INDEX_MAX_PATHS`), and it must not
-/// contain the workspace root itself. Overflowed watchers and cold indexes
-/// arrive here with an empty batch and fall back to the full walk.
 pub(crate) fn workspace_refresh_paths_are_incremental(
     index_is_warm: bool,
     workspace_root: &Path,
@@ -1027,9 +983,6 @@ pub(crate) fn workspace_refresh_paths_are_incremental(
             .all(|path| !trusted_workspace_paths_match(path, workspace_root))
 }
 
-/// Cost check for choosing incremental patching over a re-walk: patching
-/// visits one subtree per path, a walk visits every indexed file, so once a
-/// batch approaches an eighth of the index a walk is cheaper and simpler.
 pub(crate) fn workspace_refresh_batch_worth_patching(
     batch_len: usize,
     indexed_files: usize,
@@ -1041,11 +994,6 @@ pub(crate) fn git_auto_refresh_enabled(git_enabled: bool, git_autorefresh: bool)
     git_enabled && git_autorefresh
 }
 
-/// True when the current snapshot can be refreshed with a scoped status
-/// query for `paths`: git must be enabled, the snapshot must have a
-/// repository root, the resolved scan root must still match the snapshot
-/// root, and every path must stay inside the snapshot root and within the
-/// batch limit. Anything else falls back to the full scan.
 pub(crate) fn git_scoped_refresh_is_supported(
     git_enabled: bool,
     snapshot_root: Option<&Path>,

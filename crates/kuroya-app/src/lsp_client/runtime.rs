@@ -43,13 +43,6 @@ use read_result::handle_lsp_read_result;
 use startup::{StartedLspClient, start_lsp_process};
 use status::send_lsp_stopped_status;
 
-/// How long any single stdin write may take before the server counts as
-/// wedged. A hung-but-alive server (pipe full, nobody draining it) must not
-/// stall this runtime loop forever: read handling, request deadlines, and
-/// the child-death watchdog all live on the same loop, and the command
-/// queue would silently fill to the `LSP_COMMAND_QUEUE_CAPACITY` bound
-/// with document snapshots. On expiry the client stops as `Unexpected` so
-/// the restart ladder engages.
 pub(super) const LSP_STDIN_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) async fn run_lsp_client(
@@ -188,11 +181,8 @@ pub(super) async fn run_lsp_client(
     );
     match stop_reason {
         LspClientStopReason::Intentional => {
-            // Intentional stops never surface an exit status; the graceful
-            // exit just guarantees the child is reaped before we return.
             let _ = watchdog.request_graceful_exit().await;
-            // Requests still in flight get a typed cancellation failure
-            // instead of being dropped silently.
+
             emit_pending_lsp_request_cancellations_for_server(
                 LspServerResultTarget {
                     language: config.language.clone(),
@@ -227,13 +217,6 @@ pub(super) async fn run_lsp_client(
     }
 }
 
-/// Handles one queued command under the stdin write deadline. Command
-/// dispatch awaits `write_message`/`write_all` + `flush` on the server's
-/// stdin pipe, so a wedged server would otherwise stall the runtime loop
-/// forever. On expiry the client stops as `Unexpected` (engaging the
-/// restart ladder); a partially written frame is acceptable because the
-/// connection is torn down right after: stdin closes, the watchdog kills
-/// the child, and the restart replays didOpen on a fresh process.
 async fn handle_lsp_command_with_write_deadline(
     command: Option<LspClientCommand>,
     writer: &mut ChildStdin,
@@ -260,8 +243,6 @@ async fn handle_lsp_command_with_write_deadline(
     ))
 }
 
-/// Expires requests whose deadline elapsed and notifies the server with
-/// best-effort `$/cancelRequest` notifications.
 async fn expire_due_lsp_requests(
     writer: &mut ChildStdin,
     pending_requests: &mut PendingLspRequests,
@@ -292,9 +273,6 @@ async fn expire_due_lsp_requests(
     );
 }
 
-/// Assembles the optional stop detail from the reaped exit status and the
-/// captured stderr tail. The joined detail is sanitized later when the
-/// status message is rendered.
 fn lsp_unexpected_stop_detail(
     exit_detail: Option<String>,
     stderr_log: &LspStderrLog,
@@ -317,9 +295,6 @@ async fn handle_lsp_shutdown_signal(
     sync_state: &mut DocumentSyncState,
     ui_tx: &Sender<UiEvent>,
 ) -> LspClientStopReason {
-    // The shutdown + exit writes are deadline-bounded like every other
-    // stdin write: a server wedged hard enough to refuse them must not
-    // hang the runtime task on its way out.
     match time::timeout(
         LSP_STDIN_WRITE_TIMEOUT,
         handle_lsp_client_command(
@@ -339,10 +314,6 @@ async fn handle_lsp_shutdown_signal(
     }
 }
 
-/// Exit-status detail for an unexpected stop. When the death notification has
-/// not been observed yet (for example a stdout EOF that raced with process
-/// exit) wait briefly for the watchdog to reap it so the status message can
-/// name the exit code.
 async fn lsp_unexpected_stop_exit_detail(
     unexpected_exit: Option<&io::Result<ExitStatus>>,
     watchdog: &mut LspChildWatchdog,
@@ -397,8 +368,6 @@ mod tests {
         }
     }
 
-    /// A live server process that never reads its stdin pipe, so writes
-    /// into it block once the pipe buffer fills.
     async fn stdin_ignored_child() -> (tokio::process::Child, tokio::process::ChildStdin) {
         #[cfg(windows)]
         let mut command = {
@@ -424,7 +393,6 @@ mod tests {
         (child, stdin)
     }
 
-    /// A live server process that drains its stdin, so writes complete.
     async fn stdin_sink_child() -> (tokio::process::Child, tokio::process::ChildStdin) {
         #[cfg(windows)]
         let mut command = {
@@ -521,8 +489,6 @@ mod tests {
         let mut pending_requests = PendingLspRequests::default();
         let (ui_tx, _ui_rx) = ui_event_channel();
 
-        // Far larger than any OS pipe buffer, so the write must block once
-        // the pipe fills and the deadline is what stops the client.
         let outcome = handle_lsp_command_with_write_deadline(
             Some(did_open_with_payload(8 * 1024 * 1024)),
             &mut writer,
