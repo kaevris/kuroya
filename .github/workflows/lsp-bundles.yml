@@ -100,9 +100,9 @@ jobs:
           stage="work/gopls"
           mkdir -p "$stage"
           export GOARCH=amd64 CGO_ENABLED=0
+          export GOBIN="$PWD/$stage"
           go install "golang.org/x/tools/gopls@${GOPLS_VERSION#gopls/}"
-          gopath="$(go env GOPATH | tr '\\' '/')"
-          cp "$gopath/bin/gopls${EXE}" "$stage/"
+          cp "$GOBIN/gopls${EXE}" "$stage/"
           "$stage/gopls${EXE}" version
 
       - name: Bundle rust-analyzer
