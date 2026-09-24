@@ -60,11 +60,11 @@ jobs:
             os: macos-latest
             archive: tar.gz
     env:
-      GOPLS_VERSION: ${{ inputs.gopls_version || env.GOPLS_VERSION }}
-      CLANGD_VERSION: ${{ inputs.clangd_version || env.CLANGD_VERSION }}
-      LUA_LS_VERSION: ${{ inputs.lua_ls_version || env.LUA_LS_VERSION }}
-      MARKSMAN_VERSION: ${{ inputs.marksman_version || env.MARKSMAN_VERSION }}
-      RA_VERSION: ${{ inputs.rust_analyzer_version || env.RA_VERSION }}
+      GOPLS_VERSION: ${{ github.event.inputs.gopls_version || env.GOPLS_VERSION }}
+      CLANGD_VERSION: ${{ github.event.inputs.clangd_version || env.CLANGD_VERSION }}
+      LUA_LS_VERSION: ${{ github.event.inputs.lua_ls_version || env.LUA_LS_VERSION }}
+      MARKSMAN_VERSION: ${{ github.event.inputs.marksman_version || env.MARKSMAN_VERSION }}
+      RA_VERSION: ${{ github.event.inputs.rust_analyzer_version || env.RA_VERSION }}
     steps:
       - name: Prepare output directories
         shell: bash
