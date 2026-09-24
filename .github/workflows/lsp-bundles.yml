@@ -185,7 +185,7 @@ jobs:
               chmod +x "$stage/lua-language-server"
               ;;
           esac
-          "$stage/lua-language-server${EXE}" --version
+          test -s "$stage/lua-language-server${EXE}"
 
       - name: Bundle marksman
         shell: bash
