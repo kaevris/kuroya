@@ -19,7 +19,9 @@ pub(crate) fn normalize_native_path(path: PathBuf) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
     use super::normalize_native_path;
+    #[cfg(windows)]
     use std::path::PathBuf;
 
     #[cfg(windows)]

@@ -35,7 +35,7 @@ fn line_change_kinds_can_ignore_trim_whitespace() {
 
 #[test]
 fn changed_line_kinds_against_head_accepts_lexically_equivalent_path() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-line-kinds-equivalent-path-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -103,7 +103,7 @@ fn unified_diff_for_texts_preserves_new_and_deleted_file_labels() {
 
 #[test]
 fn file_and_diff_apis_accept_lexically_equivalent_paths() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-git-diff-alias-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -156,7 +156,7 @@ fn file_and_diff_apis_accept_lexically_equivalent_paths() {
 
 #[test]
 fn hunk_apis_accept_lexically_equivalent_paths() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-git-hunk-alias-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -190,7 +190,7 @@ fn hunk_apis_accept_lexically_equivalent_paths() {
 
 #[test]
 fn hunk_apis_reject_unresolved_conflicted_paths() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-git-hunk-conflict-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -245,7 +245,7 @@ fn hunk_apis_reject_unresolved_conflicted_paths() {
 #[cfg(windows)]
 #[test]
 fn unified_diff_apis_accept_windows_workdir_case_aliases() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-git-diff-windows-alias-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -278,7 +278,7 @@ fn unified_diff_apis_accept_windows_workdir_case_aliases() {
 #[cfg(windows)]
 #[test]
 fn hunk_apis_accept_windows_workdir_case_aliases() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-git-hunk-windows-alias-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -649,7 +649,7 @@ fn try_unified_diff_between_texts_treats_zero_max_file_size_as_no_limit() {
 
 #[test]
 fn unified_diff_against_index_uses_staged_text_not_worktree() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-staged-diff-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -674,7 +674,7 @@ fn unified_diff_against_index_uses_staged_text_not_worktree() {
 
 #[test]
 fn unified_diff_against_worktree_uses_index_as_baseline() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-worktree-diff-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -699,7 +699,7 @@ fn unified_diff_against_worktree_uses_index_as_baseline() {
 
 #[test]
 fn unified_diff_against_head_includes_staged_and_worktree_text() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-head-diff-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -723,7 +723,7 @@ fn unified_diff_against_head_includes_staged_and_worktree_text() {
 
 #[test]
 fn prepared_diff_helpers_return_loaded_revision_texts() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-prepared-diff-texts-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -758,7 +758,7 @@ fn prepared_diff_helpers_return_loaded_revision_texts() {
 
 #[test]
 fn file_text_at_head_reads_committed_text_without_worktree_changes() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-head-file-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -782,7 +782,7 @@ fn file_text_at_head_reads_committed_text_without_worktree_changes() {
 
 #[test]
 fn file_text_at_index_reads_staged_text_without_worktree_changes() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-index-file-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -808,7 +808,7 @@ fn file_text_at_index_reads_staged_text_without_worktree_changes() {
 
 #[test]
 fn worktree_diff_hunks_report_unstaged_hunk_metadata() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-worktree-hunks-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -833,7 +833,7 @@ fn worktree_diff_hunks_report_unstaged_hunk_metadata() {
 
 #[test]
 fn stage_worktree_hunk_stages_only_selected_hunk() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-stage-hunk-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -865,7 +865,7 @@ fn stage_worktree_hunk_stages_only_selected_hunk() {
 
 #[test]
 fn stage_worktree_hunk_removes_deleted_file_from_index() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-stage-deleted-hunk-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -904,7 +904,7 @@ fn stage_worktree_hunk_removes_deleted_file_from_index() {
 
 #[test]
 fn stage_worktree_hunk_keeps_empty_existing_file_in_index() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-stage-empty-hunk-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -941,7 +941,7 @@ fn stage_worktree_hunk_keeps_empty_existing_file_in_index() {
 
 #[test]
 fn worktree_diff_hunks_do_not_report_staged_deleted_file_as_unstaged() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-staged-deleted-clean-worktree-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -972,7 +972,7 @@ fn worktree_diff_hunks_do_not_report_staged_deleted_file_as_unstaged() {
 
 #[test]
 fn stage_worktree_hunk_rejects_shifted_stale_hunk_index() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-stage-shifted-hunk-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1023,7 +1023,7 @@ fn stage_worktree_hunk_rejects_shifted_stale_hunk_index() {
 
 #[test]
 fn staged_diff_hunks_report_staged_hunk_metadata() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-staged-hunks-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1049,7 +1049,7 @@ fn staged_diff_hunks_report_staged_hunk_metadata() {
 
 #[test]
 fn unstage_staged_hunk_unstages_only_selected_hunk() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-unstage-hunk-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1082,7 +1082,7 @@ fn unstage_staged_hunk_unstages_only_selected_hunk() {
 
 #[test]
 fn unstage_staged_hunk_rejects_shifted_stale_hunk_index() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-unstage-shifted-hunk-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1131,7 +1131,7 @@ fn unstage_staged_hunk_rejects_shifted_stale_hunk_index() {
 
 #[test]
 fn discard_worktree_hunk_reverts_only_selected_hunk() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-discard-hunk-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1165,7 +1165,7 @@ fn discard_worktree_hunk_reverts_only_selected_hunk() {
 
 #[test]
 fn discard_worktree_hunk_rejects_stale_hunk_fingerprint() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-discard-stale-hunk-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1197,7 +1197,7 @@ fn discard_worktree_hunk_rejects_stale_hunk_fingerprint() {
 
 #[test]
 fn discard_worktree_hunk_rejects_shifted_stale_hunk_index() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-discard-shifted-hunk-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1249,7 +1249,7 @@ fn discard_worktree_hunk_rejects_shifted_stale_hunk_index() {
 
 #[test]
 fn discard_worktree_hunk_removes_untracked_file_when_hunk_clears_file() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-discard-untracked-hunk-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1275,7 +1275,7 @@ fn discard_worktree_hunk_removes_untracked_file_when_hunk_clears_file() {
 
 #[test]
 fn discard_worktree_hunk_preserves_crlf_line_endings() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-discard-crlf-hunk-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1312,7 +1312,7 @@ fn discard_worktree_hunk_preserves_crlf_line_endings() {
 
 #[test]
 fn stage_worktree_hunk_preserves_crlf_line_endings() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-stage-crlf-hunk-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1345,7 +1345,7 @@ fn stage_worktree_hunk_preserves_crlf_line_endings() {
 
 #[test]
 fn hunk_operations_preserve_each_lines_own_line_ending() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-hunk-mixed-endings-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1384,7 +1384,7 @@ fn hunk_operations_preserve_each_lines_own_line_ending() {
 
 #[test]
 fn discard_worktree_hunk_preserves_remainder_eof_newline_state() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-hunk-eof-newline-{}-{}",
         std::process::id(),
         unique_suffix()

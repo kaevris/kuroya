@@ -361,7 +361,7 @@ fn current_root_stale_git_blame_loaded_event_drains_queued_reload_without_applyi
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(
         app.source_control_blame_in_flight_request_ids.get(&path),
         Some(&3)
@@ -430,7 +430,7 @@ fn equivalent_root_stale_git_blame_loaded_event_drains_queued_reload_without_app
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(
         app.source_control_blame_in_flight_request_ids.get(&path),
         Some(&3)
@@ -482,7 +482,7 @@ fn current_root_stale_git_blame_failed_event_drains_queued_reload_without_applyi
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(
         app.source_control_blame_in_flight_request_ids.get(&path),
         Some(&3)

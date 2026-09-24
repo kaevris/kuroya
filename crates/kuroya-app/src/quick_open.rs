@@ -32,6 +32,7 @@ pub(crate) use labels::{
     quick_open_result_label_with_navigation, sanitized_quick_open_result_label,
     sanitized_quick_open_result_label_text,
 };
+#[cfg(windows)]
 use query::quick_open_lowercase;
 #[cfg(test)]
 pub(crate) use query::{MAX_QUICK_OPEN_QUERY_MEMORY_CHARS, MAX_QUICK_OPEN_QUERY_PATTERN_CHARS};
@@ -39,16 +40,17 @@ pub(crate) use query::{
     QuickOpenMatchQuery, QuickOpenQuery, normalize_quick_open_memory_query, parse_line_column,
     parse_quick_open_query, sanitize_quick_open_query_input,
 };
+#[cfg(all(test, windows))]
+use ranking::QUICK_OPEN_OPEN_FILE_BONUS;
 use ranking::QuickOpenNavigationRankKeys;
 #[cfg(test)]
 use ranking::{
-    QUICK_OPEN_OPEN_FILE_BONUS, QUICK_OPEN_OPEN_FILE_CANDIDATE_LIMIT,
-    QUICK_OPEN_OPEN_FILE_SCAN_LIMIT, QuickOpenCandidateRankData, QuickOpenLowercaseMatch,
-    QuickOpenRankingBonusContext, quick_open_candidate_beats_result,
-    quick_open_empty_query_index_scan_limit, quick_open_empty_query_ranked_results,
-    quick_open_for_each_candidate_path, quick_open_lowercase_match_kind,
-    quick_open_lowercase_word_start_match, quick_open_open_file_candidates,
-    quick_open_unboosted_empty_query_results,
+    QUICK_OPEN_OPEN_FILE_CANDIDATE_LIMIT, QUICK_OPEN_OPEN_FILE_SCAN_LIMIT,
+    QuickOpenCandidateRankData, QuickOpenLowercaseMatch, QuickOpenRankingBonusContext,
+    quick_open_candidate_beats_result, quick_open_empty_query_index_scan_limit,
+    quick_open_empty_query_ranked_results, quick_open_for_each_candidate_path,
+    quick_open_lowercase_match_kind, quick_open_lowercase_word_start_match,
+    quick_open_open_file_candidates, quick_open_unboosted_empty_query_results,
 };
 #[cfg(test)]
 pub(crate) use ranking::{

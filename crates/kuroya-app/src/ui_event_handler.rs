@@ -28,13 +28,22 @@ impl KuroyaApp {
         self.drain_ui_events(None)
     }
 
+    #[cfg(test)]
+    pub(crate) fn handle_single_event(&mut self) -> usize {
+        self.drain_ui_events_with_budget(None, 1)
+    }
+
     pub(crate) fn handle_events_with_context(&mut self, ctx: &Context) -> usize {
         self.drain_ui_events(Some(ctx))
     }
 
     fn drain_ui_events(&mut self, ctx: Option<&Context>) -> usize {
+        self.drain_ui_events_with_budget(ctx, UI_EVENT_DRAIN_BUDGET)
+    }
+
+    fn drain_ui_events_with_budget(&mut self, ctx: Option<&Context>, budget: usize) -> usize {
         let mut handled = 0usize;
-        while handled < UI_EVENT_DRAIN_BUDGET {
+        while handled < budget {
             let Ok(event) = self.rx.try_recv() else {
                 break;
             };

@@ -1,10 +1,10 @@
 use super::explorer_operation_path_label;
+#[cfg(windows)]
+use crate::workspace_trust::workspace_path_contains_lexically;
 use crate::{
     KuroyaApp,
     explorer::{ExplorerEntryKind, path_matches_kind, retarget_path_prefix},
-    workspace_trust::{
-        workspace_path_contains_lexically, workspace_path_stays_within_root_lexically,
-    },
+    workspace_trust::workspace_path_stays_within_root_lexically,
 };
 #[cfg(test)]
 use std::ffi::{OsStr, OsString};

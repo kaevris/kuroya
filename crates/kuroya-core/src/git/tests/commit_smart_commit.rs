@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn commit_staged_changes_creates_commit_from_index() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-staged-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -33,7 +33,7 @@ fn commit_staged_changes_creates_commit_from_index() {
 
 #[test]
 fn merge_head_commits_reads_multiple_oids_in_file_order() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-merge-head-order-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -63,7 +63,7 @@ fn merge_head_commits_reads_multiple_oids_in_file_order() {
 
 #[test]
 fn merge_head_commits_rejects_invalid_oid() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-merge-head-invalid-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -81,7 +81,7 @@ fn merge_head_commits_rejects_invalid_oid() {
 
 #[test]
 fn commit_staged_changes_creates_merge_commit_from_merge_head() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-merge-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -120,7 +120,7 @@ fn commit_staged_changes_creates_merge_commit_from_merge_head() {
 
 #[test]
 fn commit_changes_allows_same_tree_merge_resolution() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-same-tree-merge-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -167,7 +167,7 @@ fn commit_changes_allows_same_tree_merge_resolution() {
 
 #[test]
 fn commit_changes_can_sign_off_with_git_identity() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-sign-off-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -204,7 +204,7 @@ fn commit_changes_can_sign_off_with_git_identity() {
 
 #[test]
 fn commit_changes_can_guess_identity_when_user_config_not_required() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-guess-identity-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -260,7 +260,7 @@ fn guessed_git_signature_uses_clean_environment_values() {
 
 #[test]
 fn commit_staged_changes_rejects_empty_message() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-empty-message-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -277,7 +277,7 @@ fn commit_staged_changes_rejects_empty_message() {
 
 #[test]
 fn commit_staged_changes_rejects_clean_index() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-clean-index-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -298,7 +298,7 @@ fn commit_staged_changes_rejects_clean_index() {
 
 #[test]
 fn commit_changes_can_create_empty_commit_when_allowed() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-empty-allowed-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -332,7 +332,7 @@ fn commit_changes_can_create_empty_commit_when_allowed() {
 
 #[test]
 fn commit_changes_smart_commit_stages_all_when_index_is_clean() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-smart-commit-all-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -362,7 +362,7 @@ fn commit_changes_smart_commit_stages_all_when_index_is_clean() {
 
 #[test]
 fn commit_changes_smart_commit_tracked_skips_untracked_files() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-smart-commit-tracked-{}-{}",
         std::process::id(),
         unique_suffix()

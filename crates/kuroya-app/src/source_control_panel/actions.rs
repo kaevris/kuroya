@@ -12,9 +12,10 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[cfg(windows)]
+use super::source_control_path_component_key;
 use super::{
     copy_patch_command_for_entry, open_changes_command_for_entry, open_changes_label_for_stage,
-    source_control_path_component_key,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

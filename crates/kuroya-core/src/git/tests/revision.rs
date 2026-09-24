@@ -1,7 +1,7 @@
 use super::*;
 
 fn revision_test_root(label: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
+    canonical_test_temp_dir().join(format!(
         "kuroya-revision-{label}-{}-{}",
         std::process::id(),
         unique_suffix()

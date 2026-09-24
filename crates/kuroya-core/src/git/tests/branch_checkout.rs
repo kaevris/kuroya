@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn list_local_branches_marks_current_branch_first() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-list-branches-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -29,7 +29,7 @@ fn list_local_branches_marks_current_branch_first() {
 
 #[test]
 fn checkout_branch_switches_head_to_local_branch() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-checkout-branch-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -79,7 +79,7 @@ fn branch_mutation_block_label_covers_in_progress_repository_states() {
 
 #[test]
 fn checkout_branch_rejects_merge_state_and_leaves_head_unchanged() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-checkout-branch-merge-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -116,7 +116,7 @@ fn checkout_branch_rejects_merge_state_and_leaves_head_unchanged() {
 
 #[test]
 fn list_checkout_refs_respects_checkout_type_filter() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-checkout-type-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -175,7 +175,7 @@ fn list_checkout_refs_respects_checkout_type_filter() {
 
 #[test]
 fn checkout_ref_rejects_remote_branch_during_merge_without_creating_local_branch() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-checkout-remote-merge-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -217,7 +217,7 @@ fn checkout_ref_rejects_remote_branch_during_merge_without_creating_local_branch
 
 #[test]
 fn checkout_ref_switches_remote_branch_to_local_branch() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-checkout-remote-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -241,7 +241,7 @@ fn checkout_ref_switches_remote_branch_to_local_branch() {
 
 #[test]
 fn checkout_ref_rolls_back_new_remote_local_branch_when_checkout_fails() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-checkout-remote-rollback-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -275,7 +275,7 @@ fn checkout_ref_rolls_back_new_remote_local_branch_when_checkout_fails() {
 
 #[test]
 fn checkout_ref_rejects_tag_checkout_during_merge() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-checkout-tag-merge-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -313,7 +313,7 @@ fn checkout_ref_rejects_tag_checkout_during_merge() {
 
 #[test]
 fn checkout_ref_can_detach_head_at_tag() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-checkout-tag-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -338,7 +338,7 @@ fn checkout_ref_can_detach_head_at_tag() {
 
 #[test]
 fn create_branch_rejects_merge_state_without_creating_branch() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-create-branch-merge-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -378,7 +378,7 @@ fn create_branch_rejects_merge_state_without_creating_branch() {
 
 #[test]
 fn create_branch_rolls_back_new_branch_when_set_head_fails() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-create-branch-set-head-fail-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -412,7 +412,7 @@ fn create_branch_rolls_back_new_branch_when_set_head_fails() {
 
 #[test]
 fn create_branch_creates_and_switches_to_new_local_branch() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-create-branch-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -443,7 +443,7 @@ fn create_branch_creates_and_switches_to_new_local_branch() {
 
 #[test]
 fn create_branch_rejects_existing_branch() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-create-existing-branch-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -467,7 +467,7 @@ fn create_branch_rejects_existing_branch() {
 
 #[test]
 fn delete_branch_removes_non_current_local_branch() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-delete-branch-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -494,7 +494,7 @@ fn delete_branch_removes_non_current_local_branch() {
 
 #[test]
 fn delete_branch_rejects_current_branch() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-delete-current-branch-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -525,7 +525,7 @@ fn delete_branch_rejects_current_branch() {
 
 #[test]
 fn rename_branch_updates_non_current_local_branch() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-rename-branch-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -554,7 +554,7 @@ fn rename_branch_updates_non_current_local_branch() {
 
 #[test]
 fn rename_branch_updates_current_branch_head() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-rename-current-branch-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -581,7 +581,7 @@ fn rename_branch_updates_current_branch_head() {
 
 #[test]
 fn rename_branch_rejects_existing_target() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-rename-existing-branch-{}-{}",
         std::process::id(),
         unique_suffix()

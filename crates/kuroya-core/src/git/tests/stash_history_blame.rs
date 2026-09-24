@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn save_stash_records_worktree_changes_and_lists_entry() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-save-stash-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -40,7 +40,7 @@ fn save_stash_records_worktree_changes_and_lists_entry() {
 
 #[test]
 fn save_stash_can_guess_identity_when_user_config_not_required() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-save-stash-guess-identity-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -86,7 +86,7 @@ fn save_stash_can_guess_identity_when_user_config_not_required() {
 
 #[test]
 fn apply_and_drop_stash_restores_changes_and_removes_entry() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-apply-drop-stash-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -124,7 +124,7 @@ fn apply_and_drop_stash_restores_changes_and_removes_entry() {
 
 #[test]
 fn pop_stash_restores_changes_and_removes_entry() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-pop-stash-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -159,7 +159,7 @@ fn pop_stash_restores_changes_and_removes_entry() {
 
 #[test]
 fn unified_diff_for_stash_returns_patch_against_stash_base() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-stash-diff-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -188,7 +188,7 @@ fn unified_diff_for_stash_returns_patch_against_stash_base() {
 
 #[test]
 fn list_commit_history_returns_head_history_with_metadata() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-history-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -219,7 +219,7 @@ fn list_commit_history_returns_head_history_with_metadata() {
 
 #[test]
 fn list_commit_history_respects_short_hash_length() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-history-hash-length-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -240,7 +240,7 @@ fn list_commit_history_respects_short_hash_length() {
 
 #[test]
 fn list_commit_history_can_use_authored_or_committed_date() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-history-timeline-date-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -291,7 +291,7 @@ fn list_commit_history_can_use_authored_or_committed_date() {
 
 #[test]
 fn list_commit_history_respects_limit() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-history-limit-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -316,7 +316,7 @@ fn list_commit_history_respects_limit() {
 
 #[test]
 fn list_commit_history_clamps_extreme_limit_before_allocating() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-history-extreme-limit-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -337,7 +337,7 @@ fn list_commit_history_clamps_extreme_limit_before_allocating() {
 
 #[test]
 fn unified_diff_for_commit_returns_patch_against_parent() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-diff-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -364,7 +364,7 @@ fn unified_diff_for_commit_returns_patch_against_parent() {
 
 #[test]
 fn unified_diff_for_commit_renders_detected_rename_as_rename_delta() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-diff-rename-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -398,7 +398,7 @@ fn unified_diff_for_commit_renders_detected_rename_as_rename_delta() {
 
 #[test]
 fn unified_diff_for_commit_truncates_oversized_patch_text() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-diff-truncated-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -432,7 +432,7 @@ fn unified_diff_for_commit_truncates_oversized_patch_text() {
 
 #[test]
 fn list_commit_history_returns_empty_for_unborn_head() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-commit-history-unborn-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -451,7 +451,7 @@ fn list_commit_history_returns_empty_for_unborn_head() {
 
 #[test]
 fn blame_file_returns_line_authors_and_summaries() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-blame-file-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -484,7 +484,7 @@ fn blame_file_returns_line_authors_and_summaries() {
 
 #[test]
 fn blame_file_can_ignore_whitespace_only_changes() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-blame-ignore-whitespace-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -511,7 +511,7 @@ fn blame_file_can_ignore_whitespace_only_changes() {
 
 #[test]
 fn git_text_reader_enforces_size_limit_before_blame() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-git-text-reader-{}-{}",
         std::process::id(),
         unique_suffix()

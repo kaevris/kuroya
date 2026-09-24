@@ -32,8 +32,8 @@ fn dashboard_logo_asset_is_transparent_square_mark() {
         .expect("dashboard logo should decode as png")
         .into_rgba8();
     let (width, height) = image.dimensions();
-    let pixels = image.as_raw().chunks_exact(4);
-    let transparent_pixels = pixels.clone().filter(|pixel| pixel[3] == 0).count();
+    let (pixels, _) = image.as_raw().as_chunks::<4>();
+    let transparent_pixels = pixels.iter().filter(|pixel| pixel[3] == 0).count();
 
     assert_eq!((width, height), (320, 320));
     assert!(dashboard_logo_size_for_test() >= 64.0);
@@ -46,7 +46,7 @@ fn dashboard_logo_asset_is_transparent_square_mark() {
         assert_eq!(image.get_pixel(x, y)[3], 0);
     }
     assert!(transparent_pixels > (width as usize * height as usize) / 2);
-    assert!(pixels.clone().any(|pixel| pixel[3] == 255));
+    assert!(pixels.iter().any(|pixel| pixel[3] == 255));
 }
 
 #[test]
