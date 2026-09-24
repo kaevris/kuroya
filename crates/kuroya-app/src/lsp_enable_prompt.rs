@@ -12,9 +12,7 @@ use crate::{
 };
 use eframe::egui::{self, Align2, Context, RichText};
 use kuroya_core::{
-    LspServerConfig,
-    default_lsp_server_for_language,
-    lsp_language_id_for_path,
+    LspServerConfig, default_lsp_server_for_language, lsp_language_id_for_path,
     lsp_registry::{
         LspInstallKind, current_lsp_install_platform, lsp_binary_on_path, registry_entry_for,
     },
@@ -50,8 +48,14 @@ pub(crate) struct LspInstallAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LspInstallPlan {
-    Repo { asset: String, launch: String },
-    Npm { npm_fallback: String, reason: String },
+    Repo {
+        asset: String,
+        launch: String,
+    },
+    Npm {
+        npm_fallback: String,
+        reason: String,
+    },
     RustupThenRepo {
         component_args: Vec<String>,
         asset: String,
@@ -277,8 +281,10 @@ impl KuroyaApp {
                                         if ui
                                             .add(
                                                 egui::Button::new(
-                                                    RichText::new(lsp_install_button_label(install))
-                                                        .strong(),
+                                                    RichText::new(lsp_install_button_label(
+                                                        install,
+                                                    ))
+                                                    .strong(),
                                                 )
                                                 .fill(ui.visuals().selection.bg_fill),
                                             )
@@ -394,7 +400,10 @@ impl KuroyaApp {
         if prompt.language != language || !prompt.install_in_flight {
             return;
         }
-        self.status = format!("Downloading {display_name}… {}", format_byte_size(bytes_downloaded));
+        self.status = format!(
+            "Downloading {display_name}… {}",
+            format_byte_size(bytes_downloaded)
+        );
     }
 
     pub(crate) fn apply_lsp_install_finished(
@@ -468,9 +477,11 @@ async fn run_lsp_install_and_verify(
             run_lsp_verify_command(&install.verify_command, &install.verify_args).await
         }
         LspInstallPlan::Repo { asset, launch } => {
-            let binary_path =
-                download_and_install_lsp_bundle(&repo_bundle_install(install, asset, launch), bytes_downloaded)
-                    .await?;
+            let binary_path = download_and_install_lsp_bundle(
+                &repo_bundle_install(install, asset, launch),
+                bytes_downloaded,
+            )
+            .await?;
             run_lsp_verify_command(&binary_path.to_string_lossy(), &install.verify_args).await
         }
         LspInstallPlan::RustupThenRepo {
@@ -652,9 +663,9 @@ pub(crate) fn lsp_install_failure_status(
         LspInstallFailure::Checksum { .. } => format!(
             "{display_name} failed the checksum check and was deleted; try installing again"
         ),
-        LspInstallFailure::MissingAsset { .. } => format!(
-            "{display_name} is not published yet — run the lsp-bundles workflow"
-        ),
+        LspInstallFailure::MissingAsset { .. } => {
+            format!("{display_name} is not published yet — run the lsp-bundles workflow")
+        }
         LspInstallFailure::Extract { detail } => {
             format!("Could not install {display_name}: {detail}")
         }
@@ -688,7 +699,7 @@ mod tests {
     use super::{
         LspEnablePrompt, LspInstallAction, LspInstallFailure, LspInstallPlan,
         lsp_enable_prompt_candidate, lsp_install_button_label, lsp_install_enabled_status,
-        lsp_install_failure_status, lsp_install_note, lsp_install_not_detected_status,
+        lsp_install_failure_status, lsp_install_not_detected_status, lsp_install_note,
         lsp_installing_status, lsp_prompt_install_action,
     };
     use crate::{
@@ -834,16 +845,19 @@ mod tests {
 
         let current_exe = std::env::current_exe().expect("current test binary");
         assert!(
-            lsp_prompt_install_action(&config_with_command("rust", current_exe.to_string_lossy().as_ref()))
-                .is_none(),
+            lsp_prompt_install_action(&config_with_command(
+                "rust",
+                current_exe.to_string_lossy().as_ref()
+            ))
+            .is_none(),
             "no install action is offered while the server binary is present"
         );
     }
 
     #[test]
     fn npm_actions_use_the_npm_button_label_and_node_note() {
-        let python_action = lsp_prompt_install_action(&default_config("python"))
-            .expect("python install action");
+        let python_action =
+            lsp_prompt_install_action(&default_config("python")).expect("python install action");
         assert_eq!(lsp_install_button_label(&python_action), "Install via npm");
         assert_eq!(
             lsp_install_note(&python_action).as_deref(),
@@ -865,7 +879,10 @@ mod tests {
 
     #[test]
     fn install_statuses_match_outcomes() {
-        assert_eq!(lsp_installing_status("rust-analyzer"), "Installing rust-analyzer…");
+        assert_eq!(
+            lsp_installing_status("rust-analyzer"),
+            "Installing rust-analyzer…"
+        );
         assert_eq!(
             lsp_install_failure_status(
                 "gopls",
@@ -901,15 +918,21 @@ mod tests {
             .starts_with("Could not install marksman:")
         );
         assert_eq!(
-            lsp_install_failure_status("bash-language-server", &LspInstallFailure::Shell {
-                detail: "npm missing".to_owned()
-            }),
+            lsp_install_failure_status(
+                "bash-language-server",
+                &LspInstallFailure::Shell {
+                    detail: "npm missing".to_owned()
+                }
+            ),
             "Install failed — see notes"
         );
         assert!(
-            lsp_install_failure_status("clangd", &LspInstallFailure::Verify {
-                detail: "not found".to_owned()
-            })
+            lsp_install_failure_status(
+                "clangd",
+                &LspInstallFailure::Verify {
+                    detail: "not found".to_owned()
+                }
+            )
             .contains("PATH")
         );
         assert!(
@@ -1057,7 +1080,10 @@ mod tests {
         assert_eq!(prompt.language, "rust");
         assert_eq!(install.display_name, "rust-analyzer");
         assert_eq!(install.verify_command, "rust-analyzer");
-        assert!(matches!(install.plan, LspInstallPlan::RustupThenRepo { .. }));
+        assert!(matches!(
+            install.plan,
+            LspInstallPlan::RustupThenRepo { .. }
+        ));
         assert!(!prompt.binary_present);
         assert!(!prompt.install_in_flight);
     }

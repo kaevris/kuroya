@@ -259,7 +259,11 @@ mod tests {
             ] {
                 assert_eq!(
                     definition.repo_asset_name(platform),
-                    Some(format!("{}{}", asset.replace("{platform}", token), extension)),
+                    Some(format!(
+                        "{}{}",
+                        asset.replace("{platform}", token),
+                        extension
+                    )),
                     "asset name for {id} on {token}"
                 );
             }
