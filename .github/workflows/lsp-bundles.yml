@@ -59,13 +59,25 @@ jobs:
           - platform: macos-x64
             os: macos-latest
             archive: tar.gz
-    env:
-      GOPLS_VERSION: ${{ github.event.inputs.gopls_version || env.GOPLS_VERSION }}
-      CLANGD_VERSION: ${{ github.event.inputs.clangd_version || env.CLANGD_VERSION }}
-      LUA_LS_VERSION: ${{ github.event.inputs.lua_ls_version || env.LUA_LS_VERSION }}
-      MARKSMAN_VERSION: ${{ github.event.inputs.marksman_version || env.MARKSMAN_VERSION }}
-      RA_VERSION: ${{ github.event.inputs.rust_analyzer_version || env.RA_VERSION }}
     steps:
+      - name: Resolve server versions
+        shell: bash
+        env:
+          GOPLS_VERSION_OVERRIDE: ${{ github.event.inputs.gopls_version }}
+          CLANGD_VERSION_OVERRIDE: ${{ github.event.inputs.clangd_version }}
+          LUA_LS_VERSION_OVERRIDE: ${{ github.event.inputs.lua_ls_version }}
+          MARKSMAN_VERSION_OVERRIDE: ${{ github.event.inputs.marksman_version }}
+          RA_VERSION_OVERRIDE: ${{ github.event.inputs.rust_analyzer_version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "GOPLS_VERSION=${GOPLS_VERSION_OVERRIDE:-$GOPLS_VERSION}"
+            echo "CLANGD_VERSION=${CLANGD_VERSION_OVERRIDE:-$CLANGD_VERSION}"
+            echo "LUA_LS_VERSION=${LUA_LS_VERSION_OVERRIDE:-$LUA_LS_VERSION}"
+            echo "MARKSMAN_VERSION=${MARKSMAN_VERSION_OVERRIDE:-$MARKSMAN_VERSION}"
+            echo "RA_VERSION=${RA_VERSION_OVERRIDE:-$RA_VERSION}"
+          } >> "$GITHUB_ENV"
+
       - name: Prepare output directories
         shell: bash
         run: mkdir -p work unpack dist
