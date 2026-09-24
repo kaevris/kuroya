@@ -68,10 +68,8 @@ fn is_valid_semantic_token_data(data: &[Value]) -> bool {
     let mut line = 0usize;
     let mut column = 0usize;
 
-    for chunk in data
-        .chunks_exact(5)
-        .take(MAX_VALIDATED_SEMANTIC_TOKEN_CHUNKS)
-    {
+    let (chunks, _) = data.as_chunks::<5>();
+    for chunk in chunks.iter().take(MAX_VALIDATED_SEMANTIC_TOKEN_CHUNKS) {
         let Some(delta_line) = lsp_u64_to_usize(&chunk[0]) else {
             return false;
         };
