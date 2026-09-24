@@ -144,6 +144,7 @@ mod lsp_hover_cache;
 mod lsp_hover_markdown;
 mod lsp_hover_runtime;
 mod lsp_info_popups;
+mod lsp_install;
 mod lsp_labels;
 mod lsp_lifecycle;
 mod lsp_markdown_render;

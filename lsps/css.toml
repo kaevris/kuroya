@@ -1,17 +1,12 @@
 id = "css"
 display_name = "vscode-css-language-server"
 languages = ["css"]
-notes = "requires Node.js and npm; part of the vscode-langservers-extracted package"
+
+[install]
+kind = "unsupported"
+reason = "requires Node.js; install via npm: npm install -g vscode-langservers-extracted"
+fallback_shell = "npm install -g vscode-langservers-extracted"
 
 [verify]
 command = "vscode-css-language-server"
 args = ["--version"]
-
-[install.windows]
-shell = "npm install -g vscode-langservers-extracted"
-
-[install.linux]
-shell = "npm install -g vscode-langservers-extracted"
-
-[install.macos]
-shell = "npm install -g vscode-langservers-extracted"

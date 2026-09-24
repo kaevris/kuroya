@@ -1,17 +1,12 @@
 id = "python"
 display_name = "pyright"
 languages = ["python"]
-notes = "requires Node.js and npm; installs the pyright-langserver command used by the built-in python config"
+
+[install]
+kind = "unsupported"
+reason = "requires Node.js; install via npm: npm install -g pyright"
+fallback_shell = "npm install -g pyright"
 
 [verify]
 command = "pyright-langserver"
 args = ["--version"]
-
-[install.windows]
-shell = "npm install -g pyright"
-
-[install.linux]
-shell = "npm install -g pyright"
-
-[install.macos]
-shell = "npm install -g pyright"

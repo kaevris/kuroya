@@ -1,17 +1,8 @@
 id = "go"
 display_name = "gopls"
 languages = ["go"]
-notes = "requires the Go toolchain; make sure GOPATH/bin (or GOBIN) is on PATH"
+asset = "lsp-gopls-{platform}.{archive}"
 
-[verify]
-command = "gopls"
-args = ["version"]
-
-[install.windows]
-shell = "go install golang.org/x/tools/gopls@latest"
-
-[install.linux]
-shell = "go install golang.org/x/tools/gopls@latest"
-
-[install.macos]
-shell = "go install golang.org/x/tools/gopls@latest"
+[install]
+kind = "download"
+launch = "gopls"

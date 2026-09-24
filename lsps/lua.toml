@@ -1,14 +1,8 @@
 id = "lua"
 display_name = "lua-language-server"
 languages = ["lua"]
-notes = "sumneko Lua language server; Linux needs a manual install from the LuaLS releases"
+asset = "lsp-lua-language-server-{platform}.{archive}"
 
-[verify]
-command = "lua-language-server"
-args = ["--version"]
-
-[install.windows]
-shell = "winget install -e --id LuaLS.lua-language-server --silent --accept-package-agreements --accept-source-agreements"
-
-[install.macos]
-shell = "brew install lua-language-server"
+[install]
+kind = "download"
+launch = "lua-language-server"

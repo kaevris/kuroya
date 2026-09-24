@@ -1,17 +1,12 @@
 id = "shellscript"
 display_name = "bash-language-server"
 languages = ["shellscript"]
-notes = "requires Node.js and npm"
+
+[install]
+kind = "unsupported"
+reason = "requires Node.js; install via npm: npm install -g bash-language-server"
+fallback_shell = "npm install -g bash-language-server"
 
 [verify]
 command = "bash-language-server"
 args = ["--version"]
-
-[install.windows]
-shell = "npm install -g bash-language-server"
-
-[install.linux]
-shell = "npm install -g bash-language-server"
-
-[install.macos]
-shell = "npm install -g bash-language-server"

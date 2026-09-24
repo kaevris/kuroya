@@ -887,6 +887,14 @@ async fn fetch_installer_checksum(
 }
 
 fn download_url_is_pinned_to_repository(url: &str, repository: &str) -> bool {
+    download_url_is_pinned_to_repository_path(url, repository, "/releases/download/")
+}
+
+pub(crate) fn download_url_is_pinned_to_repository_path(
+    url: &str,
+    repository: &str,
+    path_prefix: &str,
+) -> bool {
     let Some((scheme, rest)) = url.split_once("://") else {
         return false;
     };
@@ -909,7 +917,7 @@ fn download_url_is_pinned_to_repository(url: &str, repository: &str) -> bool {
     let Some(path) = rest.get(authority_end..) else {
         return false;
     };
-    path.starts_with(&format!("/{repository}/releases/download/"))
+    path.starts_with(&format!("/{repository}{path_prefix}"))
 }
 
 fn checksum_sidecar_asset<'a>(
@@ -921,7 +929,7 @@ fn checksum_sidecar_asset<'a>(
     assets.iter().find(|asset| asset.name == sidecar_name)
 }
 
-fn checksum_from_sidecar_text(text: &str) -> Option<String> {
+pub(crate) fn checksum_from_sidecar_text(text: &str) -> Option<String> {
     let checksum = text.lines().next()?.split_whitespace().next()?;
     if checksum.len() != 64 || !checksum.chars().all(|ch| ch.is_ascii_hexdigit()) {
         return None;
@@ -1037,7 +1045,7 @@ fn spawn_update_download_progress_task(
     })
 }
 
-fn format_byte_size(bytes: u64) -> String {
+pub(crate) fn format_byte_size(bytes: u64) -> String {
     const MIB: f64 = 1024.0 * 1024.0;
     const KIB: f64 = 1024.0;
     let bytes = bytes as f64;
@@ -1068,6 +1076,7 @@ fn launch_update_installer(installer_path: &Path) -> anyhow::Result<()> {
     }
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn inno_update_installer_args(install_dir: Option<&Path>) -> Vec<String> {
     let mut args = vec![
         "/SP-".to_owned(),
@@ -1084,11 +1093,13 @@ fn inno_update_installer_args(install_dir: Option<&Path>) -> Vec<String> {
     args
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn current_update_install_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     update_install_dir_from_exe(&exe)
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn update_install_dir_from_exe(exe: &Path) -> Option<PathBuf> {
     let file_name = exe.file_name()?.to_string_lossy();
     if !file_name.eq_ignore_ascii_case("kuroya.exe") {
@@ -1098,6 +1109,7 @@ fn update_install_dir_from_exe(exe: &Path) -> Option<PathBuf> {
     (!is_cargo_build_output_dir(install_dir)).then(|| install_dir.to_path_buf())
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn is_cargo_build_output_dir(dir: &Path) -> bool {
     let components = dir
         .components()
