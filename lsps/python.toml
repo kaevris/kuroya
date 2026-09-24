@@ -1,11 +1,10 @@
 id = "python"
 display_name = "pyright"
 languages = ["python"]
-
-[install]
-kind = "unsupported"
-reason = "requires Node.js; install via npm: npm install -g pyright"
-fallback_shell = "npm install -g pyright"
+launch = "pyright-langserver"
+install = "npm"
+npm_fallback = "npm install -g pyright"
+reason = "requires Node.js and npm"
 
 [verify]
 command = "pyright-langserver"

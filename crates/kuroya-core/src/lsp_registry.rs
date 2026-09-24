@@ -19,7 +19,6 @@ const EMBEDDED_DEFINITIONS: &[&str] = &[
 ];
 
 pub const LSP_ASSET_PLATFORM_TOKEN: &str = "{platform}";
-pub const LSP_ASSET_ARCHIVE_TOKEN: &str = "{archive}";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct LspInstallDefinition {
@@ -29,27 +28,27 @@ pub struct LspInstallDefinition {
     pub languages: Vec<String>,
     #[serde(default)]
     pub asset: Option<String>,
+    pub launch: String,
+    pub install: LspInstallKind,
     #[serde(default)]
-    pub verify: Option<LspInstallVerifyCommand>,
-    pub install: LspInstallRecipe,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct LspInstallRecipe {
-    pub kind: LspInstallKind,
-    #[serde(default)]
-    pub launch: Option<String>,
+    pub npm_fallback: Option<String>,
     #[serde(default)]
     pub reason: Option<String>,
-    #[serde(default)]
-    pub fallback_shell: Option<String>,
+    pub verify: LspInstallVerifyCommand,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum LspInstallKind {
-    Download,
-    Unsupported,
+    Repo,
+    Npm,
+    RustupThenRepo,
+}
+
+impl LspInstallKind {
+    pub fn supports_repo_download(self) -> bool {
+        matches!(self, Self::Repo | Self::RustupThenRepo)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -66,6 +65,44 @@ pub enum LspInstallPlatform {
     MacOS,
 }
 
+impl LspInstallDefinition {
+    pub fn supports_repo_download(&self) -> bool {
+        self.install.supports_repo_download()
+    }
+
+    pub fn repo_asset_name(&self, platform: LspInstallPlatform) -> Option<String> {
+        let asset = self.asset.as_deref()?;
+        Some(format!(
+            "{}{}",
+            asset.replace(LSP_ASSET_PLATFORM_TOKEN, lsp_platform_token(platform)),
+            lsp_archive_extension(platform)
+        ))
+    }
+
+    pub fn npm_fallback(&self) -> Option<&str> {
+        self.npm_fallback.as_deref()
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+}
+
+pub fn lsp_platform_token(platform: LspInstallPlatform) -> &'static str {
+    match platform {
+        LspInstallPlatform::Windows => "windows-x64",
+        LspInstallPlatform::Linux => "linux-x64",
+        LspInstallPlatform::MacOS => "macos-x64",
+    }
+}
+
+pub fn lsp_archive_extension(platform: LspInstallPlatform) -> &'static str {
+    match platform {
+        LspInstallPlatform::Windows => ".zip",
+        LspInstallPlatform::Linux | LspInstallPlatform::MacOS => ".tar.gz",
+    }
+}
+
 pub fn lsp_install_registry() -> &'static [LspInstallDefinition] {
     static REGISTRY: LazyLock<Vec<LspInstallDefinition>> = LazyLock::new(|| {
         EMBEDDED_DEFINITIONS
@@ -80,60 +117,6 @@ pub fn registry_entry_for(server_id: &str) -> Option<&'static LspInstallDefiniti
     lsp_install_registry()
         .iter()
         .find(|definition| definition.id == server_id)
-}
-
-pub fn lsp_install_platform_token(platform: LspInstallPlatform) -> &'static str {
-    match platform {
-        LspInstallPlatform::Windows => "windows-x64",
-        LspInstallPlatform::Linux => "linux-x64",
-        LspInstallPlatform::MacOS => "macos-x64",
-    }
-}
-
-pub fn lsp_install_archive_token(platform: LspInstallPlatform) -> &'static str {
-    match platform {
-        LspInstallPlatform::Windows => "zip",
-        LspInstallPlatform::Linux | LspInstallPlatform::MacOS => "tar.gz",
-    }
-}
-
-pub fn lsp_release_asset_name(
-    definition: &LspInstallDefinition,
-    platform: LspInstallPlatform,
-) -> Option<String> {
-    let asset = definition.asset.as_deref()?;
-    let name = asset
-        .replace(LSP_ASSET_PLATFORM_TOKEN, lsp_install_platform_token(platform))
-        .replace(LSP_ASSET_ARCHIVE_TOKEN, lsp_install_archive_token(platform));
-    (!name.trim().is_empty()).then_some(name)
-}
-
-pub fn lsp_launch_binary_name(
-    definition: &LspInstallDefinition,
-    platform: LspInstallPlatform,
-) -> Option<String> {
-    let launch = definition.install.launch.as_deref()?.trim();
-    if launch.is_empty() {
-        return None;
-    }
-    if platform == LspInstallPlatform::Windows {
-        return Some(format!("{launch}.exe"));
-    }
-    Some(launch.to_owned())
-}
-
-pub fn lsp_fallback_shell(definition: &LspInstallDefinition) -> Option<&str> {
-    definition
-        .install
-        .fallback_shell
-        .as_deref()
-        .map(str::trim)
-        .filter(|shell| !shell.is_empty())
-}
-
-pub fn lsp_fallback_verify(definition: &LspInstallDefinition) -> Option<(&str, &[String])> {
-    let verify = definition.verify.as_ref()?;
-    Some((verify.command.as_str(), &verify.args))
 }
 
 pub fn current_lsp_install_platform() -> LspInstallPlatform {
@@ -188,10 +171,8 @@ fn parse_embedded_lsp_install_definition(text: &'static str) -> LspInstallDefini
 #[cfg(test)]
 mod tests {
     use super::{
-        current_lsp_install_platform, lsp_binary_on_path, lsp_fallback_shell, lsp_fallback_verify,
-        lsp_install_archive_token, lsp_install_platform_token, lsp_install_registry,
-        lsp_launch_binary_name, lsp_release_asset_name, registry_entry_for, LspInstallDefinition,
-        LspInstallKind, LspInstallPlatform,
+        LspInstallKind, LspInstallPlatform, current_lsp_install_platform, lsp_archive_extension,
+        lsp_binary_on_path, lsp_install_registry, lsp_platform_token, registry_entry_for,
     };
     use crate::default_server_configs;
 
@@ -211,164 +192,168 @@ mod tests {
                 definition.id
             );
             assert!(!definition.display_name.is_empty());
+            assert!(definition.languages.contains(&definition.id));
+            assert!(!definition.launch.trim().is_empty());
             assert!(
-                definition.languages.contains(&definition.id),
-                "registry entry {:?} must list its own language",
+                !definition.verify.command.trim().is_empty(),
+                "registry entry {:?} must provide a verify command",
                 definition.id
             );
         }
     }
 
     #[test]
-    fn download_entries_define_release_assets_and_launch_binaries() {
-        for definition in lsp_install_registry() {
-            if definition.install.kind != LspInstallKind::Download {
-                continue;
-            }
-            let asset = definition.asset.as_deref().unwrap_or_else(|| {
-                panic!("download entry {:?} must define an asset", definition.id)
-            });
-            assert!(
-                asset.contains("{platform}") && asset.contains("{archive}"),
-                "download asset {asset:?} must use the platform and archive placeholders"
-            );
-            assert!(
-                !asset.contains(char::is_whitespace),
-                "download asset {asset:?} must be a single token"
-            );
-            let launch = definition.install.launch.as_deref().unwrap_or_else(|| {
-                panic!("download entry {:?} must define a launch binary", definition.id)
-            });
-            assert!(
-                !launch.trim().is_empty() && !launch.contains(['/', '\\']),
-                "launch binary {launch:?} must be a bare file name"
+    fn registry_entries_declare_the_confirmed_install_kinds() {
+        let expected_kinds = [
+            ("c", LspInstallKind::Repo),
+            ("cpp", LspInstallKind::Repo),
+            ("css", LspInstallKind::Npm),
+            ("go", LspInstallKind::Repo),
+            ("html", LspInstallKind::Npm),
+            ("javascript", LspInstallKind::Npm),
+            ("json", LspInstallKind::Npm),
+            ("lua", LspInstallKind::Repo),
+            ("markdown", LspInstallKind::Repo),
+            ("python", LspInstallKind::Npm),
+            ("rust", LspInstallKind::RustupThenRepo),
+            ("shellscript", LspInstallKind::Npm),
+            ("typescript", LspInstallKind::Npm),
+            ("yaml", LspInstallKind::Npm),
+        ];
+
+        for (id, kind) in expected_kinds {
+            let definition = registry_entry_for(id).unwrap_or_else(|| panic!("{id} entry"));
+            assert_eq!(definition.install, kind, "install kind for {id}");
+            assert_eq!(
+                definition.supports_repo_download(),
+                kind.supports_repo_download(),
+                "repo-download support for {id}"
             );
         }
     }
 
     #[test]
-    fn unsupported_entries_define_reason_and_npm_fallback() {
-        for definition in lsp_install_registry() {
-            if definition.install.kind != LspInstallKind::Unsupported {
-                continue;
+    fn repo_capable_entries_resolve_platform_asset_names_with_archive_extensions() {
+        let expected_assets = [
+            ("c", "lsp-clangd-{platform}", "clangd"),
+            ("cpp", "lsp-clangd-{platform}", "clangd"),
+            ("go", "lsp-gopls-{platform}", "gopls"),
+            (
+                "lua",
+                "lsp-lua-language-server-{platform}",
+                "lua-language-server",
+            ),
+            ("markdown", "lsp-marksman-{platform}", "marksman"),
+            ("rust", "lsp-rust-analyzer-{platform}", "rust-analyzer"),
+        ];
+
+        for (id, asset, launch) in expected_assets {
+            let definition = registry_entry_for(id).unwrap_or_else(|| panic!("{id} entry"));
+            assert_eq!(definition.asset.as_deref(), Some(asset), "asset for {id}");
+            assert_eq!(definition.launch, launch, "launch for {id}");
+
+            for (platform, token, extension) in [
+                (LspInstallPlatform::Windows, "windows-x64", ".zip"),
+                (LspInstallPlatform::Linux, "linux-x64", ".tar.gz"),
+                (LspInstallPlatform::MacOS, "macos-x64", ".tar.gz"),
+            ] {
+                assert_eq!(
+                    definition.repo_asset_name(platform),
+                    Some(format!("{}{}", asset.replace("{platform}", token), extension)),
+                    "asset name for {id} on {token}"
+                );
             }
-            let reason = definition.install.reason.as_deref().unwrap_or_else(|| {
-                panic!("unsupported entry {:?} must define a reason", definition.id)
-            });
-            assert!(
-                reason.contains("Node.js"),
-                "unsupported reason {reason:?} should explain the Node.js requirement"
-            );
-            let shell = definition
-                .install
-                .fallback_shell
-                .as_deref()
-                .unwrap_or_else(|| {
-                    panic!("unsupported entry {:?} must define a fallback shell", definition.id)
-                });
-            assert!(
-                !shell.trim().is_empty() && shell.trim() == shell,
-                "fallback shell {shell:?} must be a trimmed single command"
-            );
-            assert!(
-                definition.asset.is_none(),
-                "unsupported entry {:?} must not ship a release asset",
-                definition.id
-            );
-            let verify = definition.verify.as_ref().unwrap_or_else(|| {
-                panic!("unsupported entry {:?} must define a verify command", definition.id)
-            });
-            assert!(!verify.command.trim().is_empty());
+        }
+
+        for id in [
+            "css",
+            "html",
+            "javascript",
+            "json",
+            "python",
+            "shellscript",
+            "typescript",
+            "yaml",
+        ] {
+            let definition = registry_entry_for(id).unwrap_or_else(|| panic!("{id} entry"));
+            assert!(definition.asset.is_none(), "npm entry {id} has no asset");
+            for platform in [
+                LspInstallPlatform::Windows,
+                LspInstallPlatform::Linux,
+                LspInstallPlatform::MacOS,
+            ] {
+                assert_eq!(
+                    definition.repo_asset_name(platform),
+                    None,
+                    "npm entry {id} must not resolve a repo asset"
+                );
+            }
         }
     }
 
     #[test]
-    fn release_asset_names_resolve_platform_and_archive_tokens() {
-        let rust = registry_entry_for("rust").expect("rust registry entry");
+    fn platform_tokens_and_archive_extensions_follow_the_release_assets() {
         assert_eq!(
-            lsp_release_asset_name(rust, LspInstallPlatform::Windows).as_deref(),
-            Some("lsp-rust-analyzer-windows-x64.zip")
-        );
-        assert_eq!(
-            lsp_release_asset_name(rust, LspInstallPlatform::Linux).as_deref(),
-            Some("lsp-rust-analyzer-linux-x64.tar.gz")
-        );
-        assert_eq!(
-            lsp_release_asset_name(rust, LspInstallPlatform::MacOS).as_deref(),
-            Some("lsp-rust-analyzer-macos-x64.tar.gz")
-        );
-
-        let python = registry_entry_for("python").expect("python registry entry");
-        assert_eq!(lsp_release_asset_name(python, LspInstallPlatform::Windows), None);
-    }
-
-    #[test]
-    fn launch_binary_names_append_the_windows_executable_suffix() {
-        let rust = registry_entry_for("rust").expect("rust registry entry");
-        assert_eq!(
-            lsp_launch_binary_name(rust, LspInstallPlatform::Windows).as_deref(),
-            Some("rust-analyzer.exe")
-        );
-        assert_eq!(
-            lsp_launch_binary_name(rust, LspInstallPlatform::Linux).as_deref(),
-            Some("rust-analyzer")
-        );
-    }
-
-    #[test]
-    fn platform_tokens_map_to_release_asset_naming() {
-        assert_eq!(
-            lsp_install_platform_token(LspInstallPlatform::Windows),
+            lsp_platform_token(LspInstallPlatform::Windows),
             "windows-x64"
         );
-        assert_eq!(
-            lsp_install_platform_token(LspInstallPlatform::Linux),
-            "linux-x64"
-        );
-        assert_eq!(
-            lsp_install_platform_token(LspInstallPlatform::MacOS),
-            "macos-x64"
-        );
-        assert_eq!(lsp_install_archive_token(LspInstallPlatform::Windows), "zip");
-        assert_eq!(lsp_install_archive_token(LspInstallPlatform::Linux), "tar.gz");
-        assert_eq!(lsp_install_archive_token(LspInstallPlatform::MacOS), "tar.gz");
+        assert_eq!(lsp_platform_token(LspInstallPlatform::Linux), "linux-x64");
+        assert_eq!(lsp_platform_token(LspInstallPlatform::MacOS), "macos-x64");
+        assert_eq!(lsp_archive_extension(LspInstallPlatform::Windows), ".zip");
+        assert_eq!(lsp_archive_extension(LspInstallPlatform::Linux), ".tar.gz");
+        assert_eq!(lsp_archive_extension(LspInstallPlatform::MacOS), ".tar.gz");
     }
 
     #[test]
-    fn fallback_shell_resolves_only_for_unsupported_entries() {
-        let python = registry_entry_for("python").expect("python registry entry");
-        assert_eq!(lsp_fallback_shell(python), Some("npm install -g pyright"));
-        let (command, args) = lsp_fallback_verify(python).expect("python verify command");
-        assert_eq!(command, "pyright-langserver");
-        assert_eq!(args, &["--version".to_owned()]);
+    fn npm_entries_expose_the_fallback_command_and_node_reason() {
+        for id in [
+            "css",
+            "html",
+            "javascript",
+            "json",
+            "python",
+            "shellscript",
+            "typescript",
+            "yaml",
+        ] {
+            let definition = registry_entry_for(id).unwrap_or_else(|| panic!("{id} entry"));
+            let fallback = definition
+                .npm_fallback()
+                .unwrap_or_else(|| panic!("{id} npm fallback"));
+            assert!(
+                fallback.starts_with("npm install -g "),
+                "npm fallback for {id} should install globally: {fallback}"
+            );
+            let reason = definition.reason().unwrap_or_else(|| panic!("{id} reason"));
+            assert!(
+                reason.contains("Node.js"),
+                "reason for {id} should mention Node.js: {reason}"
+            );
+        }
 
+        for id in ["c", "cpp", "go", "lua", "markdown", "rust"] {
+            let definition = registry_entry_for(id).unwrap_or_else(|| panic!("{id} entry"));
+            assert!(
+                definition.npm_fallback().is_none(),
+                "repo entry {id} has no npm fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_entry_installs_via_rustup_before_falling_back_to_the_repo() {
         let rust = registry_entry_for("rust").expect("rust registry entry");
-        assert_eq!(lsp_fallback_shell(rust), None);
+        assert_eq!(rust.display_name, "rust-analyzer");
+        assert_eq!(rust.launch, "rust-analyzer");
+        assert_eq!(rust.install, LspInstallKind::RustupThenRepo);
+        assert_eq!(rust.verify.command, "rust-analyzer");
+        assert_eq!(rust.verify.args, vec!["--version".to_owned()]);
     }
 
     #[test]
     fn registry_lookup_returns_none_for_unknown_ids() {
         assert!(registry_entry_for("definitely-not-a-server").is_none());
         assert!(registry_entry_for("").is_none());
-        let rust = registry_entry_for("rust").expect("rust registry entry");
-        assert_eq!(rust.display_name, "rust-analyzer");
-        assert_eq!(rust.install.kind, LspInstallKind::Download);
-    }
-
-    #[test]
-    fn every_registry_entry_has_a_consistent_current_platform_view() {
-        let platform = current_lsp_install_platform();
-        for definition in lsp_install_registry() {
-            match definition.install.kind {
-                LspInstallKind::Download => {
-                    assert!(lsp_release_asset_name(definition, platform).is_some());
-                    assert!(lsp_launch_binary_name(definition, platform).is_some());
-                }
-                LspInstallKind::Unsupported => {
-                    assert!(lsp_fallback_shell(definition).is_some());
-                }
-            }
-        }
     }
 
     #[test]
@@ -388,11 +373,14 @@ mod tests {
     }
 
     #[test]
-    fn definition_parsing_requires_an_install_kind() {
-        let error = toml::from_str::<LspInstallDefinition>(
-            "id = \"x\"\ndisplay_name = \"X\"\nlanguages = [\"x\"]\n\n[install]\nlaunch = \"x\"\n",
-        )
-        .expect_err("a missing install kind must fail to parse");
-        assert!(error.to_string().contains("kind"));
+    fn current_platform_matches_the_compilation_target() {
+        let platform = current_lsp_install_platform();
+        if cfg!(windows) {
+            assert_eq!(platform, LspInstallPlatform::Windows);
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(platform, LspInstallPlatform::MacOS);
+        } else {
+            assert_eq!(platform, LspInstallPlatform::Linux);
+        }
     }
 }

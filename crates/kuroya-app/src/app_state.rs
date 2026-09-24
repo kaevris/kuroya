@@ -406,6 +406,8 @@ pub(crate) struct KuroyaApp {
     pub(crate) gpu_acceleration_prompt_dismissed: bool,
     pub(crate) lsp_enable_prompt: Option<LspEnablePrompt>,
     pub(crate) lsp_enable_prompt_declined: Vec<String>,
+    pub(crate) lsp_installs_in_flight: Vec<String>,
+    pub(crate) lsp_downloaded_bytes: Arc<AtomicU64>,
     pub(crate) startup_timings: Vec<StartupTimingEntry>,
     pub(crate) frame_timings: VecDeque<FrameTimingSample>,
     pub(crate) repaint_diagnostics: VecDeque<RepaintDiagnosticSample>,

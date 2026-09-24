@@ -4,7 +4,7 @@ use crate::{
     explorer_tree_panel::ExplorerDirectoryEntries,
     file_history::LocalHistorySnapshot,
     image_preview::LoadedImagePreview,
-    lsp_install::{LspInstallFailure, LspInstallOutcome, LspInstallStage},
+    lsp_installer::LspInstallFailure,
     lsp_ui_events::LspUiEvent,
     persistence::PersistedSession,
     plugin_command_runtime::PluginCommandExecution,
@@ -635,12 +635,12 @@ pub(crate) enum UiEvent {
     LspInstallProgress {
         language: String,
         display_name: String,
-        stage: LspInstallStage,
+        bytes_downloaded: u64,
     },
     LspInstallFinished {
         language: String,
         display_name: String,
-        result: Result<LspInstallOutcome, LspInstallFailure>,
+        result: Result<(), LspInstallFailure>,
     },
     Lsp(LspUiEvent),
 }

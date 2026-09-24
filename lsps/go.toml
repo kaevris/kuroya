@@ -1,8 +1,10 @@
 id = "go"
 display_name = "gopls"
 languages = ["go"]
-asset = "lsp-gopls-{platform}.{archive}"
-
-[install]
-kind = "download"
+asset = "lsp-gopls-{platform}"
 launch = "gopls"
+install = "repo"
+
+[verify]
+command = "gopls"
+args = ["version"]

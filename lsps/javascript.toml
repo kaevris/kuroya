@@ -1,11 +1,10 @@
 id = "javascript"
 display_name = "typescript-language-server"
 languages = ["javascript"]
-
-[install]
-kind = "unsupported"
-reason = "requires Node.js; install via npm: npm install -g typescript typescript-language-server"
-fallback_shell = "npm install -g typescript typescript-language-server"
+launch = "typescript-language-server"
+install = "npm"
+npm_fallback = "npm install -g typescript typescript-language-server"
+reason = "requires Node.js and npm"
 
 [verify]
 command = "typescript-language-server"

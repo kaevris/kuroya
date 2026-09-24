@@ -1,8 +1,10 @@
 id = "lua"
 display_name = "lua-language-server"
 languages = ["lua"]
-asset = "lsp-lua-language-server-{platform}.{archive}"
-
-[install]
-kind = "download"
+asset = "lsp-lua-language-server-{platform}"
 launch = "lua-language-server"
+install = "repo"
+
+[verify]
+command = "lua-language-server"
+args = ["--version"]

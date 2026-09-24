@@ -1,11 +1,10 @@
 id = "css"
 display_name = "vscode-css-language-server"
 languages = ["css"]
-
-[install]
-kind = "unsupported"
-reason = "requires Node.js; install via npm: npm install -g vscode-langservers-extracted"
-fallback_shell = "npm install -g vscode-langservers-extracted"
+launch = "vscode-css-language-server"
+install = "npm"
+npm_fallback = "npm install -g vscode-langservers-extracted"
+reason = "requires Node.js and npm"
 
 [verify]
 command = "vscode-css-language-server"

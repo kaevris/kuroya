@@ -937,7 +937,7 @@ pub(crate) fn checksum_from_sidecar_text(text: &str) -> Option<String> {
     Some(checksum.to_ascii_lowercase())
 }
 
-fn file_sha256_hex(path: &Path) -> anyhow::Result<String> {
+pub(crate) fn file_sha256_hex(path: &Path) -> anyhow::Result<String> {
     let bytes =
         std::fs::read(path).with_context(|| format!("could not read {}", path.display()))?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))

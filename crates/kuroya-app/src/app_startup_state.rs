@@ -350,6 +350,8 @@ impl KuroyaApp {
             gpu_acceleration_prompt_dismissed: false,
             lsp_enable_prompt: None,
             lsp_enable_prompt_declined: Vec::new(),
+            lsp_installs_in_flight: Vec::new(),
+            lsp_downloaded_bytes: Arc::new(AtomicU64::new(0)),
             startup_timings,
             frame_timings: VecDeque::new(),
             repaint_diagnostics: VecDeque::new(),

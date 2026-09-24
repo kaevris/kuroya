@@ -1,8 +1,10 @@
 id = "rust"
 display_name = "rust-analyzer"
 languages = ["rust"]
-asset = "lsp-rust-analyzer-{platform}.{archive}"
-
-[install]
-kind = "download"
+asset = "lsp-rust-analyzer-{platform}"
 launch = "rust-analyzer"
+install = "rustup-then-repo"
+
+[verify]
+command = "rust-analyzer"
+args = ["--version"]

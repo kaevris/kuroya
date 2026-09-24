@@ -1,8 +1,10 @@
 id = "c"
 display_name = "clangd"
 languages = ["c"]
-asset = "lsp-clangd-{platform}.{archive}"
-
-[install]
-kind = "download"
+asset = "lsp-clangd-{platform}"
 launch = "clangd"
+install = "repo"
+
+[verify]
+command = "clangd"
+args = ["--version"]

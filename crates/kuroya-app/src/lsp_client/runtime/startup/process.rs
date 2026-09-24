@@ -72,7 +72,7 @@ async fn copy_lsp_stderr_into_log(stderr: ChildStderr, stderr_log: LspStderrLog)
 }
 
 fn lsp_process_command(config: &LspServerConfig, root: &Path) -> Command {
-    let mut command = Command::new(&config.command);
+    let mut command = Command::new(crate::lsp_installer::resolved_lsp_server_command(config));
     command
         .args(&config.args)
         .current_dir(root)

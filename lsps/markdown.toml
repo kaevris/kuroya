@@ -1,8 +1,10 @@
 id = "markdown"
 display_name = "marksman"
 languages = ["markdown"]
-asset = "lsp-marksman-{platform}.{archive}"
-
-[install]
-kind = "download"
+asset = "lsp-marksman-{platform}"
 launch = "marksman"
+install = "repo"
+
+[verify]
+command = "marksman"
+args = ["--version"]
