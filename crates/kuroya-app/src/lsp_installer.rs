@@ -838,25 +838,20 @@ mod tests {
 
     #[test]
     fn command_override_prefers_an_installed_marker_only_for_repo_servers() {
-        let runtime = Runtime::new().expect("test runtime");
-        runtime.block_on(async {
-            for id in ["go", "c"] {
-                let bundle_dir = lsp_bundle_dir(id);
-                tokio::fs::create_dir_all(&bundle_dir)
-                    .await
-                    .expect("bundle dir");
-                write_installed_lsp_bundle(
-                    &bundle_dir,
-                    &InstalledLspBundle {
-                        asset: "lsp-sample-windows-x64.zip".to_owned(),
-                        launch: registry_entry_for(id).expect("entry").launch.clone(),
-                    },
-                )
-                .expect("marker write");
-                let launch = registry_entry_for(id).expect("entry").launch.clone();
-                fs::write(lsp_bundle_binary_path(&bundle_dir, &launch), b"binary").unwrap();
-            }
-        });
+        for id in ["go", "c", "cpp"] {
+            let bundle_dir = lsp_bundle_dir(id);
+            fs::create_dir_all(&bundle_dir).expect("bundle dir");
+            let launch = registry_entry_for(id).expect("entry").launch.clone();
+            write_installed_lsp_bundle(
+                &bundle_dir,
+                &InstalledLspBundle {
+                    asset: "lsp-sample-windows-x64.zip".to_owned(),
+                    launch: launch.clone(),
+                },
+            )
+            .expect("marker write");
+            fs::write(lsp_bundle_binary_path(&bundle_dir, &launch), b"binary").unwrap();
+        }
 
         let go = lsp_server_config("go", "gopls");
         let override_path = lsp_bundle_command_override(&go).expect("go override");
@@ -868,7 +863,7 @@ mod tests {
 
         let cpp = lsp_server_config("cpp", "clangd");
         let cpp_override = lsp_bundle_command_override(&cpp).expect("cpp override");
-        assert!(cpp_override.starts_with(lsp_bundles_dir().join("c")));
+        assert!(cpp_override.starts_with(lsp_bundles_dir().join("cpp")));
 
         assert_eq!(
             resolved_lsp_server_command(&lsp_server_config("cpp", "clangd-custom")),
@@ -896,7 +891,9 @@ mod tests {
             "a missing marker falls back to PATH resolution"
         );
 
-        std::fs::remove_dir_all(lsp_bundle_dir("c")).ok();
+        for id in ["go", "c", "cpp"] {
+            std::fs::remove_dir_all(lsp_bundle_dir(id)).ok();
+        }
     }
 
     #[test]

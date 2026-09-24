@@ -339,11 +339,7 @@ impl KuroyaApp {
         let Some(install) = prompt.install.clone() else {
             return;
         };
-        if self
-            .lsp_installs_in_flight
-            .iter()
-            .any(|in_flight| *in_flight == install.id)
-        {
+        if self.lsp_installs_in_flight.contains(&install.id) {
             return;
         }
         let language = prompt.language.clone();
@@ -708,7 +704,10 @@ mod tests {
     };
     use kuroya_core::{
         EditorSettings, Workspace,
-        lsp_registry::{current_lsp_install_platform, lsp_archive_extension, lsp_platform_token},
+        lsp_registry::{
+            current_lsp_install_platform, lsp_archive_extension, lsp_binary_on_path,
+            lsp_platform_token,
+        },
     };
     use std::{path::PathBuf, time::Instant};
     use tokio::runtime::Runtime;
@@ -811,6 +810,13 @@ mod tests {
         );
 
         let rust = default_config("rust");
+        if lsp_binary_on_path("rust-analyzer") {
+            assert!(
+                lsp_prompt_install_action(&rust).is_none(),
+                "runner images shipping rust-analyzer keep today's no-install behavior"
+            );
+            return;
+        }
         let rust_action = lsp_prompt_install_action(&rust).expect("rust install action");
         assert_eq!(rust_action.id, "rust");
         assert_eq!(rust_action.display_name, "rust-analyzer");
@@ -869,12 +875,14 @@ mod tests {
         assert_eq!(lsp_install_button_label(&go_action), "Install gopls");
         assert_eq!(lsp_install_note(&go_action), None);
 
-        let rust_action =
-            lsp_prompt_install_action(&default_config("rust")).expect("rust install action");
-        assert_eq!(
-            lsp_install_button_label(&rust_action),
-            "Install rust-analyzer"
-        );
+        if !lsp_binary_on_path("rust-analyzer") {
+            let rust_action =
+                lsp_prompt_install_action(&default_config("rust")).expect("rust install action");
+            assert_eq!(
+                lsp_install_button_label(&rust_action),
+                "Install rust-analyzer"
+            );
+        }
     }
 
     #[test]
