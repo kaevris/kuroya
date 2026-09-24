@@ -40,7 +40,7 @@ fn plugin_buffer_text_apply_replaces_open_buffer_text_and_invalidates_caches() {
         plugin_buffer_text_apply_event(file.clone(), "plugin text")
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     let buffer = app.buffer(1).expect("open buffer");
     assert_eq!(buffer.text_snapshot().text(), "plugin text");
     assert!(buffer.version() > version_before);
@@ -70,7 +70,7 @@ fn plugin_buffer_text_apply_skips_when_buffer_is_not_open() {
         plugin_buffer_text_apply_event(file, "plugin text")
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.buffers.is_empty());
     assert_eq!(app.status, "Plugin changes skipped: missing.md is not open");
 

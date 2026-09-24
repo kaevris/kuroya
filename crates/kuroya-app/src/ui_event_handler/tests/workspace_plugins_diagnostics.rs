@@ -19,7 +19,7 @@ fn current_workspace_plugins_loaded_event_finishes_in_flight_discovery() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_in_flight_request_id, None);
     assert!(!app.workspace_plugins_reload_queued);
     assert_eq!(app.workspace_plugins_active_request_id, 1);
@@ -45,7 +45,7 @@ fn equivalent_root_workspace_plugins_loaded_event_finishes_in_flight_discovery()
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_in_flight_request_id, None);
     assert!(!app.workspace_plugins_reload_queued);
     assert_eq!(app.workspace_plugins_active_request_id, 1);
@@ -68,7 +68,7 @@ fn current_workspace_plugins_failed_event_finishes_in_flight_discovery() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_in_flight_request_id, None);
     assert!(!app.workspace_plugins_reload_queued);
     assert_eq!(app.workspace_plugins_active_request_id, 1);
@@ -96,7 +96,7 @@ fn equivalent_root_workspace_plugins_failed_event_finishes_in_flight_discovery()
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_in_flight_request_id, None);
     assert!(!app.workspace_plugins_reload_queued);
     assert_eq!(app.workspace_plugins_active_request_id, 1);
@@ -127,7 +127,7 @@ fn stale_workspace_plugins_loaded_event_from_other_workspace_does_not_clear_curr
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_in_flight_request_id, Some(1));
     assert!(app.workspace_plugins_reload_queued);
     assert_eq!(app.workspace_plugins_active_request_id, 2);
@@ -152,7 +152,7 @@ fn stale_workspace_plugins_failed_event_from_other_workspace_does_not_clear_curr
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_in_flight_request_id, Some(1));
     assert!(app.workspace_plugins_reload_queued);
     assert_eq!(app.workspace_plugins_active_request_id, 2);
@@ -177,7 +177,7 @@ fn stale_same_root_workspace_plugins_loaded_event_after_reset_does_not_clear_cur
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_in_flight_request_id, Some(2));
     assert_eq!(app.workspace_plugins_active_request_id, 2);
 }
@@ -204,7 +204,7 @@ fn current_root_stale_workspace_plugins_loaded_event_drains_queued_reload_withou
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_active_request_id, 3);
     assert_eq!(app.workspace_plugins_in_flight_request_id, None);
     assert!(!app.workspace_plugins_reload_queued);
@@ -237,7 +237,7 @@ fn equivalent_root_stale_workspace_plugins_loaded_event_drains_queued_reload_wit
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_active_request_id, 3);
     assert_eq!(app.workspace_plugins_in_flight_request_id, None);
     assert!(!app.workspace_plugins_reload_queued);
@@ -268,7 +268,7 @@ fn equivalent_root_stale_workspace_plugins_failed_event_drains_queued_reload_wit
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_active_request_id, 3);
     assert_eq!(app.workspace_plugins_in_flight_request_id, None);
     assert!(!app.workspace_plugins_reload_queued);
@@ -303,7 +303,7 @@ fn matching_static_diagnostics_event_applies_and_finishes_request() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.diagnostics.for_path(&path).len(), 1);
     assert!(app.static_diagnostics_active_request_ids.is_empty());
     assert!(app.static_diagnostics_in_flight_request_ids.is_empty());
@@ -334,7 +334,7 @@ fn stale_static_diagnostics_event_is_ignored_for_newer_request() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.diagnostics.for_path(&path).is_empty());
     assert_eq!(app.static_diagnostics_active_request_ids.get(&7), Some(&2));
 }
@@ -374,6 +374,6 @@ fn protected_static_diagnostics_request_invalidates_in_flight_work() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.diagnostics.for_path(&path).is_empty());
 }

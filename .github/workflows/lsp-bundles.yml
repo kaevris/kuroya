@@ -1,0 +1,282 @@
+name: LSP Server Bundles
+
+on:
+  workflow_dispatch:
+    inputs:
+      gopls_version:
+        description: Override gopls version (e.g. gopls/v0.23.0)
+        required: false
+        type: string
+      clangd_version:
+        description: Override clangd version (e.g. 22.1.6)
+        required: false
+        type: string
+      lua_ls_version:
+        description: Override lua-language-server version (e.g. 3.19.1)
+        required: false
+        type: string
+      marksman_version:
+        description: Override marksman version (e.g. 2026-02-08)
+        required: false
+        type: string
+      rust_analyzer_version:
+        description: Override rust-analyzer version (e.g. 2026-09-21)
+        required: false
+        type: string
+  schedule:
+    - cron: "0 6 1 * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lsp-bundles
+  cancel-in-progress: false
+
+env:
+  GOPLS_VERSION: gopls/v0.23.0
+  CLANGD_VERSION: "22.1.6"
+  LUA_LS_VERSION: "3.19.1"
+  MARKSMAN_VERSION: "2026-02-08"
+  RA_VERSION: "2026-09-21"
+  RUST_ANALYZER_REPOSITORY: rust-analyzer/rust-analyzer
+  BUNDLE_RELEASE_TAG: lsps
+
+jobs:
+  bundle:
+    name: Bundle (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-latest
+            archive: zip
+          - platform: linux-x64
+            os: ubuntu-latest
+            archive: tar.gz
+          - platform: macos-x64
+            os: macos-latest
+            archive: tar.gz
+    steps:
+      - name: Resolve server versions
+        shell: bash
+        env:
+          GOPLS_VERSION_OVERRIDE: ${{ github.event.inputs.gopls_version }}
+          CLANGD_VERSION_OVERRIDE: ${{ github.event.inputs.clangd_version }}
+          LUA_LS_VERSION_OVERRIDE: ${{ github.event.inputs.lua_ls_version }}
+          MARKSMAN_VERSION_OVERRIDE: ${{ github.event.inputs.marksman_version }}
+          RA_VERSION_OVERRIDE: ${{ github.event.inputs.rust_analyzer_version }}
+        run: |
+          set -euo pipefail
+          {
+            echo "GOPLS_VERSION=${GOPLS_VERSION_OVERRIDE:-$GOPLS_VERSION}"
+            echo "CLANGD_VERSION=${CLANGD_VERSION_OVERRIDE:-$CLANGD_VERSION}"
+            echo "LUA_LS_VERSION=${LUA_LS_VERSION_OVERRIDE:-$LUA_LS_VERSION}"
+            echo "MARKSMAN_VERSION=${MARKSMAN_VERSION_OVERRIDE:-$MARKSMAN_VERSION}"
+            echo "RA_VERSION=${RA_VERSION_OVERRIDE:-$RA_VERSION}"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare output directories
+        shell: bash
+        run: mkdir -p work unpack dist
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Bundle gopls
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          case "$PLATFORM" in
+            windows-x64) EXE=.exe ;;
+            *) EXE= ;;
+          esac
+          stage="work/gopls"
+          mkdir -p "$stage"
+          export GOARCH=amd64 CGO_ENABLED=0
+          go install "golang.org/x/tools/gopls@${GOPLS_VERSION}"
+          gopath="$(go env GOPATH | tr '\\' '/')"
+          cp "$gopath/bin/gopls${EXE}" "$stage/"
+          "$stage/gopls${EXE}" version
+
+      - name: Bundle rust-analyzer
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          case "$PLATFORM" in
+            windows-x64) EXE=.exe; flavor="x86_64-pc-windows-msvc"; archive="zip" ;;
+            linux-x64) EXE=; flavor="x86_64-unknown-linux-gnu"; archive="gz" ;;
+            macos-x64) EXE=; flavor="x86_64-apple-darwin"; archive="gz" ;;
+          esac
+          stage="work/rust-analyzer"
+          mkdir -p "$stage"
+          curl -fsSL -o "work/rust-analyzer.${archive}" \
+            "https://github.com/${RUST_ANALYZER_REPOSITORY}/releases/download/${RA_VERSION}/rust-analyzer-${flavor}.${archive}"
+          case "$PLATFORM" in
+            windows-x64)
+              7z x -y -o"unpack/rust-analyzer" "work/rust-analyzer.zip" "rust-analyzer.exe" >/dev/null
+              cp "unpack/rust-analyzer/rust-analyzer.exe" "$stage/"
+              ;;
+            *)
+              gunzip -c "work/rust-analyzer.gz" > "$stage/rust-analyzer"
+              chmod +x "$stage/rust-analyzer"
+              ;;
+          esac
+          "$stage/rust-analyzer${EXE}" --version
+
+      - name: Bundle clangd
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          case "$PLATFORM" in
+            windows-x64) EXE=.exe; flavor="windows" ;;
+            linux-x64) EXE=; flavor="linux" ;;
+            macos-x64) EXE=; flavor="mac" ;;
+          esac
+          stage="work/clangd"
+          mkdir -p "$stage"
+          curl -fsSL -o work/clangd.zip \
+            "https://github.com/clangd/clangd/releases/download/${CLANGD_VERSION}/clangd-${flavor}-${CLANGD_VERSION}.zip"
+          inner="clangd_${CLANGD_VERSION}/bin/clangd${EXE}"
+          case "$PLATFORM" in
+            windows-x64)
+              7z x -y -o"unpack/clangd" work/clangd.zip "$inner" >/dev/null
+              ;;
+            *)
+              unzip -q work/clangd.zip "$inner" -d unpack/clangd
+              ;;
+          esac
+          cp "unpack/clangd/$inner" "$stage/"
+          "$stage/clangd${EXE}" --version
+
+      - name: Bundle lua-language-server
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          case "$PLATFORM" in
+            windows-x64) EXE=.exe; flavor="win32-x64"; archive="zip" ;;
+            linux-x64) EXE=; flavor="linux-x64"; archive="tar.gz" ;;
+            macos-x64) EXE=; flavor="darwin-x64"; archive="tar.gz" ;;
+          esac
+          stage="work/lua-language-server"
+          mkdir -p "$stage" "unpack/luals"
+          curl -fsSL -o "work/luals.${archive}" \
+            "https://github.com/LuaLS/lua-language-server/releases/download/${LUA_LS_VERSION}/lua-language-server-${LUA_LS_VERSION}-${flavor}.${archive}"
+          case "$PLATFORM" in
+            windows-x64)
+              7z x -y -o"unpack/luals" work/luals.zip "bin/lua-language-server.exe" >/dev/null
+              cp "unpack/luals/bin/lua-language-server.exe" "$stage/"
+              ;;
+            *)
+              tar -xzf "work/luals.${archive}" -C unpack/luals bin/lua-language-server
+              cp "unpack/luals/bin/lua-language-server" "$stage/"
+              chmod +x "$stage/lua-language-server"
+              ;;
+          esac
+          "$stage/lua-language-server${EXE}" --version
+
+      - name: Bundle marksman
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          case "$PLATFORM" in
+            windows-x64) EXE=.exe; asset="marksman.exe" ;;
+            linux-x64) EXE=; asset="marksman-linux-x64" ;;
+            macos-x64) EXE=; asset="marksman-macos" ;;
+          esac
+          stage="work/marksman"
+          mkdir -p "$stage"
+          curl -fsSL -o "$stage/marksman${EXE}" \
+            "https://github.com/artempyanykh/marksman/releases/download/${MARKSMAN_VERSION}/${asset}"
+          if [ "$PLATFORM" != "windows-x64" ]; then
+            chmod +x "$stage/marksman"
+          fi
+          "$stage/marksman${EXE}" --version
+
+      - name: Package and checksum bundles
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          for stage in work/*/; do
+            server="$(basename "$stage")"
+            entry="$(basename "$(printf '%s\n' "$stage"*)")"
+            if [ ! -e "${stage}${entry}" ]; then
+              echo "no binary staged in $stage" >&2
+              exit 1
+            fi
+            if [ "$ARCHIVE" = "zip" ]; then
+              (cd "$stage" && 7z a -tzip "../../dist/lsp-${server}-${PLATFORM}.zip" "$entry" >/dev/null)
+            else
+              tar -czf "dist/lsp-${server}-${PLATFORM}.tar.gz" -C "$stage" "$entry"
+            fi
+          done
+          cd dist
+          for f in lsp-*.zip lsp-*.tar.gz; do
+            [ -e "$f" ] || continue
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$f" > "$f.sha256"
+            else
+              shasum -a 256 "$f" > "$f.sha256"
+            fi
+          done
+          ls -la
+
+      - name: Upload bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lsp-bundles-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish bundles
+    needs: bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download bundle artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: lsp-bundles-*
+          merge-multiple: true
+
+      - name: Create the lsps release when missing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$BUNDLE_RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$BUNDLE_RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --prerelease \
+              --title "LSP server bundles" \
+              --notes "Automated per-platform LSP server bundles for the Kuroya missing-LSP installer."
+
+      - name: Attach bundles to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ls -la dist
+          archives="$(find dist -type f ! -name '*.sha256' | wc -l)"
+          if [ "$archives" -ne 15 ]; then
+            echo "expected 15 bundle archives, found ${archives}" >&2
+            exit 1
+          fi
+          gh release upload "$BUNDLE_RELEASE_TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber

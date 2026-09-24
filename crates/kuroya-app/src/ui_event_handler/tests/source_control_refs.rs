@@ -19,7 +19,7 @@ fn current_git_branches_loaded_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_in_flight_request_id, None);
     assert!(!app.source_control_branch_reload_queued);
     assert_eq!(app.source_control_branch_active_request_id, 1);
@@ -46,7 +46,7 @@ fn equivalent_root_git_branches_loaded_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_in_flight_request_id, None);
     assert!(!app.source_control_branch_reload_queued);
     assert_eq!(app.source_control_branch_active_request_id, 1);
@@ -79,7 +79,7 @@ fn stale_operation_root_git_branches_loaded_event_does_not_clear_current_in_flig
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_in_flight_request_id, Some(1));
     assert!(app.source_control_branch_reload_queued);
     assert_eq!(app.source_control_branch_active_request_id, 1);
@@ -109,7 +109,7 @@ fn current_git_branches_failed_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_in_flight_request_id, None);
     assert!(!app.source_control_branch_reload_queued);
     assert_eq!(app.source_control_branch_active_request_id, 1);
@@ -140,7 +140,7 @@ fn equivalent_root_git_branches_failed_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_in_flight_request_id, None);
     assert!(!app.source_control_branch_reload_queued);
     assert_eq!(app.source_control_branch_active_request_id, 1);
@@ -173,7 +173,7 @@ fn stale_git_branches_failed_event_from_other_workspace_does_not_clear_current_i
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_in_flight_request_id, Some(1));
     assert!(app.source_control_branch_reload_queued);
     assert_eq!(app.source_control_branch_active_request_id, 2);
@@ -205,7 +205,7 @@ fn stale_git_branches_loaded_event_from_other_workspace_does_not_clear_current_i
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_in_flight_request_id, Some(1));
     assert!(app.source_control_branch_reload_queued);
     assert_eq!(app.source_control_branch_active_request_id, 2);
@@ -235,7 +235,7 @@ fn stale_same_root_git_branches_loaded_event_after_reset_does_not_clear_current_
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_in_flight_request_id, Some(2));
     assert_eq!(app.source_control_branch_active_request_id, 2);
     assert_eq!(
@@ -265,7 +265,7 @@ fn stale_same_root_git_branches_failed_event_after_reset_does_not_clear_current_
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_in_flight_request_id, Some(2));
     assert_eq!(app.source_control_branch_active_request_id, 2);
     assert_eq!(
@@ -296,7 +296,7 @@ fn current_root_stale_git_branches_loaded_event_drains_queued_reload_without_app
         }
     ));
 
-    let handled = app.handle_events();
+    let handled = app.handle_single_event();
     assert!(
         handled == 1 || handled == 2,
         "stale event should drain with at most its background reload failure, got {handled}"
@@ -339,7 +339,7 @@ fn equivalent_root_stale_git_branches_loaded_event_drains_queued_reload_without_
         }
     ));
 
-    let handled = app.handle_events();
+    let handled = app.handle_single_event();
     assert!(
         handled == 1 || handled == 2,
         "stale event should drain with at most its background reload failure, got {handled}"
@@ -382,7 +382,7 @@ fn current_root_queued_git_branches_loaded_event_clears_closed_panel_without_res
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_active_request_id, 2);
     assert_eq!(app.source_control_branch_in_flight_request_id, None);
     assert!(!app.source_control_branch_reload_queued);
@@ -414,7 +414,7 @@ fn current_root_stale_git_branches_failed_event_drains_queued_reload_without_app
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_active_request_id, 3);
     assert_eq!(app.source_control_branch_in_flight_request_id, Some(3));
     assert!(!app.source_control_branch_reload_queued);
@@ -446,7 +446,7 @@ fn equivalent_root_stale_git_branches_failed_event_drains_queued_reload_without_
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_active_request_id, 3);
     assert_eq!(app.source_control_branch_in_flight_request_id, Some(3));
     assert!(!app.source_control_branch_reload_queued);
@@ -478,7 +478,7 @@ fn current_root_queued_git_branches_failed_event_clears_closed_panel_without_res
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_active_request_id, 2);
     assert_eq!(app.source_control_branch_in_flight_request_id, None);
     assert!(!app.source_control_branch_reload_queued);
@@ -506,7 +506,7 @@ fn closed_git_branch_mutation_event_does_not_start_hidden_branch_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_branch_next_request_id, 7);
     assert_eq!(app.source_control_branch_active_request_id, 6);
     assert_eq!(app.source_control_branch_in_flight_request_id, None);
@@ -533,7 +533,7 @@ fn current_git_stashes_loaded_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_in_flight_request_id, None);
     assert!(!app.source_control_stashes_reload_queued);
     assert_eq!(app.source_control_stashes_active_request_id, 1);
@@ -560,7 +560,7 @@ fn equivalent_root_git_stashes_loaded_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_in_flight_request_id, None);
     assert!(!app.source_control_stashes_reload_queued);
     assert_eq!(app.source_control_stashes_active_request_id, 1);
@@ -586,7 +586,7 @@ fn current_git_stashes_failed_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_in_flight_request_id, None);
     assert!(!app.source_control_stashes_reload_queued);
     assert_eq!(app.source_control_stashes_active_request_id, 1);
@@ -613,7 +613,7 @@ fn equivalent_root_git_stashes_failed_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_in_flight_request_id, None);
     assert!(!app.source_control_stashes_reload_queued);
     assert_eq!(app.source_control_stashes_active_request_id, 1);
@@ -642,7 +642,7 @@ fn stale_git_stashes_failed_event_from_other_workspace_does_not_clear_current_in
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_in_flight_request_id, Some(1));
     assert!(app.source_control_stashes_reload_queued);
     assert_eq!(app.source_control_stashes_active_request_id, 2);
@@ -674,7 +674,7 @@ fn stale_git_stashes_loaded_event_from_other_workspace_does_not_clear_current_in
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_in_flight_request_id, Some(1));
     assert!(app.source_control_stashes_reload_queued);
     assert_eq!(app.source_control_stashes_active_request_id, 2);
@@ -707,7 +707,7 @@ fn stale_operation_root_git_stashes_loaded_event_does_not_clear_current_in_fligh
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_in_flight_request_id, Some(1));
     assert!(app.source_control_stashes_reload_queued);
     assert_eq!(app.source_control_stashes_active_request_id, 1);
@@ -741,7 +741,7 @@ fn stale_operation_root_git_stashes_failed_event_does_not_clear_current_in_fligh
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_in_flight_request_id, Some(1));
     assert!(app.source_control_stashes_reload_queued);
     assert_eq!(app.source_control_stashes_active_request_id, 1);
@@ -772,7 +772,7 @@ fn stale_same_root_git_stashes_loaded_event_after_reset_does_not_clear_current_i
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_in_flight_request_id, Some(2));
     assert_eq!(app.source_control_stashes_active_request_id, 2);
     assert_eq!(
@@ -802,7 +802,7 @@ fn stale_same_root_git_stashes_failed_event_after_reset_does_not_clear_current_i
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_in_flight_request_id, Some(2));
     assert_eq!(app.source_control_stashes_active_request_id, 2);
     assert_eq!(
@@ -833,7 +833,7 @@ fn current_root_stale_git_stashes_loaded_event_drains_queued_reload_without_appl
         }
     ));
 
-    let handled = app.handle_events();
+    let handled = app.handle_single_event();
     assert!(
         handled == 1 || handled == 2,
         "stale event should drain with at most its background reload failure, got {handled}"
@@ -876,7 +876,7 @@ fn equivalent_root_stale_git_stashes_loaded_event_drains_queued_reload_without_a
         }
     ));
 
-    let handled = app.handle_events();
+    let handled = app.handle_single_event();
     assert!(
         handled == 1 || handled == 2,
         "stale event should drain with at most its background reload failure, got {handled}"
@@ -919,7 +919,7 @@ fn current_root_queued_git_stashes_loaded_event_clears_closed_panel_without_resp
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_active_request_id, 2);
     assert_eq!(app.source_control_stashes_in_flight_request_id, None);
     assert!(!app.source_control_stashes_reload_queued);
@@ -951,7 +951,7 @@ fn current_root_stale_git_stashes_failed_event_drains_queued_reload_without_appl
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_active_request_id, 3);
     assert_eq!(app.source_control_stashes_in_flight_request_id, Some(3));
     assert!(!app.source_control_stashes_reload_queued);
@@ -983,7 +983,7 @@ fn equivalent_root_stale_git_stashes_failed_event_drains_queued_reload_without_a
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_active_request_id, 3);
     assert_eq!(app.source_control_stashes_in_flight_request_id, Some(3));
     assert!(!app.source_control_stashes_reload_queued);
@@ -1015,7 +1015,7 @@ fn current_root_queued_git_stashes_failed_event_clears_closed_panel_without_resp
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_active_request_id, 2);
     assert_eq!(app.source_control_stashes_in_flight_request_id, None);
     assert!(!app.source_control_stashes_reload_queued);
@@ -1043,7 +1043,7 @@ fn closed_git_stash_mutation_event_does_not_start_hidden_stash_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_stashes_next_request_id, 7);
     assert_eq!(app.source_control_stashes_active_request_id, 6);
     assert_eq!(app.source_control_stashes_in_flight_request_id, None);

@@ -1,14 +1,10 @@
 id = "markdown"
 display_name = "marksman"
 languages = ["markdown"]
-notes = "Linux needs a manual download from the marksman GitHub releases"
+asset = "lsp-marksman-{platform}"
+launch = "marksman"
+install = "repo"
 
 [verify]
 command = "marksman"
 args = ["--version"]
-
-[install.windows]
-shell = "winget install -e --id artempyanykh.marksman --silent --accept-package-agreements --accept-source-agreements"
-
-[install.macos]
-shell = "brew install marksman"

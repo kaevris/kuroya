@@ -24,7 +24,7 @@ fn current_git_hunks_loaded_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_in_flight_request_id, None);
     assert!(!app.source_control_hunks_reload_queued);
     assert_eq!(app.source_control_hunks_active_request_id, 1);
@@ -57,7 +57,7 @@ fn equivalent_root_git_hunks_loaded_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_in_flight_request_id, None);
     assert!(!app.source_control_hunks_reload_queued);
     assert_eq!(app.source_control_hunks_active_request_id, 1);
@@ -90,7 +90,7 @@ fn current_git_hunks_failed_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_in_flight_request_id, None);
     assert!(!app.source_control_hunks_reload_queued);
     assert_eq!(app.source_control_hunks_active_request_id, 1);
@@ -125,7 +125,7 @@ fn equivalent_root_git_hunks_failed_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_in_flight_request_id, None);
     assert!(!app.source_control_hunks_reload_queued);
     assert_eq!(app.source_control_hunks_active_request_id, 1);
@@ -160,7 +160,7 @@ fn stale_git_hunks_loaded_event_from_other_workspace_does_not_clear_current_in_f
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_in_flight_request_id, Some(1));
     assert!(app.source_control_hunks_reload_queued);
     assert_eq!(app.source_control_hunks_active_request_id, 2);
@@ -194,7 +194,7 @@ fn stale_git_hunks_failed_event_from_other_workspace_does_not_clear_current_in_f
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_in_flight_request_id, Some(1));
     assert!(app.source_control_hunks_reload_queued);
     assert_eq!(app.source_control_hunks_active_request_id, 2);
@@ -230,7 +230,7 @@ fn stale_operation_root_git_hunks_loaded_event_does_not_clear_current_in_flight_
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_in_flight_request_id, Some(1));
     assert!(app.source_control_hunks_reload_queued);
     assert_eq!(app.source_control_hunks_active_request_id, 1);
@@ -266,7 +266,7 @@ fn stale_operation_root_git_hunks_failed_event_does_not_clear_current_in_flight_
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_in_flight_request_id, Some(1));
     assert!(app.source_control_hunks_reload_queued);
     assert_eq!(app.source_control_hunks_active_request_id, 1);
@@ -300,7 +300,7 @@ fn current_root_stale_git_hunks_loaded_event_drains_queued_reload_without_applyi
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_active_request_id, 3);
     assert_eq!(app.source_control_hunks_in_flight_request_id, Some(3));
     assert!(!app.source_control_hunks_reload_queued);
@@ -334,7 +334,7 @@ fn equivalent_root_stale_git_hunks_loaded_event_drains_queued_reload_without_app
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_active_request_id, 3);
     assert_eq!(app.source_control_hunks_in_flight_request_id, Some(3));
     assert!(!app.source_control_hunks_reload_queued);
@@ -368,7 +368,7 @@ fn current_root_stale_git_hunks_failed_event_drains_queued_reload_without_applyi
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_active_request_id, 3);
     assert_eq!(app.source_control_hunks_in_flight_request_id, Some(3));
     assert!(!app.source_control_hunks_reload_queued);
@@ -404,7 +404,7 @@ fn equivalent_root_stale_git_hunks_failed_event_drains_queued_reload_without_app
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_active_request_id, 3);
     assert_eq!(app.source_control_hunks_in_flight_request_id, Some(3));
     assert!(!app.source_control_hunks_reload_queued);
@@ -439,7 +439,7 @@ fn current_root_queued_git_hunks_loaded_event_clears_closed_panel_without_respaw
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_active_request_id, 2);
     assert_eq!(app.source_control_hunks_in_flight_request_id, None);
     assert!(!app.source_control_hunks_reload_queued);
@@ -474,7 +474,7 @@ fn current_root_queued_git_hunks_failed_event_clears_closed_panel_without_respaw
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_active_request_id, 2);
     assert_eq!(app.source_control_hunks_in_flight_request_id, None);
     assert!(!app.source_control_hunks_reload_queued);
@@ -501,7 +501,7 @@ fn closed_git_hunk_mutation_event_does_not_start_hidden_hunk_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_next_request_id, 7);
     assert_eq!(app.source_control_hunks_active_request_id, 6);
     assert_eq!(app.source_control_hunks_in_flight_request_id, None);

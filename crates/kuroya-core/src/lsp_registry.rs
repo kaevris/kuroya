@@ -18,17 +18,37 @@ const EMBEDDED_DEFINITIONS: &[&str] = &[
     include_str!("../../../lsps/yaml.toml"),
 ];
 
+pub const LSP_ASSET_PLATFORM_TOKEN: &str = "{platform}";
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct LspInstallDefinition {
     pub id: String,
     pub display_name: String,
     #[serde(default)]
     pub languages: Vec<String>,
+    #[serde(default)]
+    pub asset: Option<String>,
+    pub launch: String,
+    pub install: LspInstallKind,
+    #[serde(default)]
+    pub npm_fallback: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
     pub verify: LspInstallVerifyCommand,
-    #[serde(default)]
-    pub install: LspInstallPlatforms,
-    #[serde(default)]
-    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LspInstallKind {
+    Repo,
+    Npm,
+    RustupThenRepo,
+}
+
+impl LspInstallKind {
+    pub fn supports_repo_download(self) -> bool {
+        matches!(self, Self::Repo | Self::RustupThenRepo)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -38,32 +58,49 @@ pub struct LspInstallVerifyCommand {
     pub args: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-pub struct LspInstallPlatforms {
-    #[serde(default)]
-    pub windows: Option<LspInstallShellCommand>,
-    #[serde(default)]
-    pub linux: Option<LspInstallShellCommand>,
-    #[serde(default)]
-    pub macos: Option<LspInstallShellCommand>,
-}
-
-impl LspInstallPlatforms {
-    pub fn is_empty(&self) -> bool {
-        self.windows.is_none() && self.linux.is_none() && self.macos.is_none()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct LspInstallShellCommand {
-    pub shell: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LspInstallPlatform {
     Windows,
     Linux,
     MacOS,
+}
+
+impl LspInstallDefinition {
+    pub fn supports_repo_download(&self) -> bool {
+        self.install.supports_repo_download()
+    }
+
+    pub fn repo_asset_name(&self, platform: LspInstallPlatform) -> Option<String> {
+        let asset = self.asset.as_deref()?;
+        Some(format!(
+            "{}{}",
+            asset.replace(LSP_ASSET_PLATFORM_TOKEN, lsp_platform_token(platform)),
+            lsp_archive_extension(platform)
+        ))
+    }
+
+    pub fn npm_fallback(&self) -> Option<&str> {
+        self.npm_fallback.as_deref()
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+}
+
+pub fn lsp_platform_token(platform: LspInstallPlatform) -> &'static str {
+    match platform {
+        LspInstallPlatform::Windows => "windows-x64",
+        LspInstallPlatform::Linux => "linux-x64",
+        LspInstallPlatform::MacOS => "macos-x64",
+    }
+}
+
+pub fn lsp_archive_extension(platform: LspInstallPlatform) -> &'static str {
+    match platform {
+        LspInstallPlatform::Windows => ".zip",
+        LspInstallPlatform::Linux | LspInstallPlatform::MacOS => ".tar.gz",
+    }
 }
 
 pub fn lsp_install_registry() -> &'static [LspInstallDefinition] {
@@ -80,33 +117,6 @@ pub fn registry_entry_for(server_id: &str) -> Option<&'static LspInstallDefiniti
     lsp_install_registry()
         .iter()
         .find(|definition| definition.id == server_id)
-}
-
-pub fn lsp_platform_install_command(
-    definition: &LspInstallDefinition,
-    platform: LspInstallPlatform,
-) -> Option<&str> {
-    match platform {
-        LspInstallPlatform::Windows => definition
-            .install
-            .windows
-            .as_ref()
-            .map(|command| command.shell.as_str()),
-        LspInstallPlatform::Linux => definition
-            .install
-            .linux
-            .as_ref()
-            .map(|command| command.shell.as_str()),
-        LspInstallPlatform::MacOS => definition
-            .install
-            .macos
-            .as_ref()
-            .map(|command| command.shell.as_str()),
-    }
-}
-
-pub fn install_command_for(definition: &LspInstallDefinition) -> Option<&str> {
-    lsp_platform_install_command(definition, current_lsp_install_platform())
 }
 
 pub fn current_lsp_install_platform() -> LspInstallPlatform {
@@ -161,10 +171,10 @@ fn parse_embedded_lsp_install_definition(text: &'static str) -> LspInstallDefini
 #[cfg(test)]
 mod tests {
     use super::{
-        current_lsp_install_platform, install_command_for, lsp_binary_on_path,
-        lsp_install_registry, lsp_platform_install_command, registry_entry_for,
+        LspInstallKind, LspInstallPlatform, current_lsp_install_platform, lsp_archive_extension,
+        lsp_binary_on_path, lsp_install_registry, lsp_platform_token, registry_entry_for,
     };
-    use crate::{default_server_configs, lsp_registry::LspInstallPlatform};
+    use crate::default_server_configs;
 
     #[test]
     fn registry_entries_parse_and_match_default_server_config_ids() {
@@ -183,11 +193,7 @@ mod tests {
             );
             assert!(!definition.display_name.is_empty());
             assert!(definition.languages.contains(&definition.id));
-            assert!(
-                !definition.install.is_empty(),
-                "registry entry {:?} must provide at least one install platform",
-                definition.id
-            );
+            assert!(!definition.launch.trim().is_empty());
             assert!(
                 !definition.verify.command.trim().is_empty(),
                 "registry entry {:?} must provide a verify command",
@@ -197,88 +203,161 @@ mod tests {
     }
 
     #[test]
-    fn registry_install_shells_are_nonempty_and_control_character_free() {
-        for definition in lsp_install_registry() {
-            for shell in [
-                definition
-                    .install
-                    .windows
-                    .as_ref()
-                    .map(|command| &command.shell),
-                definition
-                    .install
-                    .linux
-                    .as_ref()
-                    .map(|command| &command.shell),
-                definition
-                    .install
-                    .macos
-                    .as_ref()
-                    .map(|command| &command.shell),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                assert!(!shell.trim().is_empty());
-                assert_eq!(shell.trim(), shell);
-                assert!(
-                    !shell.chars().any(char::is_control),
-                    "install shell {shell:?} must not contain control characters"
+    fn registry_entries_declare_the_confirmed_install_kinds() {
+        let expected_kinds = [
+            ("c", LspInstallKind::Repo),
+            ("cpp", LspInstallKind::Repo),
+            ("css", LspInstallKind::Npm),
+            ("go", LspInstallKind::Repo),
+            ("html", LspInstallKind::Npm),
+            ("javascript", LspInstallKind::Npm),
+            ("json", LspInstallKind::Npm),
+            ("lua", LspInstallKind::Repo),
+            ("markdown", LspInstallKind::Repo),
+            ("python", LspInstallKind::Npm),
+            ("rust", LspInstallKind::RustupThenRepo),
+            ("shellscript", LspInstallKind::Npm),
+            ("typescript", LspInstallKind::Npm),
+            ("yaml", LspInstallKind::Npm),
+        ];
+
+        for (id, kind) in expected_kinds {
+            let definition = registry_entry_for(id).unwrap_or_else(|| panic!("{id} entry"));
+            assert_eq!(definition.install, kind, "install kind for {id}");
+            assert_eq!(
+                definition.supports_repo_download(),
+                kind.supports_repo_download(),
+                "repo-download support for {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn repo_capable_entries_resolve_platform_asset_names_with_archive_extensions() {
+        let expected_assets = [
+            ("c", "lsp-clangd-{platform}", "clangd"),
+            ("cpp", "lsp-clangd-{platform}", "clangd"),
+            ("go", "lsp-gopls-{platform}", "gopls"),
+            (
+                "lua",
+                "lsp-lua-language-server-{platform}",
+                "lua-language-server",
+            ),
+            ("markdown", "lsp-marksman-{platform}", "marksman"),
+            ("rust", "lsp-rust-analyzer-{platform}", "rust-analyzer"),
+        ];
+
+        for (id, asset, launch) in expected_assets {
+            let definition = registry_entry_for(id).unwrap_or_else(|| panic!("{id} entry"));
+            assert_eq!(definition.asset.as_deref(), Some(asset), "asset for {id}");
+            assert_eq!(definition.launch, launch, "launch for {id}");
+
+            for (platform, token, extension) in [
+                (LspInstallPlatform::Windows, "windows-x64", ".zip"),
+                (LspInstallPlatform::Linux, "linux-x64", ".tar.gz"),
+                (LspInstallPlatform::MacOS, "macos-x64", ".tar.gz"),
+            ] {
+                assert_eq!(
+                    definition.repo_asset_name(platform),
+                    Some(format!(
+                        "{}{}",
+                        asset.replace("{platform}", token),
+                        extension
+                    )),
+                    "asset name for {id} on {token}"
+                );
+            }
+        }
+
+        for id in [
+            "css",
+            "html",
+            "javascript",
+            "json",
+            "python",
+            "shellscript",
+            "typescript",
+            "yaml",
+        ] {
+            let definition = registry_entry_for(id).unwrap_or_else(|| panic!("{id} entry"));
+            assert!(definition.asset.is_none(), "npm entry {id} has no asset");
+            for platform in [
+                LspInstallPlatform::Windows,
+                LspInstallPlatform::Linux,
+                LspInstallPlatform::MacOS,
+            ] {
+                assert_eq!(
+                    definition.repo_asset_name(platform),
+                    None,
+                    "npm entry {id} must not resolve a repo asset"
                 );
             }
         }
     }
 
     #[test]
-    fn platform_selection_picks_the_matching_platform_shell() {
-        for definition in lsp_install_registry() {
-            for (platform, command) in [
-                (
-                    LspInstallPlatform::Windows,
-                    definition
-                        .install
-                        .windows
-                        .as_ref()
-                        .map(|command| command.shell.as_str()),
-                ),
-                (
-                    LspInstallPlatform::Linux,
-                    definition
-                        .install
-                        .linux
-                        .as_ref()
-                        .map(|command| command.shell.as_str()),
-                ),
-                (
-                    LspInstallPlatform::MacOS,
-                    definition
-                        .install
-                        .macos
-                        .as_ref()
-                        .map(|command| command.shell.as_str()),
-                ),
-            ] {
-                assert_eq!(
-                    lsp_platform_install_command(definition, platform),
-                    command,
-                    "platform {platform:?} selection mismatch for {:?}",
-                    definition.id
-                );
-            }
-            assert_eq!(
-                install_command_for(definition),
-                lsp_platform_install_command(definition, current_lsp_install_platform())
+    fn platform_tokens_and_archive_extensions_follow_the_release_assets() {
+        assert_eq!(
+            lsp_platform_token(LspInstallPlatform::Windows),
+            "windows-x64"
+        );
+        assert_eq!(lsp_platform_token(LspInstallPlatform::Linux), "linux-x64");
+        assert_eq!(lsp_platform_token(LspInstallPlatform::MacOS), "macos-x64");
+        assert_eq!(lsp_archive_extension(LspInstallPlatform::Windows), ".zip");
+        assert_eq!(lsp_archive_extension(LspInstallPlatform::Linux), ".tar.gz");
+        assert_eq!(lsp_archive_extension(LspInstallPlatform::MacOS), ".tar.gz");
+    }
+
+    #[test]
+    fn npm_entries_expose_the_fallback_command_and_node_reason() {
+        for id in [
+            "css",
+            "html",
+            "javascript",
+            "json",
+            "python",
+            "shellscript",
+            "typescript",
+            "yaml",
+        ] {
+            let definition = registry_entry_for(id).unwrap_or_else(|| panic!("{id} entry"));
+            let fallback = definition
+                .npm_fallback()
+                .unwrap_or_else(|| panic!("{id} npm fallback"));
+            assert!(
+                fallback.starts_with("npm install -g "),
+                "npm fallback for {id} should install globally: {fallback}"
+            );
+            let reason = definition.reason().unwrap_or_else(|| panic!("{id} reason"));
+            assert!(
+                reason.contains("Node.js"),
+                "reason for {id} should mention Node.js: {reason}"
             );
         }
+
+        for id in ["c", "cpp", "go", "lua", "markdown", "rust"] {
+            let definition = registry_entry_for(id).unwrap_or_else(|| panic!("{id} entry"));
+            assert!(
+                definition.npm_fallback().is_none(),
+                "repo entry {id} has no npm fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_entry_installs_via_rustup_before_falling_back_to_the_repo() {
+        let rust = registry_entry_for("rust").expect("rust registry entry");
+        assert_eq!(rust.display_name, "rust-analyzer");
+        assert_eq!(rust.launch, "rust-analyzer");
+        assert_eq!(rust.install, LspInstallKind::RustupThenRepo);
+        assert_eq!(rust.verify.command, "rust-analyzer");
+        assert_eq!(rust.verify.args, vec!["--version".to_owned()]);
     }
 
     #[test]
     fn registry_lookup_returns_none_for_unknown_ids() {
         assert!(registry_entry_for("definitely-not-a-server").is_none());
         assert!(registry_entry_for("").is_none());
-        let rust = registry_entry_for("rust").expect("rust registry entry");
-        assert_eq!(rust.display_name, "rust-analyzer");
-        assert!(install_command_for(rust).is_some());
     }
 
     #[test]
@@ -295,5 +374,17 @@ mod tests {
             lsp_binary_on_path(&current_exe.to_string_lossy()),
             "path-qualified commands should resolve directly"
         );
+    }
+
+    #[test]
+    fn current_platform_matches_the_compilation_target() {
+        let platform = current_lsp_install_platform();
+        if cfg!(windows) {
+            assert_eq!(platform, LspInstallPlatform::Windows);
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(platform, LspInstallPlatform::MacOS);
+        } else {
+            assert_eq!(platform, LspInstallPlatform::Linux);
+        }
     }
 }

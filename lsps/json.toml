@@ -1,17 +1,11 @@
 id = "json"
 display_name = "vscode-json-language-server"
 languages = ["json"]
-notes = "requires Node.js and npm; part of the vscode-langservers-extracted package"
+launch = "vscode-json-language-server"
+install = "npm"
+npm_fallback = "npm install -g vscode-langservers-extracted"
+reason = "requires Node.js and npm"
 
 [verify]
 command = "vscode-json-language-server"
 args = ["--version"]
-
-[install.windows]
-shell = "npm install -g vscode-langservers-extracted"
-
-[install.linux]
-shell = "npm install -g vscode-langservers-extracted"
-
-[install.macos]
-shell = "npm install -g vscode-langservers-extracted"

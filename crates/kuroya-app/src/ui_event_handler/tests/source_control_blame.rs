@@ -25,7 +25,7 @@ fn current_git_blame_loaded_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_blame_next_request_id, 1);
     assert_eq!(app.source_control_blame_active_request_id, 1);
     assert!(app.source_control_blame_active_request_ids.is_empty());
@@ -69,7 +69,7 @@ fn equivalent_root_git_blame_loaded_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_blame_next_request_id, 1);
     assert_eq!(app.source_control_blame_active_request_id, 1);
     assert!(app.source_control_blame_active_request_ids.is_empty());
@@ -112,7 +112,7 @@ fn current_git_blame_failed_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_blame_next_request_id, 1);
     assert_eq!(app.source_control_blame_active_request_id, 1);
     assert!(app.source_control_blame_active_request_ids.is_empty());
@@ -151,7 +151,7 @@ fn equivalent_root_git_blame_failed_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_blame_next_request_id, 1);
     assert_eq!(app.source_control_blame_active_request_id, 1);
     assert!(app.source_control_blame_active_request_ids.is_empty());
@@ -190,7 +190,7 @@ fn current_git_blame_failed_open_view_reports_status_without_negative_cache() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.source_control_blame_active_request_ids.is_empty());
     assert!(app.source_control_blame_in_flight_request_ids.is_empty());
     assert!(app.source_control_blame_reload_queued_paths.is_empty());
@@ -229,7 +229,7 @@ fn stale_git_blame_loaded_event_from_other_workspace_does_not_clear_current_in_f
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(
         app.source_control_blame_in_flight_request_ids.get(&path),
         Some(&1)
@@ -272,7 +272,7 @@ fn stale_git_blame_failed_event_from_other_workspace_does_not_clear_current_in_f
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(
         app.source_control_blame_in_flight_request_ids.get(&path),
         Some(&1)
@@ -316,7 +316,7 @@ fn stale_operation_root_git_blame_loaded_event_does_not_clear_current_in_flight_
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(
         app.source_control_blame_in_flight_request_ids.get(&path),
         Some(&1)
@@ -361,7 +361,7 @@ fn current_root_stale_git_blame_loaded_event_drains_queued_reload_without_applyi
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(
         app.source_control_blame_in_flight_request_ids.get(&path),
         Some(&3)
@@ -430,7 +430,7 @@ fn equivalent_root_stale_git_blame_loaded_event_drains_queued_reload_without_app
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(
         app.source_control_blame_in_flight_request_ids.get(&path),
         Some(&3)
@@ -482,7 +482,7 @@ fn current_root_stale_git_blame_failed_event_drains_queued_reload_without_applyi
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(
         app.source_control_blame_in_flight_request_ids.get(&path),
         Some(&3)
@@ -545,7 +545,7 @@ fn equivalent_root_stale_git_blame_failed_event_drains_queued_reload_without_app
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(
         app.source_control_blame_in_flight_request_ids.get(&path),
         Some(&3)
@@ -587,7 +587,7 @@ fn queued_git_blame_loaded_event_finishes_final_request_and_opens_view() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_blame_next_request_id, 3);
     assert_eq!(app.source_control_blame_active_request_id, 3);
     assert!(app.source_control_blame_active_request_ids.is_empty());
@@ -639,7 +639,7 @@ fn queued_git_blame_failed_event_finishes_final_request_without_negative_cache()
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_blame_next_request_id, 3);
     assert_eq!(app.source_control_blame_active_request_id, 3);
     assert!(app.source_control_blame_active_request_ids.is_empty());
@@ -692,7 +692,7 @@ fn path_specific_git_blame_result_survives_newer_request_for_other_path() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.source_control_blame_cache.contains_key(&path));
     assert!(
         app.virtual_buffer_labels
@@ -773,7 +773,7 @@ fn open_git_blame_promotes_existing_passive_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.source_control_blame_cache.contains_key(&path));
     assert!(
         app.virtual_buffer_labels
@@ -806,7 +806,7 @@ fn stale_same_root_blame_loaded_after_reset_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_blame_active_request_id, 2);
     assert_eq!(app.source_control_blame_pending_path, Some(path.clone()));
     assert!(!app.source_control_blame_cache.contains_key(&path));
@@ -841,7 +841,7 @@ fn stale_same_root_blame_failed_after_reset_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_blame_active_request_id, 2);
     assert_eq!(app.source_control_blame_pending_path, Some(path.clone()));
     assert!(!app.source_control_blame_cache.contains_key(&path));
@@ -874,7 +874,7 @@ fn stale_same_root_hunks_failed_after_reset_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_active_request_id, 2);
     assert_eq!(app.status, "before hunk event");
     assert!(app.source_control_hunks.is_empty());
@@ -942,7 +942,7 @@ fn stale_blame_loaded_after_blame_setting_change_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_blame_active_request_id, 8);
     assert_eq!(app.source_control_blame_pending_path, None);
     assert!(!app.source_control_blame_cache.contains_key(&path));
@@ -981,7 +981,7 @@ fn stale_blame_failed_after_blame_setting_change_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_blame_active_request_id, 8);
     assert_eq!(app.source_control_blame_pending_path, None);
     assert!(!app.source_control_blame_cache.contains_key(&path));
@@ -1018,7 +1018,7 @@ fn stale_blame_loaded_after_buffer_change_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_blame_active_request_id, 8);
     assert_eq!(app.source_control_blame_pending_path, None);
     assert!(!app.source_control_blame_cache.contains_key(&path));
@@ -1060,7 +1060,7 @@ fn stale_blame_failed_after_buffer_change_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_blame_active_request_id, 8);
     assert_eq!(app.source_control_blame_pending_path, None);
     assert!(!app.source_control_blame_cache.contains_key(&path));
@@ -1098,7 +1098,7 @@ fn stale_hunks_loaded_after_buffer_change_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_active_request_id, 8);
     assert!(!app.source_control_hunks_open);
     assert_eq!(app.source_control_hunk_path, None);

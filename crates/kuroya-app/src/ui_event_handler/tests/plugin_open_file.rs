@@ -51,7 +51,7 @@ fn plugin_open_file_request_for_missing_path_sets_failure_status_without_opening
         plugin_open_file_event("example.plugin", file.clone())
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(!app.pending_open_paths.contains(&file));
     assert!(app.buffers.is_empty());
     assert_eq!(
@@ -80,7 +80,7 @@ fn plugin_open_file_request_escaping_workspace_root_is_rejected() {
         plugin_open_file_event("example.plugin", escaped.clone())
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(!app.pending_open_paths.contains(&escaped));
     assert!(app.buffers.is_empty());
     assert_eq!(
@@ -105,7 +105,7 @@ fn placeholder_workspace_plugin_open_request_is_dropped_with_no_folder_status() 
         plugin_open_file_event("example.plugin", root.join("notes.md"))
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.pending_open_paths.is_empty());
     assert!(app.buffers.is_empty());
     assert_eq!(app.status, "No folder open");

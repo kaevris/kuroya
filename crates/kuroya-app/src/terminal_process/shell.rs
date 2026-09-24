@@ -419,6 +419,7 @@ fn shell_file_stem(file_name: &str) -> Option<&str> {
         .then_some(stem)
 }
 
+#[cfg(windows)]
 fn shell_profile(label: &str, path: &str, args: &[&str]) -> TerminalShellProfile {
     TerminalShellProfile {
         label: bounded_shell_label(label, TERMINAL_SHELL_LABEL_FALLBACK),

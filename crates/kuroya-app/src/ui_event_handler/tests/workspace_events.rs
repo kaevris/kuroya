@@ -12,7 +12,7 @@ fn handle_events_consumes_lsp_events_without_panicking() {
         })
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.rx.try_recv().is_err());
 }
 
@@ -57,7 +57,7 @@ fn stale_same_root_local_history_loaded_after_reset_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.virtual_buffer_labels.is_empty());
     assert!(app.buffers.is_empty());
     assert_eq!(app.status, "before local history event");
@@ -83,7 +83,7 @@ fn stale_same_root_local_history_failed_after_reset_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.virtual_buffer_labels.is_empty());
     assert!(app.buffers.is_empty());
     assert_eq!(app.status, "before local history event");
@@ -110,7 +110,7 @@ fn explorer_finished_from_other_workspace_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.explorer_expanded.is_empty());
     assert!(app.pending_open_paths.is_empty());
     assert_eq!(app.workspace_index_active_request_id, active_index_request);
@@ -140,7 +140,7 @@ fn stale_same_root_explorer_finished_after_reset_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.explorer_expanded.is_empty());
     assert!(app.pending_open_paths.is_empty());
     assert_eq!(app.workspace_index_active_request_id, active_index_request);
@@ -169,7 +169,7 @@ fn stale_same_root_explorer_failed_after_reset_is_ignored() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.explorer_expanded.is_empty());
     assert_eq!(app.workspace_index_active_request_id, active_index_request);
     assert_eq!(app.status, "before explorer failure");
@@ -193,7 +193,7 @@ fn current_explorer_failed_status_sanitizes_display_text() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(
         app.status,
         "Could not create folder bad tail.rs: denied reasontail"
@@ -223,7 +223,7 @@ fn current_explorer_failed_status_bounds_display_labels() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     let action_label = crate::path_display::sanitized_display_label_cow(
         action,
         EXPLORER_FAILURE_ACTION_LABEL_MAX_CHARS,
@@ -281,7 +281,7 @@ fn current_explorer_finished_still_applies() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert!(app.explorer_expanded.contains(&folder));
     assert!(app.workspace_index_active_request_id > active_index_request);
     assert!(app.status.contains("Created folder"));
@@ -305,7 +305,7 @@ fn stale_indexed_event_from_other_workspace_does_not_clear_current_in_flight_ind
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_index_in_flight_request_id, Some(1));
     assert!(app.workspace_index_refresh_queued);
     assert_eq!(app.workspace_index_active_request_id, 2);
@@ -328,7 +328,7 @@ fn stale_same_root_indexed_event_after_reset_does_not_clear_current_in_flight_in
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_index_in_flight_request_id, Some(2));
     assert_eq!(app.project_search_index_generation, 0);
 }
@@ -351,7 +351,7 @@ fn equivalent_root_indexed_event_finishes_in_flight_index() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_index_next_request_id, 1);
     assert_eq!(app.workspace_index_in_flight_request_id, None);
     assert!(!app.workspace_index_refresh_queued);
@@ -408,7 +408,7 @@ fn current_root_stale_indexed_event_drains_queued_refresh_without_applying_resul
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.project_search_index_generation, 0);
     assert_eq!(app.workspace_index_next_request_id, 3);
     assert_eq!(app.workspace_index_active_request_id, 3);
@@ -435,7 +435,7 @@ fn equivalent_root_stale_indexed_event_drains_queued_refresh_without_applying_re
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_index_next_request_id, 3);
     assert_eq!(app.project_search_index_generation, 0);
     assert_eq!(app.workspace_index_active_request_id, 3);
@@ -462,7 +462,7 @@ fn current_git_scanned_event_finishes_in_flight_scan() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.git_scan_next_request_id, 1);
     assert_eq!(app.git_scan_in_flight_request_id, None);
     assert!(!app.git_scan_refresh_queued);
@@ -488,7 +488,7 @@ fn current_git_scanned_event_with_scan_error_sets_failed_status() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.status, "Git scan failed: repository unavailable");
     assert_eq!(app.git_scan_in_flight_request_id, None);
     assert!(!app.git_scan_refresh_queued);
@@ -514,7 +514,7 @@ fn stale_git_scanned_event_with_scan_error_keeps_current_status() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.status, "unchanged");
 }
 
@@ -556,7 +556,7 @@ fn equivalent_root_git_scanned_event_finishes_in_flight_scan() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.git_scan_in_flight_request_id, None);
     assert!(!app.git_scan_refresh_queued);
     assert_eq!(app.git_scan_active_request_id, 1);
@@ -582,7 +582,7 @@ fn stale_git_scanned_event_from_other_workspace_does_not_clear_current_in_flight
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.git_scan_in_flight_request_id, Some(1));
     assert!(app.git_scan_refresh_queued);
     assert_eq!(app.git_scan_active_request_id, 2);
@@ -606,7 +606,7 @@ fn stale_same_root_git_scanned_event_after_reset_does_not_clear_current_in_fligh
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.git_scan_in_flight_request_id, Some(2));
     assert_eq!(app.git_scan_active_request_id, 2);
 }
@@ -685,7 +685,7 @@ fn current_workspace_tasks_loaded_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_tasks_in_flight_request_id, None);
     assert!(!app.workspace_tasks_reload_queued);
     assert_eq!(app.workspace_tasks_active_request_id, 1);
@@ -713,7 +713,7 @@ fn equivalent_root_workspace_tasks_loaded_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_tasks_in_flight_request_id, None);
     assert!(!app.workspace_tasks_reload_queued);
     assert_eq!(app.workspace_tasks_active_request_id, 1);
@@ -740,7 +740,7 @@ fn current_workspace_tasks_failed_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_tasks_in_flight_request_id, None);
     assert!(!app.workspace_tasks_reload_queued);
     assert_eq!(app.workspace_tasks_active_request_id, 1);
@@ -771,7 +771,7 @@ fn equivalent_root_workspace_tasks_failed_event_finishes_in_flight_load() {
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_tasks_in_flight_request_id, None);
     assert!(!app.workspace_tasks_reload_queued);
     assert_eq!(app.workspace_tasks_active_request_id, 1);
@@ -802,7 +802,7 @@ fn stale_workspace_tasks_loaded_event_from_other_workspace_does_not_clear_curren
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_tasks_in_flight_request_id, Some(1));
     assert!(app.workspace_tasks_reload_queued);
     assert_eq!(app.workspace_tasks_active_request_id, 2);
@@ -827,7 +827,7 @@ fn stale_same_root_workspace_tasks_loaded_event_after_reset_does_not_clear_curre
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_tasks_in_flight_request_id, Some(2));
     assert_eq!(app.workspace_tasks_active_request_id, 2);
     assert!(app.workspace_tasks.is_empty());
@@ -854,7 +854,7 @@ fn current_root_stale_workspace_tasks_loaded_event_drains_queued_reload_without_
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_tasks_active_request_id, 3);
     assert_eq!(app.workspace_tasks_in_flight_request_id, None);
     assert!(!app.workspace_tasks_reload_queued);
@@ -889,7 +889,7 @@ fn equivalent_root_stale_workspace_tasks_loaded_event_drains_queued_reload_witho
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_tasks_active_request_id, 3);
     assert_eq!(app.workspace_tasks_in_flight_request_id, None);
     assert!(!app.workspace_tasks_reload_queued);

@@ -1,17 +1,11 @@
 id = "yaml"
 display_name = "yaml-language-server"
 languages = ["yaml"]
-notes = "requires Node.js and npm"
+launch = "yaml-language-server"
+install = "npm"
+npm_fallback = "npm install -g yaml-language-server"
+reason = "requires Node.js and npm"
 
 [verify]
 command = "yaml-language-server"
 args = ["--version"]
-
-[install.windows]
-shell = "npm install -g yaml-language-server"
-
-[install.linux]
-shell = "npm install -g yaml-language-server"
-
-[install.macos]
-shell = "npm install -g yaml-language-server"

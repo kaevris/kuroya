@@ -247,7 +247,7 @@ fn status_path_matching_falls_back_to_normalized_windows_display() {
 
 #[test]
 fn stage_unstage_and_discard_accept_lexically_equivalent_paths() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-git-mutation-alias-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -460,7 +460,7 @@ fn git_snapshot_status_lookup_tracks_both_stages_for_one_path() {
 
 #[test]
 fn git_snapshot_scan_respects_status_limit() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-status-limit-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -488,7 +488,7 @@ fn git_snapshot_scan_respects_status_limit() {
 
 #[test]
 fn git_snapshot_parent_repository_policy_can_require_workspace_root() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-parent-repo-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -527,7 +527,7 @@ fn git_snapshot_parent_repository_policy_can_require_workspace_root() {
 
 #[test]
 fn scan_failure_mapping_treats_missing_repository_as_no_error() {
-    let missing = std::env::temp_dir().join(format!(
+    let missing = canonical_test_temp_dir().join(format!(
         "kuroya-scan-missing-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -545,7 +545,7 @@ fn scan_failure_mapping_treats_missing_repository_as_no_error() {
 
 #[test]
 fn scan_failure_mapping_reports_errors_with_bounded_messages() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-scan-broken-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -580,7 +580,7 @@ fn scan_failure_mapping_reports_errors_with_bounded_messages() {
 
 #[test]
 fn git_snapshot_scan_surfaces_corrupt_repository_error_without_losing_root() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-corrupt-repo-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -605,7 +605,7 @@ fn git_snapshot_scan_surfaces_corrupt_repository_error_without_losing_root() {
 
 #[test]
 fn git_snapshot_scan_of_plain_folder_has_no_scan_error() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-no-repo-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -622,7 +622,7 @@ fn git_snapshot_scan_of_plain_folder_has_no_scan_error() {
 
 #[test]
 fn path_is_committed_matches_head_tree_entries() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-path-committed-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -645,7 +645,7 @@ fn path_is_committed_matches_head_tree_entries() {
 
 #[test]
 fn git_snapshot_scan_can_ignore_submodule_modifications() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-ignore-submodules-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -708,7 +708,7 @@ fn git_snapshot_scan_can_ignore_submodule_modifications() {
 
 #[test]
 fn git_snapshot_scan_respects_submodule_detection_limit() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-detect-submodules-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -779,7 +779,7 @@ fn git_snapshot_scan_respects_submodule_detection_limit() {
 
 #[test]
 fn git_snapshot_reports_upstream_divergence() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-upstream-divergence-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -833,7 +833,7 @@ fn git_snapshot_reports_upstream_divergence() {
 
 #[test]
 fn stage_path_moves_untracked_file_to_index() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-stage-path-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -860,7 +860,7 @@ fn stage_path_moves_untracked_file_to_index() {
 
 #[test]
 fn stage_path_checks_relative_paths_against_worktree_root() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-stage-relative-path-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -882,7 +882,7 @@ fn stage_path_checks_relative_paths_against_worktree_root() {
 
 #[test]
 fn stage_path_rejects_worktree_root() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-stage-root-path-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -901,7 +901,7 @@ fn stage_path_rejects_worktree_root() {
 
 #[test]
 fn unstage_path_moves_added_file_back_to_untracked() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-unstage-path-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -924,7 +924,7 @@ fn unstage_path_moves_added_file_back_to_untracked() {
 
 #[test]
 fn discard_path_restores_modified_file_from_head() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-discard-modified-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -949,7 +949,7 @@ fn discard_path_restores_modified_file_from_head() {
 
 #[test]
 fn discard_path_removes_untracked_file() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-discard-untracked-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -969,7 +969,7 @@ fn discard_path_removes_untracked_file() {
 
 #[test]
 fn discard_path_removes_staged_added_file() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-discard-staged-added-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -990,7 +990,7 @@ fn discard_path_removes_staged_added_file() {
 
 #[test]
 fn stage_path_can_resolve_merge_conflict_by_deleting_file() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-delete-resolution-merge-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1036,7 +1036,7 @@ fn stage_path_can_resolve_merge_conflict_by_deleting_file() {
 
 #[test]
 fn stage_paths_stages_both_sides_of_an_unstaged_rename() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-git-stage-rename-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1091,7 +1091,7 @@ fn stage_paths_stages_both_sides_of_an_unstaged_rename() {
 
 #[test]
 fn unstage_paths_restores_both_sides_of_a_staged_rename() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-git-unstage-rename-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1131,7 +1131,7 @@ fn unstage_paths_restores_both_sides_of_a_staged_rename() {
 
 #[test]
 fn unstage_all_paths_unstages_a_rename_and_a_modify_together() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-git-unstage-all-rename-{}-{}",
         std::process::id(),
         unique_suffix()
@@ -1181,7 +1181,7 @@ fn unstage_all_paths_unstages_a_rename_and_a_modify_together() {
 
 #[test]
 fn stage_and_unstage_paths_keep_a_normal_modify_single_sided() {
-    let root = std::env::temp_dir().join(format!(
+    let root = canonical_test_temp_dir().join(format!(
         "kuroya-git-stage-normal-modify-{}-{}",
         std::process::id(),
         unique_suffix()

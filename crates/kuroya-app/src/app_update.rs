@@ -271,7 +271,6 @@ mod tests {
         path::PathBuf,
         time::{Duration, Instant, SystemTime, UNIX_EPOCH},
     };
-    use tokio::runtime::Runtime;
 
     #[test]
     fn shutdown_flushes_queued_session_saves_for_other_workspaces() {
@@ -745,7 +744,10 @@ mod tests {
         let (tx, rx) = crate::ui_event_channel::ui_event_channel();
         let settings = EditorSettings::default();
         let mut app = KuroyaApp::from_startup_context(AppStartupContext {
-            runtime: Runtime::new().expect("test runtime"),
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime"),
             tx,
             rx,
             workspace: Workspace::new(root.clone()),

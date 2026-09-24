@@ -100,3 +100,24 @@ fn unique_suffix() -> u128 {
         .unwrap()
         .as_nanos()
 }
+
+fn canonical_test_temp_dir() -> PathBuf {
+    #[cfg(windows)]
+    fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+        let path_text = path.as_os_str().to_string_lossy();
+        if let Some(stripped) = path_text.strip_prefix(r"\\?\UNC\") {
+            return PathBuf::from(format!(r"\\{stripped}"));
+        }
+        if let Some(stripped) = path_text.strip_prefix(r"\\?\") {
+            return PathBuf::from(stripped.to_owned());
+        }
+        path
+    }
+
+    #[cfg(not(windows))]
+    fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+        path
+    }
+
+    strip_verbatim_prefix(fs::canonicalize(std::env::temp_dir()).unwrap())
+}

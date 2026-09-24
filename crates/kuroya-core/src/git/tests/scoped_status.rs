@@ -2,7 +2,7 @@ use super::*;
 use std::collections::HashMap;
 
 fn scoped_test_root(label: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
+    canonical_test_temp_dir().join(format!(
         "kuroya-scoped-{label}-{}-{}",
         std::process::id(),
         unique_suffix()

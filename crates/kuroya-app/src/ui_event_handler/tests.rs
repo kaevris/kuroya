@@ -15,7 +15,6 @@ use std::{
     path::{Path, PathBuf},
     time::Instant,
 };
-use tokio::runtime::Runtime;
 
 fn git_branch_for_test(name: &str) -> GitBranch {
     GitBranch {
@@ -108,7 +107,10 @@ fn app_for_test(root: PathBuf) -> KuroyaApp {
     let (tx, rx) = crate::ui_event_channel::ui_event_channel();
     let settings = EditorSettings::default();
     KuroyaApp::from_startup_context(AppStartupContext {
-        runtime: Runtime::new().expect("test runtime"),
+        runtime: tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime"),
         tx,
         rx,
         workspace: Workspace::new(root.clone()),

@@ -1,17 +1,11 @@
 id = "javascript"
 display_name = "typescript-language-server"
 languages = ["javascript"]
-notes = "requires Node.js and npm; installs the TypeScript compiler the server needs"
+launch = "typescript-language-server"
+install = "npm"
+npm_fallback = "npm install -g typescript typescript-language-server"
+reason = "requires Node.js and npm"
 
 [verify]
 command = "typescript-language-server"
 args = ["--version"]
-
-[install.windows]
-shell = "npm install -g typescript typescript-language-server"
-
-[install.linux]
-shell = "npm install -g typescript typescript-language-server"
-
-[install.macos]
-shell = "npm install -g typescript typescript-language-server"

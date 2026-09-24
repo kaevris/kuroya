@@ -1,17 +1,10 @@
 id = "rust"
 display_name = "rust-analyzer"
 languages = ["rust"]
-notes = "requires rustup"
+asset = "lsp-rust-analyzer-{platform}"
+launch = "rust-analyzer"
+install = "rustup-then-repo"
 
 [verify]
 command = "rust-analyzer"
 args = ["--version"]
-
-[install.windows]
-shell = "rustup component add rust-analyzer"
-
-[install.linux]
-shell = "rustup component add rust-analyzer"
-
-[install.macos]
-shell = "rustup component add rust-analyzer"

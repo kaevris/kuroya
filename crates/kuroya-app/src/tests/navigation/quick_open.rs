@@ -1,10 +1,12 @@
 use crate::history::NavigationLocation;
+#[cfg(windows)]
+use crate::quick_open::normalize_quick_open_workspace_path;
 use crate::quick_open::{
     MAX_QUICK_OPEN_QUERY_MEMORY_CHARS, MAX_QUICK_OPEN_QUERY_PATTERN_CHARS,
     QUICK_OPEN_RESULT_LABEL_MAX_CHARS, QuickOpenMatchQuery, QuickOpenQuery,
     QuickOpenQueryMemoryEntry, normalize_quick_open_query_memory,
-    normalize_quick_open_recent_files, normalize_quick_open_workspace_path, parse_line_column,
-    parse_quick_open_query, quick_open_latest_navigation_locations_by_path, quick_open_match_score,
+    normalize_quick_open_recent_files, parse_line_column, parse_quick_open_query,
+    quick_open_latest_navigation_locations_by_path, quick_open_match_score,
     quick_open_navigation_target, quick_open_rank_score, quick_open_rank_score_with_navigation,
     quick_open_rank_score_with_open_files, quick_open_ranked_results, quick_open_relative_label,
     quick_open_result_label, quick_open_result_label_with_navigation, quick_open_target,
