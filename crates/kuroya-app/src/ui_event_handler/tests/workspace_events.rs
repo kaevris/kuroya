@@ -854,7 +854,7 @@ fn current_root_stale_workspace_tasks_loaded_event_drains_queued_reload_without_
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_tasks_active_request_id, 3);
     assert_eq!(app.workspace_tasks_in_flight_request_id, None);
     assert!(!app.workspace_tasks_reload_queued);
@@ -889,7 +889,7 @@ fn equivalent_root_stale_workspace_tasks_loaded_event_drains_queued_reload_witho
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_tasks_active_request_id, 3);
     assert_eq!(app.workspace_tasks_in_flight_request_id, None);
     assert!(!app.workspace_tasks_reload_queued);

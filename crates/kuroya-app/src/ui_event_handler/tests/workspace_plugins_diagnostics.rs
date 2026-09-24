@@ -204,7 +204,7 @@ fn current_root_stale_workspace_plugins_loaded_event_drains_queued_reload_withou
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_active_request_id, 3);
     assert_eq!(app.workspace_plugins_in_flight_request_id, None);
     assert!(!app.workspace_plugins_reload_queued);
@@ -237,7 +237,7 @@ fn equivalent_root_stale_workspace_plugins_loaded_event_drains_queued_reload_wit
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_active_request_id, 3);
     assert_eq!(app.workspace_plugins_in_flight_request_id, None);
     assert!(!app.workspace_plugins_reload_queued);
@@ -268,7 +268,7 @@ fn equivalent_root_stale_workspace_plugins_failed_event_drains_queued_reload_wit
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.workspace_plugins_active_request_id, 3);
     assert_eq!(app.workspace_plugins_in_flight_request_id, None);
     assert!(!app.workspace_plugins_reload_queued);
