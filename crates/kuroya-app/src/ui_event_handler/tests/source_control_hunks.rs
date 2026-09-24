@@ -404,7 +404,7 @@ fn equivalent_root_stale_git_hunks_failed_event_drains_queued_reload_without_app
         }
     ));
 
-    assert_eq!(app.handle_events(), 1);
+    assert_eq!(app.handle_single_event(), 1);
     assert_eq!(app.source_control_hunks_active_request_id, 3);
     assert_eq!(app.source_control_hunks_in_flight_request_id, Some(3));
     assert!(!app.source_control_hunks_reload_queued);
