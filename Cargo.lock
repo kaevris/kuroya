@@ -1625,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "kuroya-app"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "ab_glyph",
  "anyhow",
