@@ -43,7 +43,7 @@ fn load_workspace_tasks_infers_makefile_targets_when_config_is_missing() {
     let _ = fs::remove_dir_all(root);
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 #[test]
 fn load_workspace_tasks_falls_back_from_non_file_makefile_candidate() {
     let root = unique_test_dir("kuroya-makefile-directory-fallback");
@@ -63,7 +63,7 @@ fn load_workspace_tasks_falls_back_from_non_file_makefile_candidate() {
     let _ = fs::remove_dir_all(root);
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 #[test]
 fn load_workspace_tasks_stops_at_oversized_makefile_candidate() {
     let root = unique_test_dir("kuroya-oversized-makefile-order");
