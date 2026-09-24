@@ -580,7 +580,7 @@ mod tests {
         };
 
         #[cfg(not(windows))]
-        let command = Command::new("cat");
+        let mut command = Command::new("cat");
 
         let mut child = command
             .stdin(Stdio::piped())
