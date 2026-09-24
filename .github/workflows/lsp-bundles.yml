@@ -100,7 +100,7 @@ jobs:
           stage="work/gopls"
           mkdir -p "$stage"
           export GOARCH=amd64 CGO_ENABLED=0
-          go install "golang.org/x/tools/gopls@${GOPLS_VERSION}"
+          go install "golang.org/x/tools/gopls@${GOPLS_VERSION#gopls/}"
           gopath="$(go env GOPATH | tr '\\' '/')"
           cp "$gopath/bin/gopls${EXE}" "$stage/"
           "$stage/gopls${EXE}" version
