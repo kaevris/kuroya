@@ -427,6 +427,7 @@ fn draft_apply_copy_fixture() -> EditorSettings {
         status_bar_visible: false,
         devtools_verbose_logging: true,
         devtools_profiling_enabled: true,
+        perf_monitor_enabled: true,
         plugins: kuroya_core::settings::PluginSettings {
             enabled: false,
             disabled_ids: vec!["legacy.plugin".to_owned()],

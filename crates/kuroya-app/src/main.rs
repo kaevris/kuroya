@@ -176,6 +176,7 @@ mod pane_lifecycle;
 mod panel_layout;
 mod path_clipboard;
 mod path_display;
+mod perf_monitor;
 mod persistence;
 mod persistence_models;
 mod persistence_session;

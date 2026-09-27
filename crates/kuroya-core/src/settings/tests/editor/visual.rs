@@ -376,6 +376,7 @@ fn editor_visual_settings_parse_vs_code_style_values() {
              status_bar_visible = false\n\
              devtools_verbose_logging = true\n\
              devtools_profiling_enabled = true\n\
+             perf_monitor_enabled = true\n\
              line_decorations_width = 12.5\n\
              line_numbers_min_chars = 8\n\
              select_on_line_numbers = false\n\
@@ -1020,6 +1021,7 @@ fn editor_visual_settings_parse_vs_code_style_values() {
     assert!(!settings.status_bar_visible);
     assert!(settings.devtools_verbose_logging);
     assert!(settings.devtools_profiling_enabled);
+    assert!(settings.perf_monitor_enabled);
     assert_eq!(
         settings.line_decorations_width,
         EditorLineDecorationsWidth::Pixels(12.5)

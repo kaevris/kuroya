@@ -40,6 +40,7 @@ use crate::{
     merge_conflict_cache::MergeConflictCacheEntry,
     minimap::{MinimapLineLengthCache, MinimapSectionHeaderCache},
     panel_layout::PanelPlacement,
+    perf_monitor::PerfMonitor,
     persistence::{BufferHistoryState, BufferViewState, PaneBufferViewState},
     project_search_state::{ProjectSearchKey, ProjectSearchQuery},
     quick_open::QuickOpenResultsCache,
@@ -589,4 +590,5 @@ pub(crate) struct KuroyaApp {
     pub(crate) theme_preview: Option<ThemeSettings>,
     pub(crate) theme_dirty: bool,
     pub(crate) fonts_dirty: bool,
+    pub(crate) perf_monitor: PerfMonitor,
 }

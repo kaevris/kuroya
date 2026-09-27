@@ -637,6 +637,17 @@ pub(super) fn render_developer_settings(
                     );
                 });
                 ui.end_row();
+
+                ui.label("Performance monitor");
+                settings_switch(
+                    ui,
+                    &mut draft.perf_monitor_enabled,
+                    "Show a compact FPS, memory, and disk overlay in the top-right corner.",
+                )
+                .on_hover_text(
+                    "Show a compact FPS, memory, and disk overlay in the top-right corner.",
+                );
+                ui.end_row();
             });
     });
 }

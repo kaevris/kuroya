@@ -36,6 +36,7 @@ pub(super) fn apply_settings_panel_draft_with_font_paths(
     settings.status_bar_visible = draft.status_bar_visible;
     settings.devtools_verbose_logging = draft.devtools_verbose_logging;
     settings.devtools_profiling_enabled = draft.devtools_profiling_enabled;
+    settings.perf_monitor_enabled = draft.perf_monitor_enabled;
     settings.plugins = draft.plugins.clone();
     settings.discord = draft.discord.clone();
     settings.window_zoom_level = clamp_window_zoom_level(draft.window_zoom_level);

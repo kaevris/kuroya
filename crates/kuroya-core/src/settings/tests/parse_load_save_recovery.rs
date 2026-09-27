@@ -453,6 +453,7 @@ fn partial_settings_toml_uses_defaults() {
     assert!(settings.status_bar_visible);
     assert!(!settings.devtools_verbose_logging);
     assert!(!settings.devtools_profiling_enabled);
+    assert!(!settings.perf_monitor_enabled);
     assert_eq!(settings.window_zoom_level, DEFAULT_WINDOW_ZOOM_LEVEL);
     assert_eq!(settings.line_numbers, EditorLineNumbers::default());
     assert_eq!(
@@ -1120,6 +1121,24 @@ fn editor_background_image_settings_save_and_reload_preserves_values() {
         background_image_fit: EditorBackgroundImageFit::Stretch,
         background_image_position: EditorBackgroundImagePosition::Top,
         background_image_loop: false,
+        ..EditorSettings::default()
+    };
+
+    settings.save(&path).unwrap();
+
+    let loaded = EditorSettings::load_or_create(&path).unwrap();
+    assert_eq!(loaded, settings);
+    assert_no_setting_temps(&path);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn perf_monitor_setting_save_and_reload_preserves_value() {
+    let path = temp_settings_path("perf-monitor-roundtrip");
+    let root = path.parent().unwrap().parent().unwrap().to_path_buf();
+    let settings = EditorSettings {
+        perf_monitor_enabled: true,
         ..EditorSettings::default()
     };
 

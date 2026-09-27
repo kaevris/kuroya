@@ -528,6 +528,7 @@ impl KuroyaApp {
             theme_preview: None,
             theme_dirty: false,
             fonts_dirty: false,
+            perf_monitor: crate::perf_monitor::PerfMonitor::default(),
         }
     }
 }

@@ -252,6 +252,7 @@ impl Default for EditorSettings {
             status_bar_visible: true,
             devtools_verbose_logging: false,
             devtools_profiling_enabled: false,
+            perf_monitor_enabled: false,
             lsp_servers: default_server_configs(),
             lsp_suggest_missing_servers: false,
             window_zoom_level: DEFAULT_WINDOW_ZOOM_LEVEL,

@@ -107,6 +107,7 @@ impl eframe::App for KuroyaApp {
         self.render_background_image(ctx);
         self.render_main_panels(ctx);
         self.render_active_overlays(ctx);
+        self.render_perf_monitor_overlay(ctx);
         self.record_profile_mark(profiling, &mut profile_mark, "frame", "render");
         let update_duration = frame_start.elapsed();
         if profiling {
@@ -115,6 +116,7 @@ impl eframe::App for KuroyaApp {
         let startup_warmup = self.startup_repaint_warmup_active();
 
         self.record_frame_timing(update_duration);
+        self.record_perf_monitor_frame(update_duration.as_secs_f32() * 1000.0);
         self.maybe_show_gpu_acceleration_prompt();
         self.maybe_show_lsp_enable_prompt();
         let activity = RepaintFrameActivity {

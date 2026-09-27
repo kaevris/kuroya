@@ -950,6 +950,7 @@ pub struct EditorSettings {
     pub status_bar_visible: bool,
     pub devtools_verbose_logging: bool,
     pub devtools_profiling_enabled: bool,
+    pub perf_monitor_enabled: bool,
     #[serde(default = "default_server_configs")]
     pub lsp_servers: Vec<LspServerConfig>,
 
