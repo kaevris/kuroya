@@ -594,9 +594,7 @@ impl KuroyaApp {
     pub(crate) fn render_settings_panel(&mut self, ctx: &Context) {
         let mut actions = PendingSettingsPanelActions::default();
         let dismissal = PopupDismissalGuard::capture(ctx);
-        let opened_key = egui::Id::new("settings_panel_was_open_last_frame");
-        let was_open = ctx.data_mut(|data| *data.get_temp::<bool>(opened_key).get_or_insert(false));
-        if !was_open {
+        if settings_panel_render_skipped_a_pass(ctx) {
             reset_settings_panel_memory(ctx);
             self.sync_settings_panel_inputs();
         }
@@ -847,10 +845,10 @@ impl KuroyaApp {
                     if popup_button_enabled(
                         ui,
                         footer_actions_enabled && can_reset,
-                        "Reset",
+                        settings_panel_reset_button_label(),
                         PopupButtonKind::Secondary,
                     )
-                    .on_hover_text("Reset settings to defaults in the draft; Apply saves them")
+                    .on_hover_text(settings_panel_reset_button_hover_text())
                     .clicked()
                     {
                         actions.reset = true;
@@ -929,13 +927,35 @@ impl KuroyaApp {
         set_settings_panel_search_query(ctx, search_query);
         set_settings_panel_highlight_target(ctx, highlighted_target);
         set_settings_panel_pending_scroll_target(ctx, pending_scroll_target);
-        ctx.data_mut(|data| data.insert_temp(opened_key, true));
         let closed = actions.close;
         self.apply_settings_panel_actions(actions);
         if closed {
             restore_settings_panel_focus(ctx);
         }
+        record_settings_panel_render_pass(ctx);
     }
+}
+
+const SETTINGS_PANEL_LAST_RENDER_PASS_ID: &str = "settings-panel-last-render-pass";
+
+fn settings_panel_render_skipped_a_pass(ctx: &Context) -> bool {
+    let last_render_pass = ctx.data_mut(|data| {
+        *data
+            .get_temp::<u64>(egui::Id::new(SETTINGS_PANEL_LAST_RENDER_PASS_ID))
+            .get_or_insert(u64::MAX)
+    });
+    let current_pass = ctx.cumulative_pass_nr();
+    current_pass != last_render_pass.saturating_add(1)
+}
+
+fn record_settings_panel_render_pass(ctx: &Context) {
+    let current_pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new(SETTINGS_PANEL_LAST_RENDER_PASS_ID),
+            current_pass,
+        )
+    });
 }
 
 fn reset_settings_panel_memory(ctx: &Context) {
@@ -1042,6 +1062,14 @@ fn settings_panel_close_button_label(has_pending_inputs: bool) -> &'static str {
     } else {
         "Close"
     }
+}
+
+fn settings_panel_reset_button_label() -> &'static str {
+    "Reset to defaults"
+}
+
+fn settings_panel_reset_button_hover_text() -> &'static str {
+    "Stage factory defaults in the draft; Cancel reverts them and Apply saves them"
 }
 
 fn settings_panel_close_button_hover_text(has_pending_inputs: bool) -> &'static str {
@@ -1499,6 +1527,7 @@ mod tests {
         settings_panel_close_button_hover_text, settings_panel_close_button_label,
         settings_panel_confirm_discard_armed, settings_panel_escape_should_apply,
         settings_panel_footer_actions_enabled, settings_panel_navigation_enabled,
+        settings_panel_reset_button_hover_text, settings_panel_reset_button_label,
         settings_panel_search_query, settings_panel_uses_sidebar, settings_search_count_label,
         settings_search_enabled, settings_search_entry_target, settings_search_haystacks,
         settings_search_results, settings_search_selection_for_query, settings_search_token_score,
@@ -2099,6 +2128,215 @@ mod tests {
         );
         assert_eq!(app.settings_panel_draft.theme, app.settings.theme);
         assert!(!crate::workspace_state::settings_path(&root).exists());
+    }
+
+    #[test]
+    fn settings_reset_then_cancel_then_reopen_shows_no_unsaved_changes() {
+        let root = settings_test_root("settings-reset-cancel-reopen");
+        let mut app = settings_test_app(root.clone());
+        let applied_theme = kuroya_core::ThemeSettings {
+            name: "User Theme".to_owned(),
+            accent: [9, 9, 9],
+            ..kuroya_core::ThemeSettings::default()
+        };
+        app.settings.font_size = 14.0;
+        app.settings.theme = applied_theme.clone();
+        app.settings_panel_draft = app.settings.clone();
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 850.0));
+        app.settings_panel_open = true;
+
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        app.apply_settings_panel_actions(PendingSettingsPanelActions {
+            reset: true,
+            ..PendingSettingsPanelActions::default()
+        });
+        assert!(app.settings_panel_has_pending_inputs());
+        assert_eq!(
+            app.settings_panel_draft,
+            kuroya_core::EditorSettings::default()
+        );
+
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+        assert!(!app.settings_panel_open);
+
+        app.settings_panel_open = true;
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+
+        assert!(
+            !app.settings_panel_has_pending_inputs(),
+            "reopened panel must not report unsaved settings changes after reset was abandoned"
+        );
+        assert_eq!(
+            app.settings_panel_draft, app.settings,
+            "reopened draft must be restored from the applied settings"
+        );
+        assert_eq!(app.settings.font_size, 14.0);
+        assert_eq!(app.settings.theme, applied_theme);
+        assert!(!crate::workspace_state::settings_path(&root).exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn settings_reopen_after_a_bypassed_close_restores_the_applied_draft() {
+        let root = settings_test_root("settings-bypassed-close-reopen");
+        let mut app = settings_test_app(root.clone());
+        app.settings.font_size = 14.0;
+        app.settings.minimap = true;
+        app.settings_panel_draft = app.settings.clone();
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 850.0));
+        app.settings_panel_open = true;
+
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        app.apply_settings_panel_actions(PendingSettingsPanelActions {
+            reset: true,
+            ..PendingSettingsPanelActions::default()
+        });
+        assert!(app.settings_panel_has_pending_inputs());
+
+        app.settings_panel_open = false;
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                ..egui::RawInput::default()
+            },
+            |_ctx| {},
+        );
+        app.settings_panel_open = true;
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+
+        assert!(
+            !app.settings_panel_has_pending_inputs(),
+            "a reopen must restore the draft even when the close bypassed the footer funnel"
+        );
+        assert_eq!(app.settings_panel_draft, app.settings);
+        assert_eq!(app.settings_panel_draft.font_size, 14.0);
+        assert!(!crate::workspace_state::settings_path(&root).exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn settings_theme_preview_after_reset_reverts_on_cancel() {
+        let root = settings_test_root("settings-reset-theme-preview");
+        let mut app = settings_test_app(root.clone());
+        let applied_theme = kuroya_core::ThemeSettings {
+            name: "User Theme".to_owned(),
+            accent: [9, 9, 9],
+            ..kuroya_core::ThemeSettings::default()
+        };
+        app.settings.theme = applied_theme.clone();
+        app.settings_panel_draft = app.settings.clone();
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 850.0));
+        app.settings_panel_open = true;
+
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        app.apply_settings_panel_actions(PendingSettingsPanelActions {
+            reset: true,
+            ..PendingSettingsPanelActions::default()
+        });
+        app.sync_theme_preview(&ctx);
+
+        let default_theme = kuroya_core::EditorSettings::default().theme;
+        assert_eq!(app.theme_preview.as_ref(), Some(&default_theme));
+        assert_eq!(
+            ctx.style().visuals.extreme_bg_color,
+            crate::theme::theme_palette(&default_theme).background
+        );
+
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+        assert!(!app.settings_panel_open);
+
+        app.sync_theme_preview(&ctx);
+
+        assert!(app.theme_preview.is_none());
+        assert_eq!(
+            ctx.style().visuals.extreme_bg_color,
+            crate::theme::theme_palette(&applied_theme).background
+        );
+        assert_eq!(app.settings_panel_draft.theme, applied_theme);
+        assert_eq!(app.settings.theme, applied_theme);
+        assert_eq!(
+            app.settings_panel_draft, app.settings,
+            "cancel after reset must restore the whole draft from the applied settings"
+        );
+        assert!(!crate::workspace_state::settings_path(&root).exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn settings_close_after_reset_leaves_settings_toml_untouched_and_reopens_clean() {
+        let root = settings_test_root("settings-reset-close-file-untouched");
+        let applied = kuroya_core::EditorSettings {
+            font_size: 15.5,
+            minimap: true,
+            word_separators: "-._".to_owned(),
+            ..kuroya_core::EditorSettings::default()
+        };
+        let settings_path = crate::workspace_state::settings_path(&root);
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        applied.save(&settings_path).unwrap();
+        let saved_bytes = std::fs::read_to_string(&settings_path).unwrap();
+
+        let mut app = settings_test_app(root.clone());
+        app.settings = applied.clone();
+        app.settings_panel_draft = applied.clone();
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 850.0));
+        app.settings_panel_open = true;
+
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        app.apply_settings_panel_actions(PendingSettingsPanelActions {
+            reset: true,
+            ..PendingSettingsPanelActions::default()
+        });
+        assert!(app.settings_panel_has_pending_inputs());
+
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+        settings_frame(&mut app, &ctx, screen, settings_outside_click_events());
+        assert!(!app.settings_panel_open);
+        assert_eq!(
+            std::fs::read_to_string(&settings_path).unwrap(),
+            saved_bytes,
+            "abandoning a reset must not rewrite settings.toml"
+        );
+
+        app.settings_panel_open = true;
+        settings_frame(&mut app, &ctx, screen, Vec::new());
+        assert!(!app.settings_panel_has_pending_inputs());
+        assert_eq!(app.settings_panel_draft, applied);
+
+        app.reload_settings();
+        assert!(
+            !app.status.contains("kept unsaved settings changes"),
+            "a clean reopened draft must not trigger the kept-unsaved-changes note"
+        );
+        assert_eq!(app.settings, applied);
+        assert_eq!(
+            std::fs::read_to_string(&settings_path).unwrap(),
+            saved_bytes
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn settings_reset_button_label_is_distinct_from_close() {
+        assert_eq!(settings_panel_reset_button_label(), "Reset to defaults");
+        assert_eq!(
+            settings_panel_reset_button_hover_text(),
+            "Stage factory defaults in the draft; Cancel reverts them and Apply saves them"
+        );
+        assert_ne!(
+            settings_panel_reset_button_label(),
+            settings_panel_close_button_label(true)
+        );
+        assert_ne!(
+            settings_panel_reset_button_label(),
+            settings_panel_close_button_label(false)
+        );
     }
 
     fn settings_frame(

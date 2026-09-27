@@ -33,9 +33,7 @@ impl KuroyaApp {
         if actions.apply {
             self.apply_settings_panel();
         } else if actions.close {
-            self.settings_panel_open = false;
-            self.sync_settings_panel_inputs();
-            self.status = "Closed settings".to_owned();
+            self.close_settings_panel_restoring_the_applied_draft();
         } else if actions.reset {
             self.reset_settings_panel_draft();
         } else if actions.reload {
@@ -58,6 +56,12 @@ impl KuroyaApp {
         } else if let Some(status) = actions.status {
             self.status = status;
         }
+    }
+
+    fn close_settings_panel_restoring_the_applied_draft(&mut self) {
+        self.settings_panel_open = false;
+        self.sync_settings_panel_inputs();
+        self.status = "Closed settings".to_owned();
     }
 
     fn reset_settings_panel_draft(&mut self) {
@@ -428,6 +432,71 @@ mod tests {
 
         assert!(!app.settings_panel_draft_validation().has_pending_inputs());
         assert_eq!(app.status, "Settings already match defaults");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reset_settings_panel_draft_stages_defaults_and_marks_the_draft_dirty() {
+        let root = temp_root("reset-stages-defaults-dirty");
+        let applied_theme = kuroya_core::ThemeSettings {
+            name: "User Theme".to_owned(),
+            accent: [9, 9, 9],
+            ..kuroya_core::ThemeSettings::default()
+        };
+        let settings = EditorSettings {
+            font_size: 14.0,
+            minimap: true,
+            theme: applied_theme.clone(),
+            ..EditorSettings::default()
+        };
+        let mut app = app_for_test(root.clone(), settings.clone());
+        app.settings_panel_open = true;
+        app.sync_settings_panel_inputs();
+
+        app.reset_settings_panel_draft();
+
+        let defaults = EditorSettings::default();
+        assert_eq!(app.settings, settings);
+        assert_eq!(app.settings_panel_draft, defaults);
+        assert_eq!(app.settings_panel_draft.theme, defaults.theme);
+        assert!(app.settings_panel_draft_validation().has_pending_inputs());
+        assert_eq!(
+            app.status,
+            "Reset settings draft to defaults; apply to save"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cancel_after_reset_restores_the_applied_draft_and_clears_the_dirty_state() {
+        let root = temp_root("cancel-after-reset-restores");
+        let settings = EditorSettings {
+            font_size: 14.0,
+            minimap: true,
+            editor_font_path: Some("fonts/current.ttf".to_owned()),
+            ..EditorSettings::default()
+        };
+        let mut app = app_for_test(root.clone(), settings.clone());
+        app.settings_panel_open = true;
+        app.sync_settings_panel_inputs();
+
+        app.reset_settings_panel_draft();
+        assert!(app.settings_panel_draft_validation().has_pending_inputs());
+
+        app.apply_settings_panel_actions(PendingSettingsPanelActions {
+            close: true,
+            ..PendingSettingsPanelActions::default()
+        });
+
+        assert!(!app.settings_panel_open);
+        assert_eq!(
+            app.settings_panel_draft, settings,
+            "cancel must re-clone the draft from the applied settings"
+        );
+        assert_eq!(app.settings_editor_font_path, "fonts/current.ttf");
+        assert!(!app.settings_panel_has_pending_inputs());
+        assert_eq!(app.settings, settings);
+        assert_eq!(app.status, "Closed settings");
         let _ = std::fs::remove_dir_all(root);
     }
 
