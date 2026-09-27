@@ -1490,6 +1490,8 @@ fn session_without_command(id: usize, size: PtySize) -> TerminalSession {
         initial_cwd: None,
         custom_title: None,
         process_label: None,
+        launch_shell_path: None,
+        launch_shell_args: Vec::new(),
         last_process_exit_code: None,
         last_process_terminal_error: false,
         scrollback_rows: TERMINAL_SCROLLBACK_ROWS,

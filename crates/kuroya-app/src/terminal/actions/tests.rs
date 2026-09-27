@@ -771,3 +771,166 @@ fn raw_session_input_uses_clamped_active_session_and_preserves_bytes() {
         TerminalCommand::Resize(_) | TerminalCommand::Close => panic!("expected raw input"),
     }
 }
+
+#[test]
+fn terminal_profile_launch_override_prefers_explicit_profile_and_keeps_settings_default() {
+    let mut pane = pane_for_cache_tests();
+    pane.set_shell_profile(Some("pwsh.exe".to_owned()), vec!["-NoLogo".to_owned()]);
+    let profile = TerminalShellProfile {
+        label: "Command Prompt".to_owned(),
+        path: "cmd.exe".to_owned(),
+        args: Vec::new(),
+    };
+    let wsl = TerminalShellProfile {
+        label: "WSL".to_owned(),
+        path: "wsl.exe".to_owned(),
+        args: Vec::new(),
+    };
+
+    assert_eq!(
+        terminal_launch_shell_override(
+            pane.shell_path.as_deref(),
+            &pane.shell_args,
+            Some(&profile)
+        ),
+        (Some("cmd.exe".to_owned()), Vec::new())
+    );
+    assert_eq!(
+        terminal_launch_shell_override(pane.shell_path.as_deref(), &pane.shell_args, Some(&wsl)),
+        (Some("wsl.exe".to_owned()), Vec::new())
+    );
+    assert_eq!(
+        terminal_launch_shell_override(pane.shell_path.as_deref(), &pane.shell_args, None),
+        (Some("pwsh.exe".to_owned()), vec!["-NoLogo".to_owned()])
+    );
+    assert_eq!(pane.shell_path.as_deref(), Some("pwsh.exe"));
+    assert_eq!(pane.shell_args, ["-NoLogo".to_owned()]);
+}
+
+#[test]
+fn terminal_new_session_with_profile_spawns_explicit_shell_without_settings_mutation() {
+    let mut pane = pane_for_cache_tests();
+    pane.set_shell_profile(
+        Some("powershell.exe".to_owned()),
+        vec!["-NoLogo".to_owned()],
+    );
+    let shell_label_before = pane.shell_label.clone();
+    let profile = TerminalShellProfile {
+        label: "Command Prompt".to_owned(),
+        path: "cmd.exe".to_owned(),
+        args: Vec::new(),
+    };
+
+    pane.open_new_session_with_profile(&profile);
+
+    assert!(pane.visible);
+    assert_eq!(pane.sessions.len(), 1);
+    assert!(pane.sessions[0].started);
+    assert_eq!(
+        pane.sessions[0].launch_shell_path.as_deref(),
+        Some("cmd.exe")
+    );
+    assert!(pane.sessions[0].launch_shell_args.is_empty());
+    assert_eq!(pane.shell_path.as_deref(), Some("powershell.exe"));
+    assert_eq!(pane.shell_args, ["-NoLogo".to_owned()]);
+    assert_eq!(pane.shell_label, shell_label_before);
+}
+
+#[test]
+fn terminal_new_session_with_profile_respects_session_cap() {
+    let mut pane = pane_for_cache_tests();
+    for id in 1..=super::super::TERMINAL_MAX_SESSIONS {
+        let _rx = pane.add_process_session_for_test(id);
+    }
+    let profile = TerminalShellProfile {
+        label: "Command Prompt".to_owned(),
+        path: "cmd.exe".to_owned(),
+        args: Vec::new(),
+    };
+
+    pane.open_new_session_with_profile(&profile);
+
+    assert_eq!(pane.sessions.len(), super::super::TERMINAL_MAX_SESSIONS);
+    assert!(
+        !pane
+            .sessions
+            .iter()
+            .any(|session| session.launch_shell_path.as_deref() == Some("cmd.exe"))
+    );
+}
+
+#[test]
+fn terminal_restart_shell_respawns_with_session_launch_profile() {
+    let mut pane = pane_for_cache_tests();
+    let mut shell = super::super::TerminalSession::new(1, pane.last_size, pane.scrollback_rows);
+    shell.started = true;
+    shell.initial_cwd = Some(PathBuf::from("workspace/tools"));
+    shell.custom_title = Some("Tools".to_owned());
+    shell.launch_shell_path = Some("cmd.exe".to_owned());
+    shell.launch_shell_args = vec!["/Q".to_owned()];
+    pane.sessions.push(shell);
+    pane.selected_session_id = Some(1);
+
+    pane.restart_session_shell(0);
+
+    assert_eq!(pane.sessions.len(), 1);
+    assert_eq!(pane.sessions[0].id, 1);
+    assert!(pane.sessions[0].started);
+    assert_eq!(
+        pane.sessions[0].launch_shell_path.as_deref(),
+        Some("cmd.exe")
+    );
+    assert_eq!(pane.sessions[0].launch_shell_args, ["/Q".to_owned()]);
+    assert_eq!(
+        pane.sessions[0].initial_cwd.as_deref(),
+        Some(PathBuf::from("workspace/tools").as_path())
+    );
+    assert_eq!(pane.sessions[0].custom_title.as_deref(), Some("Tools"));
+    assert_eq!(pane.selected_session_id, None);
+}
+
+#[test]
+fn terminal_restart_shell_ignores_process_sessions_without_spawning() {
+    let mut pane = pane_for_cache_tests();
+    let rx = pane.add_process_session_for_test(1);
+
+    pane.restart_session_shell(0);
+
+    assert_eq!(pane.sessions.len(), 1);
+    assert_eq!(pane.sessions[0].id, 1);
+    assert!(pane.sessions[0].started);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn terminal_restart_shell_skips_sessions_with_pending_close() {
+    let mut pane = pane_for_cache_tests();
+    let mut shell = super::super::TerminalSession::new(1, pane.last_size, pane.scrollback_rows);
+    shell.launch_shell_path = Some("cmd.exe".to_owned());
+    shell
+        .close_requested
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    pane.sessions.push(shell);
+
+    pane.restart_session_shell(0);
+
+    assert_eq!(pane.sessions.len(), 1);
+    assert_eq!(pane.sessions[0].id, 1);
+    assert!(!pane.sessions[0].started);
+    assert_eq!(
+        pane.sessions[0].launch_shell_path.as_deref(),
+        Some("cmd.exe")
+    );
+}
+
+#[test]
+fn terminal_session_is_shell_distinguishes_shell_and_process_sessions() {
+    let mut pane = pane_for_cache_tests();
+    let shell = super::super::TerminalSession::new(1, pane.last_size, pane.scrollback_rows);
+    pane.sessions.push(shell);
+    let _rx = pane.add_process_session_for_test(2);
+
+    assert!(pane.session_is_shell(0));
+    assert!(!pane.session_is_shell(1));
+    assert!(!pane.session_is_shell(99));
+}

@@ -4,6 +4,7 @@ use super::{
 };
 use crate::{
     popup_buttons::{PopupButtonKind, popup_button},
+    terminal_process::cached_shell_profiles,
     ui_icons::{IconKind, icon_button, icon_label},
 };
 #[cfg(test)]
@@ -1114,6 +1115,19 @@ impl TerminalPane {
             self.open_new_session();
             ui.close();
         }
+        ui.label(RichText::new("New Terminal (Profile)").weak());
+        for profile in cached_shell_profiles() {
+            if ui
+                .add_enabled(
+                    self.can_open_session(),
+                    egui::Button::new(profile.label.as_str()),
+                )
+                .clicked()
+            {
+                self.open_new_session_with_profile(&profile);
+                ui.close();
+            }
+        }
         if ui
             .add_enabled(
                 has_session && self.can_open_session(),
@@ -1132,6 +1146,16 @@ impl TerminalPane {
             .clicked()
         {
             self.unsplit_sessions();
+            ui.close();
+        }
+        if ui
+            .add_enabled(
+                has_session && self.session_is_shell(index),
+                egui::Button::new("Restart Shell"),
+            )
+            .clicked()
+        {
+            self.restart_session_shell(index);
             ui.close();
         }
         if ui

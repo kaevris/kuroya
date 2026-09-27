@@ -1,5 +1,8 @@
 use super::TerminalPane;
-use crate::{terminal_process::TerminalCommand, terminal_support::terminal_size_from_points};
+use crate::{
+    terminal_process::{TerminalCommand, TerminalShellProfile},
+    terminal_support::terminal_size_from_points,
+};
 use egui::Modifiers;
 use kuroya_core::{
     DEFAULT_TERMINAL_FAST_SCROLL_SENSITIVITY, DEFAULT_TERMINAL_MOUSE_WHEEL_SCROLL_SENSITIVITY,
@@ -166,6 +169,28 @@ impl TerminalInputDelivery {
     fn delivered(&self) -> bool {
         matches!(self, Self::Delivered)
     }
+}
+
+pub(super) fn terminal_launch_shell_override(
+    default_shell_path: Option<&str>,
+    default_shell_args: &[String],
+    profile: Option<&TerminalShellProfile>,
+) -> (Option<String>, Vec<String>) {
+    match profile {
+        Some(profile) => (Some(profile.path.clone()), profile.args.clone()),
+        None => (
+            default_shell_path.map(str::to_owned),
+            default_shell_args.to_vec(),
+        ),
+    }
+}
+
+struct ShellRestartState {
+    session_id: usize,
+    initial_cwd: Option<std::path::PathBuf>,
+    custom_title: Option<String>,
+    shell_path: Option<String>,
+    shell_args: Vec<String>,
 }
 
 impl TerminalPane {
@@ -436,6 +461,55 @@ impl TerminalPane {
         })
     }
 
+    pub(super) fn session_is_shell(&self, index: usize) -> bool {
+        self.sessions
+            .get(index)
+            .is_some_and(|session| session.process_label.is_none())
+    }
+
+    pub(super) fn restart_session_shell(&mut self, index: usize) {
+        let Some(state) = self.shell_restart_session_state(index) else {
+            return;
+        };
+        let cwd = state.initial_cwd.unwrap_or_else(|| self.launch_cwd());
+
+        if let Some(session) = self.sessions.get_mut(index) {
+            session.close();
+        }
+        self.clear_session_scoped_state(state.session_id);
+
+        let mut session =
+            super::TerminalSession::new(state.session_id, self.last_size, self.scrollback_rows);
+        session.initial_cwd = Some(cwd.clone());
+        session.custom_title = state.custom_title;
+        session.start(
+            &cwd,
+            self.last_size,
+            state.shell_path,
+            state.shell_args,
+            self.show_exit_alert,
+            self.repaint_context.clone(),
+        );
+        if let Some(slot) = self.sessions.get_mut(index) {
+            *slot = session;
+        }
+        self.search_cache = super::TerminalSearchCache::default();
+        self.search_match = 0;
+    }
+
+    fn shell_restart_session_state(&self, index: usize) -> Option<ShellRestartState> {
+        let session = self.sessions.get(index)?;
+        (session.process_label.is_none() && !session.close_requested.load(Ordering::SeqCst)).then(
+            || ShellRestartState {
+                session_id: session.id,
+                initial_cwd: session.initial_cwd.clone(),
+                custom_title: session.custom_title.clone(),
+                shell_path: session.launch_shell_path.clone(),
+                shell_args: session.launch_shell_args.clone(),
+            },
+        )
+    }
+
     pub(crate) fn set_terminal_cwd(&mut self, terminal_cwd: Option<String>) {
         self.terminal_cwd = super::normalized_terminal_cwd(terminal_cwd);
     }
@@ -628,15 +702,38 @@ impl TerminalPane {
     }
 
     pub(super) fn open_new_session(&mut self) {
+        let (shell_path, shell_args) =
+            terminal_launch_shell_override(self.shell_path.as_deref(), &self.shell_args, None);
+        self.open_new_session_with_shell(shell_path, shell_args);
+    }
+
+    pub(super) fn open_new_session_with_profile(&mut self, profile: &TerminalShellProfile) {
+        let (shell_path, shell_args) = terminal_launch_shell_override(
+            self.shell_path.as_deref(),
+            &self.shell_args,
+            Some(profile),
+        );
+        self.open_new_session_with_shell(shell_path, shell_args);
+    }
+
+    fn open_new_session_with_shell(&mut self, shell_path: Option<String>, shell_args: Vec<String>) {
         if !self.can_open_session() {
             return;
         }
         let id = self.next_session_id;
         self.next_session_id += 1;
 
-        let session = super::TerminalSession::new(id, self.last_size, self.scrollback_rows);
+        let mut session = super::TerminalSession::new(id, self.last_size, self.scrollback_rows);
         let cwd = self.launch_cwd();
-        self.open_session_with_cwd(session, cwd);
+        session.start(
+            &cwd,
+            self.last_size,
+            shell_path,
+            shell_args,
+            self.show_exit_alert,
+            self.repaint_context.clone(),
+        );
+        self.activate_opened_session(session);
     }
 
     pub(crate) fn open_new_session_at(&mut self, cwd: std::path::PathBuf) {

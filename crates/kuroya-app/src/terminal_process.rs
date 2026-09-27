@@ -19,6 +19,7 @@ use std::{
 };
 
 pub(crate) use shell::TerminalShellProfile;
+pub(crate) use shell::cached_shell_profiles;
 pub(crate) use shell::default_shell_label;
 pub(crate) use shell::detected_shell_profiles;
 pub(crate) use shell::terminal_shell_label;

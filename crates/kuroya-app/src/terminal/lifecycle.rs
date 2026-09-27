@@ -175,6 +175,7 @@ impl TerminalSession {
         show_exit_alert: bool,
         repaint_context: Option<Context>,
     ) {
+        self.remember_shell_launch(shell_path.clone(), shell_args.clone());
         self.start_launch(
             cwd,
             initial_size,
@@ -187,6 +188,11 @@ impl TerminalSession {
             true,
             repaint_context,
         );
+    }
+
+    fn remember_shell_launch(&mut self, shell_path: Option<String>, shell_args: Vec<String>) {
+        self.launch_shell_path = shell_path;
+        self.launch_shell_args = shell_args;
     }
 
     pub(super) fn start_process(

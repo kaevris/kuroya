@@ -2,8 +2,10 @@ use crate::path_display::sanitized_display_label_cow;
 use portable_pty::CommandBuilder;
 use std::{
     borrow::Cow,
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     path::Path,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,6 +96,39 @@ pub(crate) fn detected_shell_profiles() -> Vec<TerminalShellProfile> {
     }
 }
 
+const SHELL_PROFILE_CACHE_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Default)]
+struct ShellProfileCache {
+    detected: Option<(Instant, Vec<TerminalShellProfile>)>,
+}
+
+impl ShellProfileCache {
+    fn profiles(
+        &mut self,
+        now: Instant,
+        detect: impl FnOnce() -> Vec<TerminalShellProfile>,
+    ) -> Vec<TerminalShellProfile> {
+        if let Some((refreshed_at, profiles)) = &self.detected
+            && now.saturating_duration_since(*refreshed_at) < SHELL_PROFILE_CACHE_TTL
+        {
+            return profiles.clone();
+        }
+        let profiles = detect();
+        self.detected = Some((now, profiles.clone()));
+        profiles
+    }
+}
+
+pub(crate) fn cached_shell_profiles() -> Vec<TerminalShellProfile> {
+    thread_local! {
+        static SHELL_PROFILE_CACHE: RefCell<ShellProfileCache> =
+            RefCell::new(ShellProfileCache::default());
+    }
+    SHELL_PROFILE_CACHE
+        .with_borrow_mut(|cache| cache.profiles(Instant::now(), detected_shell_profiles))
+}
+
 #[cfg(windows)]
 #[derive(Clone, Copy)]
 struct ShellProfileCandidate {
@@ -130,6 +165,11 @@ const WINDOWS_DETECTED_SHELL_CANDIDATES: &[ShellProfileCandidate] = &[
     ShellProfileCandidate {
         label: "Command Prompt",
         path: "cmd.exe",
+        args: &[],
+    },
+    ShellProfileCandidate {
+        label: "WSL",
+        path: "wsl.exe",
         args: &[],
     },
     ShellProfileCandidate {
@@ -610,6 +650,32 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn detected_windows_shell_profiles_include_wsl_when_wsl_exe_is_available() {
+        let profiles = detected_windows_shell_profiles(|program| {
+            matches!(program, "cmd.exe" | "wsl.exe").then(|| program.to_owned())
+        });
+
+        let labels = profiles
+            .iter()
+            .map(|profile| profile.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["Command Prompt", "WSL"]);
+        assert_eq!(profiles[1].path, "wsl.exe");
+        assert!(profiles[1].args.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn detected_windows_shell_profiles_hide_wsl_when_wsl_exe_is_missing() {
+        let profiles = detected_windows_shell_profiles(|program| {
+            (program == "cmd.exe").then(|| program.to_owned())
+        });
+
+        assert!(!profiles.iter().any(|profile| profile.label == "WSL"));
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_path_search_skips_duplicate_absolute_candidates_case_insensitively() {
         let path = std::ffi::OsString::from(r"C:\Tools;c:\tools");
         let mut probed = Vec::new();
@@ -749,6 +815,71 @@ mod tests {
             vec![TerminalShellProfile {
                 label: "sh".to_owned(),
                 path: "/bin/sh".to_owned(),
+                args: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn shell_profile_cache_reuses_detected_profiles_within_ttl() {
+        let mut cache = ShellProfileCache::default();
+        let now = Instant::now();
+        let mut detections = 0usize;
+
+        let first = cache.profiles(now, || {
+            detections += 1;
+            vec![TerminalShellProfile {
+                label: "Command Prompt".to_owned(),
+                path: "cmd.exe".to_owned(),
+                args: Vec::new(),
+            }]
+        });
+        let second = cache.profiles(now + Duration::from_millis(1), || {
+            detections += 1;
+            Vec::new()
+        });
+
+        assert_eq!(detections, 1);
+        assert_eq!(
+            first,
+            vec![TerminalShellProfile {
+                label: "Command Prompt".to_owned(),
+                path: "cmd.exe".to_owned(),
+                args: Vec::new(),
+            }]
+        );
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn shell_profile_cache_refreshes_detected_profiles_after_ttl_expiry() {
+        let mut cache = ShellProfileCache::default();
+        let now = Instant::now();
+        let mut detections = 0usize;
+
+        let _ = cache.profiles(now, || {
+            detections += 1;
+            vec![TerminalShellProfile {
+                label: "Command Prompt".to_owned(),
+                path: "cmd.exe".to_owned(),
+                args: Vec::new(),
+            }]
+        });
+        let refreshed = cache.profiles(now + SHELL_PROFILE_CACHE_TTL, || {
+            detections += 1;
+            vec![TerminalShellProfile {
+                label: "WSL".to_owned(),
+                path: "wsl.exe".to_owned(),
+                args: Vec::new(),
+            }]
+        });
+
+        assert_eq!(detections, 2);
+        assert_eq!(
+            refreshed,
+            vec![TerminalShellProfile {
+                label: "WSL".to_owned(),
+                path: "wsl.exe".to_owned(),
                 args: Vec::new(),
             }]
         );
