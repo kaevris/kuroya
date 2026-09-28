@@ -340,6 +340,7 @@ impl Default for EditorSettings {
             background_image_fit: EditorBackgroundImageFit::default(),
             background_image_position: EditorBackgroundImagePosition::default(),
             background_image_loop: true,
+            background_image_launch_failures: 0,
             project_index_max_files: DEFAULT_PROJECT_INDEX_MAX_FILES,
             project_index_exclude_globs: default_project_index_exclude_globs(),
             project_index_include_hidden_dirs: false,

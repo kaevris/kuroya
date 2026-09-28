@@ -6,7 +6,7 @@ use crate::{
     path_display::display_error_label_cow,
     ui_event_channel::send_critical_ui_event,
     ui_events::UiEvent,
-    workspace_state::paths_match_exact_or_lexically,
+    workspace_state::{paths_match_exact_or_lexically, settings_path},
 };
 use eframe::egui::{Context, LayerId, Painter, Rect, Ui};
 use kuroya_core::{EditorBackgroundImageScope, EditorSettings};
@@ -16,13 +16,14 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
 };
 use tokio::sync::Semaphore;
 
 const BACKGROUND_IMAGE_DECODE_CONCURRENCY: usize = 1;
 
-const BACKGROUND_IMAGE_FAILURE_COOLDOWN: Duration = Duration::from_secs(30);
+const BACKGROUND_IMAGE_LAUNCH_FAILURES_BEFORE_DISABLE: u32 = 2;
+
+const BACKGROUND_IMAGE_DISABLED_STATUS_SUFFIX: &str = "; editor background image disabled";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingBackgroundImageLoad {
@@ -34,7 +35,7 @@ pub(crate) struct BackgroundImageRuntime {
     state: Option<BackgroundImageState>,
     animation: Option<BackgroundGifAnimation>,
     pending: Option<PendingBackgroundImageLoad>,
-    failed: Option<(PathBuf, Instant)>,
+    failed: Option<PathBuf>,
     configuration_error: Option<BackgroundImageConfigurationError>,
     request_generation: Arc<AtomicU64>,
     decode_gate: Arc<Semaphore>,
@@ -95,20 +96,17 @@ impl BackgroundImageRuntime {
     }
 
     fn note_load_failure(&mut self, path: &Path) {
-        self.failed = Some((path.to_path_buf(), Instant::now()));
+        self.failed = Some(path.to_path_buf());
     }
 
     fn clear_load_failure(&mut self) {
         self.failed = None;
     }
 
-    fn load_failure_cooldown_active(&self, path: &Path) -> bool {
+    fn load_failure_latched(&self, path: &Path) -> bool {
         self.failed
             .as_ref()
-            .is_some_and(|(failed_path, failed_at)| {
-                paths_match_exact_or_lexically(failed_path, path)
-                    && failed_at.elapsed() < BACKGROUND_IMAGE_FAILURE_COOLDOWN
-            })
+            .is_some_and(|failed_path| paths_match_exact_or_lexically(failed_path, path))
     }
 }
 
@@ -165,7 +163,7 @@ impl KuroyaApp {
         if !force
             && self
                 .background_image_runtime
-                .load_failure_cooldown_active(&configured_path)
+                .load_failure_latched(&configured_path)
         {
             return;
         }
@@ -266,6 +264,12 @@ impl KuroyaApp {
         self.background_image_runtime.animation = animation;
         self.background_image_runtime.pending = None;
         self.background_image_runtime.clear_load_failure();
+        if self.settings.background_image_launch_failures != 0 {
+            self.set_background_image_launch_failures(0);
+            if let Some(save_error) = self.persist_background_image_launch_state() {
+                self.status = save_error;
+            }
+        }
         true
     }
 
@@ -331,8 +335,36 @@ impl KuroyaApp {
 
         self.background_image_runtime.pending = None;
         self.background_image_runtime.note_load_failure(path);
-        self.status = background_image_load_failure_status(error);
+        let mut failures = self
+            .settings
+            .background_image_launch_failures
+            .saturating_add(1);
+        let mut status = background_image_load_failure_status(error);
+        if failures >= BACKGROUND_IMAGE_LAUNCH_FAILURES_BEFORE_DISABLE {
+            self.settings.background_image_enabled = false;
+            failures = 0;
+            status.push_str(BACKGROUND_IMAGE_DISABLED_STATUS_SUFFIX);
+        }
+        self.set_background_image_launch_failures(failures);
+        if let Some(save_error) = self.persist_background_image_launch_state() {
+            status.push_str("; ");
+            status.push_str(&save_error);
+        }
+        self.status = status;
         true
+    }
+
+    fn set_background_image_launch_failures(&mut self, failures: u32) {
+        self.settings.background_image_launch_failures = failures;
+        self.settings_panel_draft.background_image_launch_failures = failures;
+    }
+
+    fn persist_background_image_launch_state(&mut self) -> Option<String> {
+        let path = settings_path(&self.workspace.root);
+        let error = self.settings.save(&path).err()?;
+        let error = error.to_string();
+        let error = display_error_label_cow(&error);
+        Some(format!("Could not save settings: {}", error.as_ref()))
     }
 
     pub(crate) fn background_image_is_ready(&self) -> bool {
@@ -463,12 +495,13 @@ fn background_image_load_failure_status(error: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BackgroundImageRuntime, PendingBackgroundImageLoad, background_image_load_failure_status,
+        BACKGROUND_IMAGE_DISABLED_STATUS_SUFFIX, BackgroundImageRuntime,
+        PendingBackgroundImageLoad, background_image_load_failure_status,
         background_image_runtime_is_ready, configured_background_image_path,
     };
     use crate::{
         KuroyaApp, app_startup_context::AppStartupContext, background_image::BackgroundImageState,
-        image_preview::LoadedImagePreview, terminal::TerminalPane,
+        image_preview::LoadedImagePreview, terminal::TerminalPane, workspace_state::settings_path,
     };
     use image::{Rgba, RgbaImage};
     use kuroya_core::{
@@ -578,21 +611,18 @@ mod tests {
         let mut app = app_for_test(root.clone(), settings);
 
         app.sync_background_image(false);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while app.background_image_runtime.pending.is_some() && Instant::now() < deadline {
-            app.handle_events();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        app.handle_events();
+        wait_for_background_image_failure(&mut app, &missing);
 
         assert!(app.background_image_runtime.pending.is_none());
         assert!(
             app.background_image_runtime
                 .failed
                 .as_ref()
-                .is_some_and(|(path, _)| *path == missing),
+                .is_some_and(|path| *path == missing),
             "a failed load must latch the configured path"
         );
+        assert!(app.settings.background_image_enabled);
+        assert_eq!(app.settings.background_image_launch_failures, 1);
 
         for _ in 0..3 {
             app.sync_background_image(false);
@@ -613,6 +643,67 @@ mod tests {
         assert!(app.background_image_is_ready());
         assert!(app.background_image_runtime.failed.is_none());
         assert!(app.background_image_runtime.pending.is_none());
+        assert_eq!(app.settings.background_image_launch_failures, 0);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn second_consecutive_launch_disables_the_background_image_and_preserves_the_path() {
+        let root = temp_root("launch-failure-disable");
+        std::fs::create_dir_all(&root).unwrap();
+        let missing = root.join("missing.png");
+        let missing_setting = missing.display().to_string();
+
+        let settings = EditorSettings {
+            background_image_enabled: true,
+            background_image_path: Some(missing_setting.clone()),
+            ..EditorSettings::default()
+        };
+        let mut app = app_for_test(root.clone(), settings);
+        app.sync_background_image(false);
+        wait_for_background_image_failure(&mut app, &missing);
+
+        assert!(app.settings.background_image_enabled);
+        assert_eq!(app.settings.background_image_launch_failures, 1);
+        assert!(!app.status.contains("disabled"));
+
+        let persisted = EditorSettings::load_or_create_with_recovery(&settings_path(&root))
+            .unwrap()
+            .settings;
+        assert!(persisted.background_image_enabled);
+        assert_eq!(persisted.background_image_launch_failures, 1);
+
+        let mut app = app_for_test(root.clone(), persisted);
+        app.sync_background_image(false);
+        wait_for_background_image_failure(&mut app, &missing);
+
+        assert!(!app.settings.background_image_enabled);
+        assert_eq!(app.settings.background_image_launch_failures, 0);
+        assert_eq!(
+            app.settings.background_image_path.as_deref(),
+            Some(missing_setting.as_str())
+        );
+        assert!(
+            app.status
+                .ends_with(BACKGROUND_IMAGE_DISABLED_STATUS_SUFFIX)
+        );
+        assert_eq!(app.settings_panel_draft.background_image_launch_failures, 0);
+
+        for _ in 0..3 {
+            app.sync_background_image(false);
+            assert!(app.background_image_runtime.pending.is_none());
+        }
+
+        let persisted = EditorSettings::load_or_create_with_recovery(&settings_path(&root))
+            .unwrap()
+            .settings;
+        assert!(!persisted.background_image_enabled);
+        assert_eq!(persisted.background_image_launch_failures, 0);
+        assert_eq!(
+            persisted.background_image_path.as_deref(),
+            Some(missing_setting.as_str())
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -772,6 +863,27 @@ mod tests {
         } else {
             Path::new("/images").join(file_name)
         }
+    }
+
+    fn wait_for_background_image_failure(app: &mut KuroyaApp, path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.background_image_runtime.pending.is_some() && Instant::now() < deadline {
+            app.handle_events();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.handle_events();
+
+        assert!(app.background_image_runtime.pending.is_none());
+        assert!(
+            app.background_image_runtime
+                .failed
+                .as_ref()
+                .is_some_and(|failed| *failed == path)
+        );
+        assert!(
+            app.status
+                .starts_with("Could not load editor background image")
+        );
     }
 
     fn write_test_image(path: &Path, color: [u8; 4]) {

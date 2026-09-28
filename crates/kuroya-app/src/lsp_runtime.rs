@@ -411,23 +411,11 @@ impl KuroyaApp {
     ) -> usize {
         let previous_configs = lsp_server_configs_for_settings(previous_settings);
         let current_configs = lsp_server_configs_for_settings(&self.settings);
-        if previous_configs != current_configs {
-            return self.restart_lsp_clients_for_server_config_change(&current_configs);
-        }
-
-        if self.lsp_unavailable.is_empty() {
+        if previous_configs == current_configs {
             return 0;
         }
 
-        let unavailable = std::mem::take(&mut self.lsp_unavailable);
-        self.lsp_restart_attempts
-            .retain(|client_key, _| !unavailable.contains(client_key));
-        self.pending_lsp_restarts
-            .retain(|client_key, _| !unavailable.contains(client_key));
-        self.reopen_lsp_buffers_for_client_keys(
-            unavailable.iter().map(String::as_str),
-            &current_configs,
-        )
+        self.restart_lsp_clients_for_server_config_change(&current_configs)
     }
 
     fn restart_lsp_clients_for_server_config_change(

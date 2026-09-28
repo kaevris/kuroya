@@ -968,6 +968,32 @@ mod tests {
     }
 
     #[test]
+    fn reload_settings_keeps_unavailable_language_when_lsp_configs_are_unchanged() {
+        let root = temp_root("reload-lsp-unchanged-configs");
+        let settings = settings_path(&root);
+        fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        fs::write(&settings, "font_size = 22.0\n").unwrap();
+
+        let mut app = app_for_test(root.clone());
+        app.lsp_unavailable.insert("rust".to_owned());
+        app.lsp_restart_attempts.insert("rust".to_owned(), 1);
+        let pending_restart = Instant::now();
+        app.pending_lsp_restarts
+            .insert("rust".to_owned(), pending_restart);
+
+        app.reload_settings();
+
+        assert_eq!(app.settings.font_size, 22.0);
+        assert!(app.lsp_unavailable.contains("rust"));
+        assert_eq!(app.lsp_restart_attempts.get("rust").copied(), Some(1));
+        assert_eq!(
+            app.pending_lsp_restarts.get("rust").copied(),
+            Some(pending_restart)
+        );
+        remove_root(&root);
+    }
+
+    #[test]
     fn reload_settings_stops_active_lsp_clients_when_server_config_changes() {
         let root = temp_root("reload-lsp-config-change");
         let settings = settings_path(&root);

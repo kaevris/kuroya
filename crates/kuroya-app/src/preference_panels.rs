@@ -39,7 +39,7 @@ use sections::{
 
 const SETTINGS_WINDOW_PREFERRED_SIZE: [f32; 2] = [920.0, 640.0];
 const SETTINGS_WINDOW_MIN_SIZE: [f32; 2] = [380.0, 320.0];
-const SETTINGS_WINDOW_MARGIN: [f32; 2] = [48.0, 120.0];
+const SETTINGS_WINDOW_MARGIN: [f32; 2] = [48.0, 144.0];
 const SETTINGS_WIDE_LAYOUT_MIN_WIDTH: f32 = 720.0;
 const SETTINGS_SIDEBAR_WIDTH_RATIO: f32 = 0.21;
 const SETTINGS_SIDEBAR_MIN_WIDTH: f32 = 180.0;
@@ -1542,11 +1542,11 @@ mod tests {
         );
         assert_eq!(
             settings_window_size_for_available(800.0, 600.0),
-            [752.0, 480.0]
+            [752.0, 456.0]
         );
         assert_eq!(
             settings_window_size_for_available(360.0, 260.0),
-            [312.0, 140.0]
+            [312.0, 116.0]
         );
         assert_eq!(
             settings_window_size_for_available(f32::NAN, f32::INFINITY),
@@ -2584,6 +2584,37 @@ mod tests {
                 .area_rect(egui::Id::new("Settings"))
                 .unwrap_or(egui::Rect::NOTHING)
         })
+    }
+
+    #[test]
+    fn settings_window_bottom_stays_within_the_screen() {
+        let root = settings_test_root("settings-window-within-screen");
+        let mut app = settings_test_app(root.clone());
+        let ctx = egui::Context::default();
+        app.settings_panel_open = true;
+
+        for (width, height) in [(1600.0f32, 900.0f32), (1280.0, 720.0), (1600.0, 700.0)] {
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, height));
+            let mut rect = egui::Rect::NOTHING;
+            for _ in 0..4 {
+                let input = egui::RawInput {
+                    screen_rect: Some(screen),
+                    ..egui::RawInput::default()
+                };
+                let _ = ctx.run(input, |ctx| app.render_settings_panel(ctx));
+                rect = largest_settings_window_rect(&ctx);
+            }
+
+            assert!(
+                rect.is_finite() && rect.height() > 0.0,
+                "settings window must render on a {width}x{height} screen"
+            );
+            assert!(
+                rect.bottom() <= screen.bottom() && rect.right() <= screen.right(),
+                "settings window {rect:?} must stay within the {width}x{height} screen"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn settings_test_root(name: &str) -> std::path::PathBuf {

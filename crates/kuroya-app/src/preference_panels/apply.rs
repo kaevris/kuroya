@@ -52,7 +52,7 @@ impl KuroyaApp {
         }
 
         let apply_note = validation.apply_note();
-        let next_settings = validation.into_candidate();
+        let mut next_settings = validation.into_candidate();
         if next_settings == self.settings {
             self.sync_settings_panel_inputs();
             self.status = match apply_note {
@@ -125,6 +125,11 @@ impl KuroyaApp {
 
         let lsp_server_configs_changed =
             previous_settings.lsp_server_configs() != next_settings.lsp_server_configs();
+        if previous_settings.background_image_enabled != next_settings.background_image_enabled
+            || previous_settings.background_image_path != next_settings.background_image_path
+        {
+            next_settings.background_image_launch_failures = 0;
+        }
         self.settings = next_settings;
         let terminal_shell_profile_changed = previous_terminal_shell_profile
             != (
@@ -366,14 +371,6 @@ fn settings_save_success_status(
                 " LSP buffers"
             });
         }
-    } else if reopened_lsp_buffers > 0 {
-        status.push_str("; retried ");
-        status.push_str(&reopened_lsp_buffers.to_string());
-        status.push_str(if reopened_lsp_buffers == 1 {
-            " LSP buffer"
-        } else {
-            " LSP buffers"
-        });
     }
     status
 }
@@ -831,6 +828,49 @@ mod tests {
             .settings;
         assert_eq!(saved.lsp_servers, app.settings.lsp_servers);
         assert!(app.status.contains("LSP servers updated"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_with_only_a_theme_change_does_not_touch_the_lsp() {
+        let root = temp_root("theme-only-lsp-untouched");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        app.lsp_unavailable.insert("rust".to_owned());
+        app.lsp_restart_attempts.insert("rust".to_owned(), 1);
+        let pending_restart = Instant::now();
+        app.pending_lsp_restarts
+            .insert("rust".to_owned(), pending_restart);
+        let draft_theme = ThemeSettings::built_in_presets()
+            .into_iter()
+            .find(|theme| theme.name == "Graphite")
+            .expect("Graphite preset should exist");
+        app.settings_panel_draft.theme = draft_theme.clone();
+
+        app.apply_settings_panel();
+
+        assert_eq!(app.settings.theme, draft_theme);
+        assert!(app.lsp_unavailable.contains("rust"));
+        assert_eq!(app.lsp_restart_attempts.get("rust").copied(), Some(1));
+        assert_eq!(
+            app.pending_lsp_restarts.get("rust").copied(),
+            Some(pending_restart)
+        );
+        assert_eq!(app.status, "Saved settings");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn apply_settings_panel_does_not_retry_lsp_when_only_unrelated_settings_change() {
+        let root = temp_root("unrelated-change-lsp-untouched");
+        let mut app = app_for_test(root.clone(), EditorSettings::default());
+        app.lsp_unavailable.insert("rust".to_owned());
+        app.settings_panel_draft.font_size = 22.0;
+
+        app.apply_settings_panel();
+
+        assert!(app.lsp_unavailable.contains("rust"));
+        assert!(app.lsp_clients.is_empty());
+        assert_eq!(app.status, "Saved settings");
         let _ = fs::remove_dir_all(root);
     }
 

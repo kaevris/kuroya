@@ -1897,7 +1897,12 @@ fn serialized_settings_fields(settings: &EditorSettings) -> Map<String, Value> {
 }
 
 fn draft_apply_intentionally_excluded_fields() -> BTreeSet<&'static str> {
-    BTreeSet::from(["keymap", "schema_version", "updates_github_repository"])
+    BTreeSet::from([
+        "background_image_launch_failures",
+        "keymap",
+        "schema_version",
+        "updates_github_repository",
+    ])
 }
 
 fn draft_apply_intentionally_normalized_fields() -> BTreeSet<&'static str> {
