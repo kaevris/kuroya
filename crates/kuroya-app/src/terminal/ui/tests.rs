@@ -1,6 +1,6 @@
 use super::layout::{
     TERMINAL_MAX_LAYOUT_POINTS, TERMINAL_PATH_LINK_SCAN_MAX_COLUMNS,
-    TERMINAL_SPLIT_SEPARATOR_WIDTH, terminal_cell_rect,
+    TERMINAL_SPLIT_SEPARATOR_WIDTH, TERMINAL_TAB_TRASH_BUTTON_SIZE, terminal_cell_rect,
 };
 use super::*;
 use std::path::Path;
@@ -111,6 +111,8 @@ fn terminal_tab_hit_testing_prefers_the_topmost_tab_rect() {
         vec2(190.0, 32.0),
         8.0,
         TerminalTabOrientation::Horizontal,
+        TerminalTabAnchor::Left,
+        0.0,
         &[1, 2, 3],
     );
 
@@ -140,6 +142,142 @@ fn terminal_tab_hit_testing_prefers_the_topmost_tab_rect() {
         terminal_tab_session_at(&overlapping, pos2(60.0, 16.0)),
         Some(2)
     );
+}
+
+#[test]
+fn terminal_tab_rail_with_multiple_sessions_stacks_tabs_on_the_panels_right_edge() {
+    let panel_width = 800.0;
+    let panel_height = 400.0;
+    let rail_width = terminal_tab_rail_width(panel_width);
+    assert_eq!(rail_width, 210.0);
+    let rail_rect = Rect::from_min_max(
+        pos2(panel_width - rail_width, 0.0),
+        pos2(panel_width, panel_height),
+    );
+    let content_rect =
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(panel_width - rail_width, panel_height));
+
+    let tab_rects = terminal_tab_rects(
+        pos2(rail_rect.left(), rail_rect.top()),
+        vec2(rail_rect.width(), TERMINAL_TAB_HEIGHT),
+        4.0,
+        TerminalTabOrientation::Vertical,
+        TerminalTabAnchor::Right,
+        rail_rect.width(),
+        &[4, 5, 6],
+    );
+
+    assert_eq!(tab_rects.len(), 3);
+    for (index, (session_id, tab_rect)) in tab_rects.iter().enumerate() {
+        assert_eq!(*session_id, 4 + index);
+        assert!(rail_rect.contains_rect(*tab_rect));
+        assert_eq!(tab_rect.right(), rail_rect.right());
+        assert!(tab_rect.left() >= content_rect.right());
+        if index > 0 {
+            let previous_rect = tab_rects[index - 1].1;
+            assert!(previous_rect.bottom() <= tab_rect.top());
+        }
+    }
+    assert_eq!(
+        tab_rects[1].1.top() - tab_rects[0].1.bottom(),
+        tab_rects[2].1.top() - tab_rects[1].1.bottom()
+    );
+}
+
+#[test]
+fn terminal_tab_rects_right_anchor_pins_tab_edges_to_the_rail_edge() {
+    let rail_width = 210.0;
+    let tab_rects = terminal_tab_rects(
+        pos2(0.0, 0.0),
+        vec2(150.0, TERMINAL_TAB_HEIGHT),
+        4.0,
+        TerminalTabOrientation::Vertical,
+        TerminalTabAnchor::Right,
+        rail_width,
+        &[7, 9],
+    );
+
+    assert_eq!(tab_rects[0].1.left(), rail_width - 150.0);
+    assert_eq!(tab_rects[0].1.right(), rail_width);
+    assert_eq!(tab_rects[1].1.right(), rail_width);
+    assert_eq!(tab_rects[1].1.top(), tab_rects[0].1.bottom() + 4.0);
+
+    let degenerate = terminal_tab_rects(
+        pos2(f32::NAN, 0.0),
+        vec2(150.0, TERMINAL_TAB_HEIGHT),
+        4.0,
+        TerminalTabOrientation::Vertical,
+        TerminalTabAnchor::Right,
+        f32::NAN,
+        &[7],
+    );
+    assert_eq!(degenerate[0].1.left(), 0.0);
+    assert_eq!(degenerate[0].1.right(), 150.0);
+}
+
+#[test]
+fn terminal_single_session_keeps_the_compact_chip_instead_of_a_right_rail() {
+    let mut pane = TerminalPane::new(Path::new("workspace").to_path_buf(), 100, 12.0, 1.2);
+    let _commands = pane.add_process_session_for_test(1);
+
+    assert_eq!(pane.terminal_effective_tabs_rail_location(), None);
+    assert_eq!(pane.terminal_tabs_rail_location(), None);
+
+    let _commands = pane.add_process_session_for_test(2);
+    assert_eq!(
+        pane.terminal_effective_tabs_rail_location(),
+        Some(TerminalTabsLocation::Right)
+    );
+    assert!(pane.terminal_session_tabs_visible());
+
+    pane.set_tabs_enabled(false);
+    assert_eq!(pane.terminal_effective_tabs_rail_location(), None);
+    assert!(pane.terminal_active_session_dropdown_visible());
+}
+
+#[test]
+fn terminal_tab_trash_rect_only_appears_while_the_tab_is_hovered() {
+    let tab_rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(194.0, TERMINAL_TAB_HEIGHT));
+
+    let trash_rect = terminal_tab_trash_rect(tab_rect, true).expect("trash rect while hovered");
+    assert_eq!(trash_rect.width(), TERMINAL_TAB_TRASH_BUTTON_SIZE);
+    assert_eq!(trash_rect.height(), TERMINAL_TAB_TRASH_BUTTON_SIZE);
+    assert_eq!(trash_rect.center().y, tab_rect.center().y);
+    assert!(tab_rect.contains_rect(trash_rect));
+
+    assert_eq!(terminal_tab_trash_rect(tab_rect, false), None);
+    assert_eq!(
+        terminal_tab_trash_rect(Rect::from_min_size(pos2(0.0, 0.0), Vec2::ZERO), true),
+        None
+    );
+    assert_eq!(
+        terminal_tab_trash_rect(
+            Rect::from_min_size(pos2(f32::NAN, 0.0), vec2(194.0, TERMINAL_TAB_HEIGHT)),
+            true,
+        ),
+        None
+    );
+}
+
+#[test]
+fn terminal_tab_trash_sub_rect_hit_testing_is_separate_from_tab_activation() {
+    let tab_rect = Rect::from_min_size(pos2(100.0, 50.0), vec2(194.0, TERMINAL_TAB_HEIGHT));
+    let trash_rect = terminal_tab_trash_rect(tab_rect, true).expect("trash rect");
+    assert!(tab_rect.contains_rect(trash_rect));
+
+    let trash_point = trash_rect.center();
+    let tab_body_point = pos2(tab_rect.left() + 12.0, tab_rect.center().y);
+
+    assert!(terminal_tab_click_targets_trash(
+        Some(trash_rect),
+        Some(trash_point)
+    ));
+    assert!(!terminal_tab_click_targets_trash(
+        Some(trash_rect),
+        Some(tab_body_point)
+    ));
+    assert!(!terminal_tab_click_targets_trash(None, Some(trash_point)));
+    assert!(!terminal_tab_click_targets_trash(Some(trash_rect), None));
 }
 
 #[test]

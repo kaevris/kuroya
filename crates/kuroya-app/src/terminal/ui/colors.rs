@@ -2,6 +2,7 @@ use egui::{Color32, Stroke};
 
 pub(crate) const TERMINAL_TAB_ACTIVE_FILL_BLEND: f32 = 0.18;
 pub(crate) const TERMINAL_TAB_ACTIVE_STROKE_BLEND: f32 = 0.55;
+pub(super) const TERMINAL_TAB_HOVER_FILL_BLEND: f32 = 0.08;
 
 pub(super) fn terminal_tab_highlight(
     selected: bool,
@@ -19,6 +20,10 @@ pub(super) fn terminal_tab_highlight(
     } else {
         (fill, Stroke::NONE)
     }
+}
+
+pub(super) fn terminal_tab_hover_fill(fill: Color32, text_color: Color32) -> Color32 {
+    blend_color(fill, text_color, TERMINAL_TAB_HOVER_FILL_BLEND)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -17,6 +17,8 @@ pub(super) fn terminal_mouse_wheel_zoom_modifier(modifiers: egui::Modifiers) -> 
 }
 
 pub(super) const TERMINAL_TAB_HEIGHT: f32 = 32.0;
+pub(super) const TERMINAL_TAB_TRASH_BUTTON_SIZE: f32 = 20.0;
+const TERMINAL_TAB_TRASH_BUTTON_MARGIN: f32 = 4.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum TerminalTabOrientation {
@@ -24,11 +26,19 @@ pub(super) enum TerminalTabOrientation {
     Vertical,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TerminalTabAnchor {
+    Left,
+    Right,
+}
+
 pub(super) fn terminal_tab_rects(
     origin: Pos2,
     tab_size: Vec2,
     spacing: f32,
     orientation: TerminalTabOrientation,
+    anchor: TerminalTabAnchor,
+    rail_width: f32,
     session_ids: &[usize],
 ) -> Vec<(usize, Rect)> {
     session_ids
@@ -40,13 +50,50 @@ pub(super) fn terminal_tab_rects(
                     TerminalTabOrientation::Horizontal => tab_size.x + spacing,
                     TerminalTabOrientation::Vertical => tab_size.y + spacing,
                 };
+            let origin_x = bounded_terminal_layout_value(origin.x);
+            let rail_width = bounded_terminal_layout_value(rail_width);
+            let min_x = match anchor {
+                TerminalTabAnchor::Left => origin_x,
+                TerminalTabAnchor::Right => origin_x + (rail_width - tab_size.x).max(0.0),
+            };
             let min = match orientation {
-                TerminalTabOrientation::Horizontal => pos2(origin.x + offset, origin.y),
-                TerminalTabOrientation::Vertical => pos2(origin.x, origin.y + offset),
+                TerminalTabOrientation::Horizontal => pos2(min_x + offset, origin.y),
+                TerminalTabOrientation::Vertical => pos2(min_x, origin.y + offset),
             };
             (*session_id, Rect::from_min_size(min, tab_size))
         })
         .collect()
+}
+
+pub(super) fn terminal_tab_trash_rect(tab_rect: Rect, hovered: bool) -> Option<Rect> {
+    let tab_rect = terminal_normalized_rect(tab_rect)?;
+    if !hovered || tab_rect.width() <= 0.0 || tab_rect.height() <= 0.0 {
+        return None;
+    }
+
+    let size = TERMINAL_TAB_TRASH_BUTTON_SIZE
+        .min(tab_rect.width())
+        .min(tab_rect.height());
+    Some(Rect::from_center_size(
+        pos2(
+            tab_rect.right() - size * 0.5 - TERMINAL_TAB_TRASH_BUTTON_MARGIN,
+            tab_rect.center().y,
+        ),
+        vec2(size, size),
+    ))
+}
+
+pub(super) fn terminal_tab_click_targets_trash(
+    trash_rect: Option<Rect>,
+    pointer: Option<Pos2>,
+) -> bool {
+    let Some(trash_rect) = trash_rect else {
+        return false;
+    };
+    let Some(pointer) = pointer else {
+        return false;
+    };
+    terminal_rect_contains_pointer(trash_rect, pointer)
 }
 
 #[cfg(test)]

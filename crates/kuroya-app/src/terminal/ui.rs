@@ -5,7 +5,7 @@ use super::{
 use crate::{
     popup_buttons::{PopupButtonKind, popup_button},
     terminal_process::cached_shell_profiles,
-    ui_icons::{IconKind, icon_button, icon_label},
+    ui_icons::{IconKind, draw_icon, icon_button, icon_label},
 };
 use egui::pos2;
 use egui::{
@@ -14,8 +14,8 @@ use egui::{
     ViewportCommand, vec2,
 };
 use kuroya_core::{
-    Command, CommandBus, DEFAULT_TERMINAL_TABS_TITLE, TerminalMiddleClickBehavior,
-    TerminalRightClickBehavior, TerminalTabsLocation,
+    Command, CommandBus, DEFAULT_TERMINAL_TABS_TITLE, TerminalConfirmOnKill,
+    TerminalMiddleClickBehavior, TerminalRightClickBehavior, TerminalTabsLocation,
 };
 use std::{borrow::Cow, time::Duration};
 
@@ -35,7 +35,8 @@ pub(super) use colors::terminal_ansi_palette_from_colors;
 #[cfg(test)]
 use colors::terminal_background_color;
 use colors::{
-    blend_color, terminal_accent, terminal_background, terminal_muted_text, terminal_tab_highlight,
+    TERMINAL_TAB_HOVER_FILL_BLEND, blend_color, terminal_accent, terminal_background,
+    terminal_muted_text, terminal_tab_highlight, terminal_tab_hover_fill,
 };
 #[cfg(test)]
 pub(super) use colors::{
@@ -64,12 +65,13 @@ use labels::{
 #[cfg(test)]
 use layout::terminal_tab_session_at;
 use layout::{
-    TERMINAL_TAB_HEIGHT, TerminalTabOrientation, bounded_terminal_layout_size,
+    TERMINAL_TAB_HEIGHT, TerminalTabAnchor, TerminalTabOrientation, bounded_terminal_layout_size,
     bounded_terminal_layout_value, terminal_cell_position_at_pointer, terminal_content_rect,
     terminal_link_click_modifier, terminal_mouse_wheel_zoom_modifier,
     terminal_path_link_scan_allowed, terminal_rect_contains_pointer, terminal_render_grid,
     terminal_safe_cell_size, terminal_safe_font_size, terminal_split_separator_line_rect,
-    terminal_split_separator_width, terminal_tab_rects,
+    terminal_split_separator_width, terminal_tab_click_targets_trash, terminal_tab_rects,
+    terminal_tab_trash_rect,
 };
 #[cfg(test)]
 use render::TerminalRenderBaseColors;
@@ -96,6 +98,10 @@ fn terminal_tab_id(session_id: usize) -> Id {
     Id::new(("terminal-tab", session_id))
 }
 
+fn terminal_tab_trash_id(session_id: usize) -> Id {
+    Id::new(("terminal-tab-trash", session_id))
+}
+
 fn terminal_header_tab_origin(ui: &egui::Ui) -> egui::Pos2 {
     let available = ui.available_rect_before_wrap();
     let frame_height = TERMINAL_TAB_HEIGHT.max(available.height());
@@ -115,29 +121,49 @@ fn render_terminal_tab(
     shell_tooltip: &str,
     command_status: TerminalCommandStatus,
     selected: bool,
+    hovered: bool,
     fill: Color32,
     text_color: Color32,
     icon_kind: IconKind,
     icon_color: Color32,
 ) -> Response {
     let (_, _) = ui.allocate_space(tab_rect.size());
+    let trash_reserve = terminal_tab_trash_rect(tab_rect, hovered)
+        .map(|trash_rect| {
+            (tab_rect.right() - trash_rect.left())
+                .max(0.0)
+                .min(tab_rect.width().max(0.0) * 0.5)
+        })
+        .unwrap_or(0.0);
+    let content_rect = Rect::from_min_max(
+        tab_rect.min,
+        pos2(
+            (tab_rect.right() - trash_reserve).max(tab_rect.left()),
+            tab_rect.bottom(),
+        ),
+    );
+    let painter = ui.painter_at(tab_rect);
+    let rect = tab_rect.shrink(1.0);
+    let (tab_fill, tab_stroke) = terminal_tab_highlight(selected, fill, text_color);
+    let tab_fill = if hovered && !selected {
+        terminal_tab_hover_fill(tab_fill, text_color)
+    } else {
+        tab_fill
+    };
+    painter.rect_filled(rect, TERMINAL_CHROME_RADIUS, tab_fill);
+    if !tab_stroke.is_empty() {
+        painter.rect_stroke(
+            rect,
+            TERMINAL_CHROME_RADIUS,
+            tab_stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
     ui.scope_builder(
         UiBuilder::new()
-            .max_rect(tab_rect)
+            .max_rect(content_rect)
             .layout(egui::Layout::left_to_right(Align::Center)),
         |ui| {
-            let rect = tab_rect.shrink(1.0);
-            let (tab_fill, tab_stroke) = terminal_tab_highlight(selected, fill, text_color);
-            ui.painter()
-                .rect_filled(rect, TERMINAL_CHROME_RADIUS, tab_fill);
-            if !tab_stroke.is_empty() {
-                ui.painter().rect_stroke(
-                    rect,
-                    TERMINAL_CHROME_RADIUS,
-                    tab_stroke,
-                    egui::StrokeKind::Inside,
-                );
-            }
             ui.add_space(8.0);
             icon_label(ui, icon_kind, icon_color, shell_tooltip);
             terminal_command_status_dot(ui, command_status, text_color);
@@ -233,7 +259,7 @@ impl TerminalPane {
             .show(ui, |ui| {
                 ui.set_height(34.0);
                 ui.horizontal(|ui| {
-                    if self.terminal_tabs_rail_location().is_none()
+                    if self.terminal_effective_tabs_rail_location().is_none()
                         && self.terminal_session_tabs_visible()
                     {
                         let session_ids: Vec<usize> =
@@ -243,6 +269,8 @@ impl TerminalPane {
                             vec2(TERMINAL_HEADER_TAB_WIDTH, TERMINAL_TAB_HEIGHT),
                             ui.spacing().item_spacing.x,
                             TerminalTabOrientation::Horizontal,
+                            TerminalTabAnchor::Left,
+                            0.0,
                             &session_ids,
                         );
                         for (index, (session_id, tab_rect)) in tab_rects.into_iter().enumerate() {
@@ -268,6 +296,7 @@ impl TerminalPane {
                                 shell_tooltip.as_ref(),
                                 command_status,
                                 selected,
+                                false,
                                 tab_fill,
                                 text_color,
                                 tab_icon_kind,
@@ -499,6 +528,8 @@ impl TerminalPane {
             vec2(TERMINAL_HEADER_TAB_WIDTH, TERMINAL_TAB_HEIGHT),
             ui.spacing().item_spacing.x,
             TerminalTabOrientation::Horizontal,
+            TerminalTabAnchor::Left,
+            0.0,
             &[session_id],
         )
         .into_iter()
@@ -514,6 +545,7 @@ impl TerminalPane {
             shell_tooltip.as_ref(),
             command_status,
             true,
+            false,
             fill,
             text_color,
             icon_kind,
@@ -567,7 +599,7 @@ impl TerminalPane {
         command_bus: &mut CommandBus,
     ) {
         let desired_size = bounded_terminal_layout_size(desired_size);
-        let Some(location) = self.terminal_tabs_rail_location() else {
+        let Some(location) = self.terminal_effective_tabs_rail_location() else {
             self.render_terminal_screens(ui, desired_size, command_bus);
             return;
         };
@@ -632,6 +664,8 @@ impl TerminalPane {
                                 vec2(available.width(), TERMINAL_TAB_HEIGHT),
                                 ui.spacing().item_spacing.y,
                                 TerminalTabOrientation::Vertical,
+                                TerminalTabAnchor::Right,
+                                available.width(),
                                 &session_ids,
                             );
                             for (index, (session_id, tab_rect)) in tab_rects.into_iter().enumerate()
@@ -650,6 +684,8 @@ impl TerminalPane {
                                     continue;
                                 };
                                 let selected = index == self.active_session;
+                                let hovered = ui.rect_contains_pointer(tab_rect);
+                                let trash_rect = terminal_tab_trash_rect(tab_rect, hovered);
                                 let response = render_terminal_tab(
                                     ui,
                                     session_id,
@@ -658,17 +694,26 @@ impl TerminalPane {
                                     shell_tooltip.as_ref(),
                                     command_status,
                                     selected,
+                                    hovered,
                                     tab_fill,
                                     text_color,
                                     tab_icon_kind,
                                     tab_icon_color,
                                 );
-                                if response.clicked() || response.double_clicked() {
-                                    self.activate_session_tab(
-                                        index,
-                                        response.clicked(),
-                                        response.double_clicked(),
+                                if let Some(trash_rect) = trash_rect {
+                                    self.render_terminal_tab_trash_button(
+                                        ui, index, session_id, trash_rect, tab_fill, text_color,
                                     );
+                                }
+                                let click_targets_trash = terminal_tab_click_targets_trash(
+                                    trash_rect,
+                                    response.interact_pointer_pos(),
+                                );
+                                let clicked = response.clicked() && !click_targets_trash;
+                                let double_clicked =
+                                    response.double_clicked() && !click_targets_trash;
+                                if clicked || double_clicked {
+                                    self.activate_session_tab(index, clicked, double_clicked);
                                 } else if response.secondary_clicked() {
                                     self.set_active_session_without_focus(index);
                                 }
@@ -679,6 +724,58 @@ impl TerminalPane {
                         });
                 });
         });
+    }
+
+    fn render_terminal_tab_trash_button(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+        session_id: usize,
+        trash_rect: Rect,
+        tab_fill: Color32,
+        text_color: Color32,
+    ) {
+        let response = ui
+            .interact(
+                trash_rect,
+                terminal_tab_trash_id(session_id),
+                Sense::click(),
+            )
+            .on_hover_text("Kill terminal");
+        let hovered = response.contains_pointer();
+        if hovered {
+            ui.painter().rect_filled(
+                trash_rect.shrink(1.0),
+                TERMINAL_CHROME_RADIUS,
+                blend_color(tab_fill, text_color, TERMINAL_TAB_HOVER_FILL_BLEND),
+            );
+        }
+        let icon_color = if hovered {
+            text_color
+        } else {
+            blend_color(text_color, tab_fill, 0.35)
+        };
+        draw_icon(ui, trash_rect.shrink(2.0), IconKind::Trash, icon_color);
+        if response.clicked() {
+            self.request_close_session_at(index);
+        }
+    }
+
+    fn request_close_session_at(&mut self, index: usize) {
+        let Some(session) = self.sessions.get(index) else {
+            return;
+        };
+        let session_id = session.id;
+        let requires_confirmation = session.started
+            && matches!(
+                self.confirm_on_kill,
+                TerminalConfirmOnKill::Panel | TerminalConfirmOnKill::Always
+            );
+        if requires_confirmation {
+            self.pending_kill_session_id = Some(session_id);
+        } else {
+            self.close_session_by_id(session_id);
+        }
     }
 
     fn render_terminal_screens(
@@ -1682,6 +1779,15 @@ impl TerminalPane {
 impl TerminalPane {
     fn shell_label(&self) -> &str {
         &self.shell_label
+    }
+
+    fn terminal_effective_tabs_rail_location(&self) -> Option<TerminalTabsLocation> {
+        if self.sessions.len() > 1 {
+            self.terminal_session_tabs_visible()
+                .then_some(TerminalTabsLocation::Right)
+        } else {
+            self.terminal_tabs_rail_location()
+        }
     }
 
     #[cfg(test)]
