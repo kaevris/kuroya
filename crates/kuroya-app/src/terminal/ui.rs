@@ -7,11 +7,11 @@ use crate::{
     terminal_process::cached_shell_profiles,
     ui_icons::{IconKind, icon_button, icon_label},
 };
-#[cfg(test)]
 use egui::pos2;
 use egui::{
-    Align, Align2, Color32, CursorIcon, Event, FontFamily, FontId, ImeEvent, Key, PointerButton,
-    Rect, Response, RichText, Sense, Stroke, TextEdit, Vec2, ViewportCommand, vec2,
+    Align, Align2, Color32, CursorIcon, Event, FontFamily, FontId, Id, ImeEvent, Key,
+    PointerButton, Rect, Response, RichText, Sense, Stroke, TextEdit, UiBuilder, Vec2,
+    ViewportCommand, vec2,
 };
 use kuroya_core::{
     Command, CommandBus, DEFAULT_TERMINAL_TABS_TITLE, TerminalMiddleClickBehavior,
@@ -34,7 +34,9 @@ use actions::{terminal_action_button, terminal_action_button_enabled, terminal_t
 pub(super) use colors::terminal_ansi_palette_from_colors;
 #[cfg(test)]
 use colors::terminal_background_color;
-use colors::{blend_color, terminal_accent, terminal_background, terminal_muted_text};
+use colors::{
+    blend_color, terminal_accent, terminal_background, terminal_muted_text, terminal_tab_highlight,
+};
 #[cfg(test)]
 pub(super) use colors::{
     terminal_bold_foreground_color, terminal_contrast_color, terminal_foreground_color,
@@ -59,12 +61,15 @@ use labels::{
     terminal_display_label, terminal_path_label, terminal_session_label_from_display_label,
     terminal_session_sequence_title, terminal_tab_color_from_setting, terminal_template_path,
 };
+#[cfg(test)]
+use layout::terminal_tab_session_at;
 use layout::{
-    bounded_terminal_layout_size, bounded_terminal_layout_value, terminal_cell_position_at_pointer,
-    terminal_content_rect, terminal_link_click_modifier, terminal_mouse_wheel_zoom_modifier,
+    TERMINAL_TAB_HEIGHT, TerminalTabOrientation, bounded_terminal_layout_size,
+    bounded_terminal_layout_value, terminal_cell_position_at_pointer, terminal_content_rect,
+    terminal_link_click_modifier, terminal_mouse_wheel_zoom_modifier,
     terminal_path_link_scan_allowed, terminal_rect_contains_pointer, terminal_render_grid,
     terminal_safe_cell_size, terminal_safe_font_size, terminal_split_separator_line_rect,
-    terminal_split_separator_width,
+    terminal_split_separator_width, terminal_tab_rects,
 };
 #[cfg(test)]
 use render::TerminalRenderBaseColors;
@@ -84,6 +89,64 @@ use status::{
 };
 
 const TERMINAL_CHROME_RADIUS: u8 = 5;
+
+const TERMINAL_HEADER_TAB_WIDTH: f32 = 190.0;
+
+fn terminal_tab_id(session_id: usize) -> Id {
+    Id::new(("terminal-tab", session_id))
+}
+
+fn terminal_header_tab_origin(ui: &egui::Ui) -> egui::Pos2 {
+    let available = ui.available_rect_before_wrap();
+    let frame_height = TERMINAL_TAB_HEIGHT.max(available.height());
+    let frame_top =
+        (available.top() + (available.height() - frame_height) * 0.5).max(ui.cursor().top());
+    pos2(
+        ui.cursor().left(),
+        frame_top + (frame_height - TERMINAL_TAB_HEIGHT) * 0.5,
+    )
+}
+
+fn render_terminal_tab(
+    ui: &mut egui::Ui,
+    session_id: usize,
+    tab_rect: Rect,
+    label: &str,
+    shell_tooltip: &str,
+    command_status: TerminalCommandStatus,
+    selected: bool,
+    fill: Color32,
+    text_color: Color32,
+    icon_kind: IconKind,
+    icon_color: Color32,
+) -> Response {
+    let (_, _) = ui.allocate_space(tab_rect.size());
+    ui.scope_builder(
+        UiBuilder::new()
+            .max_rect(tab_rect)
+            .layout(egui::Layout::left_to_right(Align::Center)),
+        |ui| {
+            let rect = tab_rect.shrink(1.0);
+            let (tab_fill, tab_stroke) = terminal_tab_highlight(selected, fill, text_color);
+            ui.painter()
+                .rect_filled(rect, TERMINAL_CHROME_RADIUS, tab_fill);
+            if !tab_stroke.is_empty() {
+                ui.painter().rect_stroke(
+                    rect,
+                    TERMINAL_CHROME_RADIUS,
+                    tab_stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
+            ui.add_space(8.0);
+            icon_label(ui, icon_kind, icon_color, shell_tooltip);
+            terminal_command_status_dot(ui, command_status, text_color);
+            ui.label(RichText::new(label).strong().color(text_color));
+        },
+    );
+    ui.interact(tab_rect, terminal_tab_id(session_id), Sense::click())
+        .on_hover_text(terminal_profile_tab_tooltip(command_status))
+}
 
 fn terminal_input_hover_text() -> &'static str {
     "Terminal input\nRight-click for terminal actions"
@@ -173,8 +236,16 @@ impl TerminalPane {
                     if self.terminal_tabs_rail_location().is_none()
                         && self.terminal_session_tabs_visible()
                     {
-                        let session_count = self.sessions.len();
-                        for index in 0..session_count {
+                        let session_ids: Vec<usize> =
+                            self.sessions.iter().map(|session| session.id).collect();
+                        let tab_rects = terminal_tab_rects(
+                            terminal_header_tab_origin(ui),
+                            vec2(TERMINAL_HEADER_TAB_WIDTH, TERMINAL_TAB_HEIGHT),
+                            ui.spacing().item_spacing.x,
+                            TerminalTabOrientation::Horizontal,
+                            &session_ids,
+                        );
+                        for (index, (session_id, tab_rect)) in tab_rects.into_iter().enumerate() {
                             let Some((label, command_status)) =
                                 self.sessions.get(index).map(|session| {
                                     (
@@ -189,8 +260,10 @@ impl TerminalPane {
                                 continue;
                             };
                             let selected = index == self.active_session;
-                            let response = self.render_profile_tab(
+                            let response = render_terminal_tab(
                                 ui,
+                                session_id,
+                                tab_rect,
                                 label.as_ref(),
                                 shell_tooltip.as_ref(),
                                 command_status,
@@ -199,7 +272,6 @@ impl TerminalPane {
                                 text_color,
                                 tab_icon_kind,
                                 tab_icon_color,
-                                190.0,
                             );
                             if response.clicked() || response.double_clicked() {
                                 self.activate_session_tab(
@@ -401,43 +473,6 @@ impl TerminalPane {
         }
     }
 
-    fn render_profile_tab(
-        &self,
-        ui: &mut egui::Ui,
-        label: &str,
-        shell_tooltip: &str,
-        command_status: TerminalCommandStatus,
-        selected: bool,
-        fill: Color32,
-        text_color: Color32,
-        icon_kind: IconKind,
-        icon_color: Color32,
-        width: f32,
-    ) -> egui::Response {
-        let profile_response = ui.allocate_ui_with_layout(
-            vec2(width, 32.0),
-            egui::Layout::left_to_right(Align::Center),
-            |ui| {
-                let rect = ui.max_rect().shrink(1.0);
-                let tab_fill = if selected {
-                    blend_color(fill, text_color, 0.06)
-                } else {
-                    fill
-                };
-                ui.painter()
-                    .rect_filled(rect, TERMINAL_CHROME_RADIUS, tab_fill);
-
-                ui.add_space(8.0);
-                icon_label(ui, icon_kind, icon_color, shell_tooltip);
-                terminal_command_status_dot(ui, command_status, text_color);
-                ui.label(RichText::new(label).strong().color(text_color));
-            },
-        );
-        profile_response
-            .response
-            .on_hover_text(terminal_profile_tab_tooltip(command_status))
-    }
-
     fn render_active_terminal_chip(
         &mut self,
         ui: &mut egui::Ui,
@@ -450,19 +485,31 @@ impl TerminalPane {
         let Some(active) = self.active_session_index() else {
             return;
         };
-        let (label, command_status) = self
-            .sessions
-            .get(active)
-            .map(|session| {
-                (
-                    self.terminal_session_label_with_context(session, label_context),
-                    session.command_status(),
-                )
-            })
-            .unwrap_or((Cow::Borrowed("Terminal"), TerminalCommandStatus::Unknown));
+        let Some((session_id, label, command_status)) = self.sessions.get(active).map(|session| {
+            (
+                session.id,
+                self.terminal_session_label_with_context(session, label_context),
+                session.command_status(),
+            )
+        }) else {
+            return;
+        };
+        let Some((session_id, tab_rect)) = terminal_tab_rects(
+            terminal_header_tab_origin(ui),
+            vec2(TERMINAL_HEADER_TAB_WIDTH, TERMINAL_TAB_HEIGHT),
+            ui.spacing().item_spacing.x,
+            TerminalTabOrientation::Horizontal,
+            &[session_id],
+        )
+        .into_iter()
+        .next() else {
+            return;
+        };
         let shell_tooltip = label_context.shell_tooltip_label();
-        let response = self.render_profile_tab(
+        let response = render_terminal_tab(
             ui,
+            session_id,
+            tab_rect,
             label.as_ref(),
             shell_tooltip.as_ref(),
             command_status,
@@ -471,7 +518,6 @@ impl TerminalPane {
             text_color,
             icon_kind,
             icon_color,
-            190.0,
         );
         if response.clicked() || response.double_clicked() {
             self.activate_session_tab(active, response.clicked(), response.double_clicked());
@@ -578,9 +624,18 @@ impl TerminalPane {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             ui.spacing_mut().item_spacing = vec2(0.0, 4.0);
-                            let tab_width = bounded_terminal_layout_value(desired_size.x - 16.0);
-                            let session_count = self.sessions.len();
-                            for index in 0..session_count {
+                            let session_ids: Vec<usize> =
+                                self.sessions.iter().map(|session| session.id).collect();
+                            let available = ui.available_rect_before_wrap();
+                            let tab_rects = terminal_tab_rects(
+                                pos2(available.left(), available.top()),
+                                vec2(available.width(), TERMINAL_TAB_HEIGHT),
+                                ui.spacing().item_spacing.y,
+                                TerminalTabOrientation::Vertical,
+                                &session_ids,
+                            );
+                            for (index, (session_id, tab_rect)) in tab_rects.into_iter().enumerate()
+                            {
                                 let Some((label, command_status)) =
                                     self.sessions.get(index).map(|session| {
                                         (
@@ -595,8 +650,10 @@ impl TerminalPane {
                                     continue;
                                 };
                                 let selected = index == self.active_session;
-                                let response = self.render_profile_tab(
+                                let response = render_terminal_tab(
                                     ui,
+                                    session_id,
+                                    tab_rect,
                                     label.as_ref(),
                                     shell_tooltip.as_ref(),
                                     command_status,
@@ -605,7 +662,6 @@ impl TerminalPane {
                                     text_color,
                                     tab_icon_kind,
                                     tab_icon_color,
-                                    tab_width,
                                 );
                                 if response.clicked() || response.double_clicked() {
                                     self.activate_session_tab(

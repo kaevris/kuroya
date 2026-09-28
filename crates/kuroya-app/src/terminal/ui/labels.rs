@@ -187,13 +187,7 @@ fn parse_hex_color(color: &str) -> Option<Color32> {
 
 #[cfg(test)]
 pub(super) fn terminal_session_label_for_shell(id: usize, shell_label: &str) -> Cow<'_, str> {
-    let Some(label) = terminal_display_label(shell_label) else {
-        return if id == 1 {
-            Cow::Borrowed("")
-        } else {
-            Cow::Owned(id.to_string())
-        };
-    };
+    let label = terminal_display_label(shell_label).unwrap_or_default();
     terminal_session_label_from_display_label(id, label)
 }
 
@@ -201,10 +195,6 @@ pub(super) fn terminal_session_label_from_display_label(
     id: usize,
     label: Cow<'_, str>,
 ) -> Cow<'_, str> {
-    if id == 1 {
-        return label;
-    }
-
     let mut numbered_label = String::with_capacity(
         label
             .len()

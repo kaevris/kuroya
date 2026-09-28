@@ -226,9 +226,13 @@ fn detected_windows_shell_profiles(
 ) -> Vec<TerminalShellProfile> {
     let mut profiles = Vec::new();
     let mut seen_keys = BTreeSet::new();
+    let mut seen_labels = BTreeSet::new();
     for candidate in WINDOWS_DETECTED_SHELL_CANDIDATES {
         if let Some(key) = resolve_program(candidate.path) {
-            push_profile_with_key(&mut profiles, &mut seen_keys, candidate.into_profile(), key);
+            let profile = candidate.into_profile();
+            if seen_labels.insert(profile.label.clone()) {
+                push_profile_with_key(&mut profiles, &mut seen_keys, profile, key);
+            }
         }
     }
     if profiles.is_empty() {
@@ -628,6 +632,48 @@ mod tests {
             vec![shell_profile(
                 "Git Bash",
                 r"C:\Program Files\Git\bin\bash.exe",
+                &[]
+            )]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn detected_windows_shell_profiles_keep_only_the_first_git_bash_install_location() {
+        let profiles = detected_windows_shell_profiles(|program| match program {
+            r"C:\Program Files\Git\bin\bash.exe" => {
+                Some(r"C:\Program Files\Git\bin\bash.exe".to_owned())
+            }
+            r"C:\Program Files\Git\usr\bin\bash.exe" => {
+                Some(r"C:\Program Files\Git\usr\bin\bash.exe".to_owned())
+            }
+            _ => None,
+        });
+
+        let git_bash_profiles: Vec<&TerminalShellProfile> = profiles
+            .iter()
+            .filter(|profile| profile.label == "Git Bash")
+            .collect();
+        assert_eq!(git_bash_profiles.len(), 1);
+        assert_eq!(
+            git_bash_profiles[0].path,
+            r"C:\Program Files\Git\bin\bash.exe"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn detected_windows_shell_profiles_fall_back_to_git_bash_usr_bin_when_bin_is_missing() {
+        let profiles = detected_windows_shell_profiles(|program| {
+            (program == r"C:\Program Files\Git\usr\bin\bash.exe")
+                .then(|| r"C:\Program Files\Git\usr\bin\bash.exe".to_owned())
+        });
+
+        assert_eq!(
+            profiles,
+            vec![shell_profile(
+                "Git Bash",
+                r"C:\Program Files\Git\usr\bin\bash.exe",
                 &[]
             )]
         );

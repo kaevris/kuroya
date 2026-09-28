@@ -16,6 +16,51 @@ pub(super) fn terminal_mouse_wheel_zoom_modifier(modifiers: egui::Modifiers) -> 
     modifiers.command || modifiers.ctrl
 }
 
+pub(super) const TERMINAL_TAB_HEIGHT: f32 = 32.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TerminalTabOrientation {
+    Horizontal,
+    Vertical,
+}
+
+pub(super) fn terminal_tab_rects(
+    origin: Pos2,
+    tab_size: Vec2,
+    spacing: f32,
+    orientation: TerminalTabOrientation,
+    session_ids: &[usize],
+) -> Vec<(usize, Rect)> {
+    session_ids
+        .iter()
+        .enumerate()
+        .map(|(index, session_id)| {
+            let offset = index as f32
+                * match orientation {
+                    TerminalTabOrientation::Horizontal => tab_size.x + spacing,
+                    TerminalTabOrientation::Vertical => tab_size.y + spacing,
+                };
+            let min = match orientation {
+                TerminalTabOrientation::Horizontal => pos2(origin.x + offset, origin.y),
+                TerminalTabOrientation::Vertical => pos2(origin.x, origin.y + offset),
+            };
+            (*session_id, Rect::from_min_size(min, tab_size))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+pub(super) fn terminal_tab_session_at(tab_rects: &[(usize, Rect)], pointer: Pos2) -> Option<usize> {
+    if !pointer.x.is_finite() || !pointer.y.is_finite() {
+        return None;
+    }
+    tab_rects
+        .iter()
+        .rev()
+        .find(|(_, rect)| rect.contains(pointer))
+        .map(|(session_id, _)| *session_id)
+}
+
 pub(super) fn terminal_link_click_modifier(modifiers: egui::Modifiers) -> bool {
     modifiers.command || modifiers.ctrl
 }

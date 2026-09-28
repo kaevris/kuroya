@@ -1,4 +1,25 @@
-use egui::Color32;
+use egui::{Color32, Stroke};
+
+pub(crate) const TERMINAL_TAB_ACTIVE_FILL_BLEND: f32 = 0.18;
+pub(crate) const TERMINAL_TAB_ACTIVE_STROKE_BLEND: f32 = 0.55;
+
+pub(super) fn terminal_tab_highlight(
+    selected: bool,
+    fill: Color32,
+    text_color: Color32,
+) -> (Color32, Stroke) {
+    if selected {
+        (
+            blend_color(fill, text_color, TERMINAL_TAB_ACTIVE_FILL_BLEND),
+            Stroke::new(
+                1.0_f32,
+                blend_color(fill, text_color, TERMINAL_TAB_ACTIVE_STROKE_BLEND),
+            ),
+        )
+    } else {
+        (fill, Stroke::NONE)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TerminalAnsiPalette {

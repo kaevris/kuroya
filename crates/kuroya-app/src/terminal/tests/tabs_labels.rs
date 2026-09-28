@@ -244,11 +244,11 @@ fn terminal_agent_cli_title_setting_controls_tab_label() {
 
     assert_eq!(
         pane.terminal_session_label(&pane.sessions[0]),
-        "Task Runner"
+        "Task Runner 1"
     );
 
     pane.set_tabs_allow_agent_cli_title(false);
-    assert_eq!(pane.terminal_session_label(&pane.sessions[0]), "Terminal");
+    assert_eq!(pane.terminal_session_label(&pane.sessions[0]), "Terminal 1");
 }
 
 #[test]
@@ -261,7 +261,7 @@ fn terminal_session_label_sanitizes_control_and_bidi_process_label_for_display()
 
     assert_eq!(
         pane.terminal_session_label(&pane.sessions[0]),
-        "Cargo Test Build Done"
+        "Cargo Test Build Done 1"
     );
     assert_eq!(
         pane.sessions[0].process_label.as_deref(),
@@ -279,7 +279,7 @@ fn terminal_session_label_sanitizes_restored_window_title_for_display() {
 
     assert_eq!(
         pane.terminal_session_label(&pane.sessions[0]),
-        "Restored Title Done"
+        "Restored Title Done 1"
     );
     assert_eq!(
         pane.sessions[0].parser.callbacks().window_title.as_deref(),
@@ -295,7 +295,7 @@ fn terminal_session_label_ignores_executable_path_window_title() {
         Some(r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe".to_owned());
     let pane = pane_with_sessions(vec![session], size);
 
-    assert_eq!(pane.terminal_session_label(&pane.sessions[0]), "Terminal");
+    assert_eq!(pane.terminal_session_label(&pane.sessions[0]), "Terminal 1");
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn terminal_session_label_caps_process_label_for_display() {
     let label = pane.terminal_session_label(&pane.sessions[0]);
 
     assert_eq!(label.chars().count(), 120);
-    assert_eq!(label, "x".repeat(120));
+    assert_eq!(label, format!("{} 1", "x".repeat(118)));
 }
 
 #[test]

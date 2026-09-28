@@ -92,16 +92,54 @@ fn terminal_session_label_context_reuses_display_shell_label() {
 }
 
 #[test]
-fn terminal_session_label_allocates_only_when_numbered() {
+fn terminal_session_label_numbers_every_session_in_creation_order() {
     let label = terminal_session_label_for_shell(1, "Cargo Build");
 
-    assert_eq!(label.as_ref(), "Cargo Build");
-    assert!(matches!(&label, Cow::Borrowed(_)));
+    assert_eq!(label.as_ref(), "Cargo Build 1");
+    assert!(matches!(&label, Cow::Owned(_)));
 
     let label = terminal_session_label_for_shell(2, "Cargo Build");
 
     assert_eq!(label.as_ref(), "Cargo Build 2");
     assert!(matches!(&label, Cow::Owned(_)));
+}
+
+#[test]
+fn terminal_tab_hit_testing_prefers_the_topmost_tab_rect() {
+    let tab_rects = terminal_tab_rects(
+        pos2(0.0, 0.0),
+        vec2(190.0, 32.0),
+        8.0,
+        TerminalTabOrientation::Horizontal,
+        &[1, 2, 3],
+    );
+
+    assert_eq!(
+        terminal_tab_session_at(&tab_rects, pos2(10.0, 16.0)),
+        Some(1)
+    );
+    assert_eq!(
+        terminal_tab_session_at(&tab_rects, pos2(200.0, 16.0)),
+        Some(2)
+    );
+    assert_eq!(
+        terminal_tab_session_at(&tab_rects, pos2(400.0, 16.0)),
+        Some(3)
+    );
+    assert_eq!(terminal_tab_session_at(&tab_rects, pos2(400.0, 40.0)), None);
+    assert_eq!(
+        terminal_tab_session_at(&tab_rects, pos2(f32::NAN, 16.0)),
+        None
+    );
+
+    let overlapping = vec![
+        (1, Rect::from_min_size(pos2(0.0, 0.0), vec2(100.0, 32.0))),
+        (2, Rect::from_min_size(pos2(50.0, 0.0), vec2(100.0, 32.0))),
+    ];
+    assert_eq!(
+        terminal_tab_session_at(&overlapping, pos2(60.0, 16.0)),
+        Some(2)
+    );
 }
 
 #[test]
