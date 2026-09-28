@@ -10,6 +10,7 @@ pub(crate) const PERF_MONITOR_RESOURCE_SAMPLE_INTERVAL: Duration = Duration::fro
 const PERF_MONITOR_MAX_FRAME_MS: f32 = 5_000.0;
 const PERF_MONITOR_TOP_BREAKDOWN_ROWS: usize = 3;
 const PERF_MONITOR_OVERLAY_WIDTH: f32 = 252.0;
+const PERF_MONITOR_OVERLAY_ID: &str = "perf-monitor-overlay";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct PerfFrameStats {
@@ -129,6 +130,14 @@ fn nearest_rank_percentile_sorted(sorted_values: &[f32], percentile: f32) -> f32
     sorted_values[rank.saturating_sub(1).min(sorted_values.len() - 1)]
 }
 
+pub(crate) fn perf_monitor_effective_enabled(
+    applied_enabled: bool,
+    draft_enabled: bool,
+    settings_panel_open: bool,
+) -> bool {
+    applied_enabled || (settings_panel_open && draft_enabled)
+}
+
 pub(crate) fn perf_monitor_overlay_should_render(
     enabled: bool,
     frame_stats_ready: bool,
@@ -218,6 +227,7 @@ pub(crate) fn drive_label(path: &Path) -> String {
     }
     #[cfg(not(target_os = "windows"))]
     {
+        let _ = path;
         "/".to_owned()
     }
 }
@@ -362,8 +372,6 @@ unsafe extern "C" {
 
 #[cfg(all(unix, target_pointer_width = "64"))]
 fn unix_disk_used_total_bytes(path: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::ffi::OsStrExt;
-
     let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
     let mut buf = StatVfs {
         f_bsize: 0,
@@ -394,15 +402,24 @@ fn unix_disk_used_total_bytes(path: &Path) -> Option<(u64, u64)> {
 }
 
 impl KuroyaApp {
+    pub(crate) fn perf_monitor_effectively_enabled(&self) -> bool {
+        perf_monitor_effective_enabled(
+            self.settings.perf_monitor_enabled,
+            self.settings_panel_draft.perf_monitor_enabled,
+            self.settings_panel_open,
+        )
+    }
+
     pub(crate) fn record_perf_monitor_frame(&mut self, frame_ms: f32) {
-        if !self.settings.perf_monitor_enabled {
+        if !self.perf_monitor_effectively_enabled() {
             return;
         }
         self.perf_monitor.record_frame_ms(frame_ms);
     }
 
     pub(crate) fn render_perf_monitor_overlay(&mut self, ctx: &Context) {
-        if !self.settings.perf_monitor_enabled {
+        let enabled = self.perf_monitor_effectively_enabled();
+        if !enabled {
             return;
         }
         let now = Instant::now();
@@ -416,18 +433,14 @@ impl KuroyaApp {
         }
         let frame_stats = self.perf_monitor.frame_stats();
         let snapshot = self.perf_monitor.snapshot().cloned();
-        if !perf_monitor_overlay_should_render(
-            self.settings.perf_monitor_enabled,
-            frame_stats.is_some(),
-            snapshot.is_some(),
-        ) {
+        if !perf_monitor_overlay_should_render(enabled, frame_stats.is_some(), snapshot.is_some()) {
             return;
         }
         let Some(stats) = frame_stats else {
             return;
         };
         let visuals = ctx.style().visuals.clone();
-        egui::Area::new(egui::Id::new("perf-monitor-overlay"))
+        egui::Area::new(egui::Id::new(PERF_MONITOR_OVERLAY_ID))
             .order(Order::Foreground)
             .anchor(Align2::RIGHT_TOP, [-10.0, 10.0])
             .interactable(false)
@@ -470,11 +483,13 @@ impl KuroyaApp {
 #[cfg(test)]
 mod tests {
     use super::{
-        PERF_MONITOR_FRAME_WINDOW, PerfFrameStats, PerfFrameTimes, PerfMonitor, disk_line,
-        disk_used_total_bytes, drive_label, format_perf_bytes, format_perf_gigabytes, fps_line,
-        nearest_rank_percentile_sorted, perf_monitor_overlay_should_render, process_resident_bytes,
-        ram_label, resource_breakdown_rows,
+        PERF_MONITOR_FRAME_WINDOW, PERF_MONITOR_OVERLAY_ID, PerfFrameStats, PerfFrameTimes,
+        PerfMonitor, disk_line, drive_label, format_perf_bytes, format_perf_gigabytes, fps_line,
+        nearest_rank_percentile_sorted, perf_monitor_effective_enabled,
+        perf_monitor_overlay_should_render, ram_label, resource_breakdown_rows,
     };
+    #[cfg(target_os = "windows")]
+    use super::{disk_used_total_bytes, process_resident_bytes};
     use crate::KuroyaApp;
     use crate::devtools_memory::{
         BufferMemoryDiagnostics, DiagnosticMemoryDiagnostics, LspMemoryDiagnostics,
@@ -482,6 +497,7 @@ mod tests {
         SearchMemoryDiagnostics,
     };
     use crate::terminal::TerminalDiagnosticsStats;
+    use eframe::egui::{self, Context, RawInput, vec2};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -602,6 +618,18 @@ mod tests {
     }
 
     #[test]
+    fn perf_effective_enabled_previews_the_draft_only_while_the_settings_panel_is_open() {
+        assert!(perf_monitor_effective_enabled(true, false, false));
+        assert!(perf_monitor_effective_enabled(true, true, false));
+        assert!(perf_monitor_effective_enabled(true, false, true));
+        assert!(perf_monitor_effective_enabled(true, true, true));
+        assert!(perf_monitor_effective_enabled(false, true, true));
+        assert!(!perf_monitor_effective_enabled(false, false, true));
+        assert!(!perf_monitor_effective_enabled(false, true, false));
+        assert!(!perf_monitor_effective_enabled(false, false, false));
+    }
+
+    #[test]
     fn perf_monitor_refresh_cadence_is_at_most_one_hertz() {
         let mut monitor = PerfMonitor::default();
         let start = Instant::now();
@@ -715,6 +743,104 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn perf_overlay_renders_live_from_the_draft_while_the_settings_panel_is_open() {
+        let root = unique_temp_dir("perf-monitor-draft-live");
+        let mut app = app_for_test(root.clone());
+        app.settings_panel_open = true;
+        app.settings_panel_draft.perf_monitor_enabled = true;
+        app.record_perf_monitor_frame(16.0);
+
+        let ctx = render_perf_overlay_once(&mut app);
+
+        assert!(app.perf_monitor_effectively_enabled());
+        assert!(perf_overlay_visible(&ctx));
+        assert!(app.perf_monitor.snapshot().is_some());
+        assert!(!app.settings.perf_monitor_enabled);
+        assert!(!crate::workspace_state::settings_path(&root).exists());
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn perf_overlay_hides_live_when_the_draft_switch_turns_off_while_the_panel_stays_open() {
+        let root = unique_temp_dir("perf-monitor-draft-off-live");
+        let mut app = app_for_test(root.clone());
+        app.settings_panel_open = true;
+        app.settings_panel_draft.perf_monitor_enabled = true;
+        app.record_perf_monitor_frame(16.0);
+        let ctx = render_perf_overlay_once(&mut app);
+        assert!(perf_overlay_visible(&ctx));
+
+        app.settings_panel_draft.perf_monitor_enabled = false;
+        let ctx = render_perf_overlay_once(&mut app);
+
+        assert!(!app.perf_monitor_effectively_enabled());
+        assert!(!perf_overlay_visible(&ctx));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn perf_overlay_gate_reverts_to_the_applied_setting_when_the_settings_panel_closes() {
+        let root = unique_temp_dir("perf-monitor-draft-revert");
+        let mut app = app_for_test(root.clone());
+        app.settings_panel_open = true;
+        app.settings_panel_draft.perf_monitor_enabled = true;
+        app.record_perf_monitor_frame(16.0);
+        let ctx = render_perf_overlay_once(&mut app);
+        assert!(perf_overlay_visible(&ctx));
+
+        app.settings_panel_open = false;
+        app.record_perf_monitor_frame(40.0);
+        assert!(!app.perf_monitor_effectively_enabled());
+        assert_eq!(
+            app.perf_monitor
+                .frame_stats()
+                .expect("applied-only stats are kept")
+                .average_frame_ms,
+            16.0
+        );
+        let ctx = render_perf_overlay_once(&mut app);
+
+        assert!(!perf_overlay_visible(&ctx));
+        assert!(!app.settings.perf_monitor_enabled);
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn perf_overlay_gate_keeps_the_overlay_after_apply_with_the_panel_closed() {
+        let root = unique_temp_dir("perf-monitor-apply-keeps");
+        let mut app = app_for_test(root.clone());
+        app.settings.perf_monitor_enabled = true;
+        app.record_perf_monitor_frame(16.0);
+
+        let ctx = render_perf_overlay_once(&mut app);
+
+        assert!(app.perf_monitor_effectively_enabled());
+        assert!(perf_overlay_visible(&ctx));
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    fn render_perf_overlay_once(app: &mut KuroyaApp) -> Context {
+        let ctx = Context::default();
+        let input = RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                vec2(1200.0, 900.0),
+            )),
+            ..RawInput::default()
+        };
+        let _ = ctx.run(input, |ctx| app.render_perf_monitor_overlay(ctx));
+        ctx
+    }
+
+    fn perf_overlay_visible(ctx: &Context) -> bool {
+        ctx.memory(|memory| {
+            memory
+                .area_rect(egui::Id::new(PERF_MONITOR_OVERLAY_ID))
+                .is_some()
+        })
     }
 
     fn unique_temp_dir(name: &str) -> std::path::PathBuf {
