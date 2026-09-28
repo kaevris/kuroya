@@ -390,16 +390,7 @@ async fn activate_lsp_archive(
     archive_path: &Path,
     launch: &str,
 ) -> Result<PathBuf, LspInstallFailure> {
-    let entries = list_archive_entries(archive_path).await?;
-    if let Some(entry) = entries
-        .iter()
-        .find(|entry| lsp_archive_entry_escapes_target(entry))
-    {
-        return Err(LspInstallFailure::Extract {
-            detail: format!("archive entry {entry:?} escapes the install directory"),
-        });
-    }
-    extract_lsp_archive(archive_path, bundle_dir).await?;
+    extract_lsp_archive_checked(archive_path, bundle_dir).await?;
     let binary_path = lsp_bundle_binary_path(bundle_dir, launch);
     if !binary_path.is_file() {
         return Err(LspInstallFailure::Extract {
@@ -437,62 +428,21 @@ pub(crate) fn lsp_archive_entry_escapes_target(entry: &str) -> bool {
     normalized.split('/').any(|component| component == "..")
 }
 
-async fn list_archive_entries(archive_path: &Path) -> Result<Vec<String>, LspInstallFailure> {
-    #[cfg(windows)]
-    {
-        let script = format!(
-            "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::OpenRead('{}').Entries.FullName",
-            powershell_single_quoted(archive_path)
-        );
-        let output = run_windows_powershell(&script).await?;
-        if !output.status.success() {
-            return Err(LspInstallFailure::Extract {
-                detail: format!(
-                    "could not list {}: {}",
-                    archive_path.display(),
-                    windows_stderr_tail(&output)
-                ),
-            });
-        }
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::to_owned)
-            .collect())
-    }
-    #[cfg(not(windows))]
-    {
-        let output = tokio::process::Command::new("tar")
-            .args(["-tzf"])
-            .arg(archive_path)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .await
-            .map_err(|error| LspInstallFailure::Extract {
-                detail: format!("could not run tar: {error}"),
-            })?;
-        if !output.status.success() {
-            return Err(LspInstallFailure::Extract {
-                detail: format!("could not list {}", archive_path.display()),
-            });
-        }
-        Ok(String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::to_owned)
-            .collect())
-    }
-}
-
-async fn extract_lsp_archive(
+async fn extract_lsp_archive_checked(
     archive_path: &Path,
     target_dir: &Path,
 ) -> Result<(), LspInstallFailure> {
     #[cfg(windows)]
     {
-        let script = format!(
-            "Expand-Archive -LiteralPath '{}' -DestinationPath '{}' -Force",
-            powershell_single_quoted(archive_path),
-            powershell_single_quoted(target_dir)
-        );
+        let script = "Add-Type -AssemblyName System.IO.Compression.FileSystem; ".to_owned()
+            + "$zip = [System.IO.Compression.ZipFile]::OpenRead('{}'); "
+            + "$unsafe = @($zip.Entries | Where-Object { $_.FullName -match '(^|[\\\\/])\\\\..([\\\\/]|$)' -or $_.FullName -match '^[A-Za-z]:' }); "
+            + "if ($unsafe.Count -gt 0) { throw ('unsafe archive entry: ' + $unsafe[0].FullName) }; "
+            + "[System.IO.Compression.ZipFile]::ExtractToDirectory('{}', '{}'); "
+            + "$zip.Dispose()";
+        let script = script
+            .replace("{}", &powershell_single_quoted(archive_path))
+            .replace("{}", &powershell_single_quoted(target_dir));
         let output = run_windows_powershell(&script).await?;
         if !output.status.success() {
             return Err(LspInstallFailure::Extract {
@@ -507,6 +457,35 @@ async fn extract_lsp_archive(
     }
     #[cfg(not(windows))]
     {
+        let listing = tokio::process::Command::new("tar")
+            .args(["-tzf"])
+            .arg(archive_path)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await
+            .map_err(|error| LspInstallFailure::Extract {
+                detail: format!("could not run tar: {error}"),
+            })?;
+        if !listing.status.success() {
+            return Err(LspInstallFailure::Extract {
+                detail: format!("could not list {}", archive_path.display()),
+            });
+        }
+        let unsafe_entry = String::from_utf8_lossy(&listing.stdout)
+            .lines()
+            .any(|entry| {
+                entry == ".."
+                    || entry.ends_with("/..")
+                    || entry.starts_with("../")
+                    || entry.contains("/../")
+                    || entry.split('/').any(|part| part == "..")
+                    || (entry.len() >= 2 && entry.as_bytes()[1] == b':')
+            });
+        if unsafe_entry {
+            return Err(LspInstallFailure::Extract {
+                detail: "archive entry escapes the install directory".to_owned(),
+            });
+        }
         let output = tokio::process::Command::new("tar")
             .args(["-xzf"])
             .arg(archive_path)
