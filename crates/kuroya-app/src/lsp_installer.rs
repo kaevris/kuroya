@@ -4,6 +4,7 @@ use crate::{
     ui_events::UiEvent,
 };
 use anyhow::Context;
+use base64::Engine as _;
 use kuroya_core::{LspServerConfig, lsp_registry::registry_entry_for};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -528,14 +529,19 @@ async fn extract_lsp_archive(
 
 #[cfg(windows)]
 async fn run_windows_powershell(script: &str) -> Result<std::process::Output, LspInstallFailure> {
+    let utf16le: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16le);
     tokio::process::Command::new("powershell")
         .args([
             "-NoProfile",
             "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
-            "-Command",
-            script,
+            "-EncodedCommand",
+            &encoded,
         ])
         .stdin(std::process::Stdio::null())
         .output()
