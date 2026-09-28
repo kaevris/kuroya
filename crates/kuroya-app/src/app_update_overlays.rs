@@ -123,8 +123,8 @@ impl KuroyaApp {
         }
         if self.gpu_acceleration_prompt.is_some() {
             self.render_gpu_acceleration_prompt(ctx);
-            self.render_lsp_enable_prompt(ctx);
         }
+        self.render_lsp_enable_prompt(ctx);
         if self.available_update.is_some() {
             self.render_update_prompt(ctx);
         }

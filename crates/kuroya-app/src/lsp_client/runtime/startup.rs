@@ -26,6 +26,17 @@ pub(super) struct StartedLspClient {
     pub(super) sync_kind: TextDocumentSyncKindSetting,
 }
 
+fn lsp_stderr_tail_detail(stderr_log: &LspStderrLog) -> Option<String> {
+    let tail = stderr_log.tail_chars(crate::lsp_runtime::LSP_STATUS_MESSAGE_MAX_CHARS);
+    let trimmed = tail.trim();
+    let bounded: String = trimmed
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(crate::lsp_runtime::LSP_STATUS_MESSAGE_MAX_CHARS)
+        .collect();
+    (!bounded.is_empty()).then_some(bounded)
+}
+
 pub(super) async fn start_lsp_process(
     config: &LspServerConfig,
     root: &Path,
@@ -72,7 +83,13 @@ pub(super) async fn start_lsp_process(
         }
         LspStartupHandshakeResult::Failed => {
             let _ = started.child.kill().await;
-            send_lsp_stopped_status(&config.language, root, generation, None, ui_tx);
+            send_lsp_stopped_status(
+                &config.language,
+                root,
+                generation,
+                lsp_stderr_tail_detail(stderr_log).as_deref(),
+                ui_tx,
+            );
             None
         }
         LspStartupHandshakeResult::ShutdownRequested => {

@@ -105,6 +105,38 @@ impl KuroyaApp {
         self.status_toasts.truncate(MAX_TOASTS);
     }
 
+    pub(crate) fn set_status_updating_toast(&mut self, toast_prefix: &str, status: String) {
+        self.status = status.clone();
+        self.last_status = status.clone();
+        self.status_shown_since = Instant::now();
+
+        let message = status_bar_message(&status).to_string();
+        if message.is_empty() {
+            return;
+        }
+        let error = status_message_is_persistent(&status);
+        let existing = self
+            .status_toasts
+            .iter_mut()
+            .find(|toast| toast.message.starts_with(toast_prefix));
+        if let Some(toast) = existing {
+            toast.message = message;
+            toast.error = error;
+            toast.created = Instant::now();
+            return;
+        }
+        self.status_toasts.insert(
+            0,
+            StatusToast {
+                id: next_toast_id(),
+                message,
+                error,
+                created: Instant::now(),
+            },
+        );
+        self.status_toasts.truncate(MAX_TOASTS);
+    }
+
     pub(crate) fn render_status_toasts(&mut self, ctx: &Context) {
         let now = Instant::now();
         self.status_toasts
@@ -284,6 +316,56 @@ mod tests {
         app.ingest_status_toast();
 
         assert_eq!(app.status_toasts.len(), 1);
+    }
+
+    #[test]
+    fn progress_statuses_update_one_download_toast_in_place() {
+        let mut app = app_for_test();
+
+        app.set_status_updating_toast(
+            "Downloading marksman…",
+            "Downloading marksman… 815 KB".to_owned(),
+        );
+        app.set_status_updating_toast(
+            "Downloading marksman…",
+            "Downloading marksman… 1.3 MB".to_owned(),
+        );
+        app.ingest_status_toast();
+
+        assert_eq!(app.status, "Downloading marksman… 1.3 MB");
+        assert_eq!(
+            app.status_toasts.len(),
+            1,
+            "download progress must update a single toast instead of stacking"
+        );
+        assert_eq!(app.status_toasts[0].message, "Downloading marksman… 1.3 MB");
+    }
+
+    #[test]
+    fn progress_statuses_keep_other_toasts_and_classify_errors() {
+        let mut app = app_for_test();
+        app.set_status_with_toast("Saved settings".to_owned());
+
+        app.set_status_updating_toast(
+            "Could not download",
+            "Could not download marksman: connection reset".to_owned(),
+        );
+        app.set_status_updating_toast(
+            "Could not download",
+            "Could not download marksman: server unreachable".to_owned(),
+        );
+
+        assert_eq!(app.status_toasts.len(), 2);
+        assert_eq!(
+            app.status,
+            "Could not download marksman: server unreachable"
+        );
+        assert_eq!(
+            app.status_toasts[0].message,
+            "Could not download marksman: server unreachable"
+        );
+        assert!(app.status_toasts[0].error);
+        assert_eq!(app.status_toasts[1].message, "Saved settings");
     }
 
     fn app_for_test() -> KuroyaApp {

@@ -435,7 +435,7 @@ impl KuroyaApp {
         self.reopen_lsp_buffers_for_client_keys(client_keys.iter().map(String::as_str), configs)
     }
 
-    fn reopen_lsp_buffers_for_client_keys<'a>(
+    pub(crate) fn reopen_lsp_buffers_for_client_keys<'a>(
         &mut self,
         client_keys: impl IntoIterator<Item = &'a str>,
         configs: &[LspServerConfig],

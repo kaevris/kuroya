@@ -246,9 +246,16 @@ pub(crate) async fn download_and_install_lsp_bundle(
         Ok(binary_path) => Ok(binary_path),
         Err(failure) => {
             let _ = std::fs::remove_file(&archive_path);
+            cleanup_failed_lsp_bundle_install(&bundle_dir, &install.launch);
             Err(failure)
         }
     }
+}
+
+fn cleanup_failed_lsp_bundle_install(bundle_dir: &Path, launch: &str) {
+    let _ = std::fs::remove_file(lsp_bundle_binary_path(bundle_dir, launch));
+    let _ = std::fs::remove_file(lsp_bundle_marker_path(bundle_dir));
+    let _ = std::fs::remove_file(lsp_bundle_part_path(bundle_dir));
 }
 
 async fn fetch_lsp_bundle_checksum(
@@ -325,6 +332,7 @@ async fn finalize_lsp_download(
                 detail: format!("checksum mismatch for {asset_name}"),
             });
         }
+        let _ = std::fs::remove_file(&archive_path);
         std::fs::rename(&part_path, &archive_path).map_err(|error| {
             LspInstallFailure::Download {
                 detail: format!("could not finalize {}: {error}", archive_path.display()),
@@ -594,10 +602,11 @@ pub(crate) fn spawn_lsp_download_progress_task(
 mod tests {
     use super::{
         InstalledLspBundle, LspInstallFailure, RepoBundleInstall, RustInstallDecision,
-        finalize_lsp_download, lsp_archive_entry_escapes_target, lsp_bundle_binary_path,
-        lsp_bundle_command_override, lsp_bundle_dir, lsp_bundles_dir, lsp_download_url_is_pinned,
-        lsp_release_asset_url, lsp_release_checksum_url, read_installed_lsp_bundle,
-        resolved_lsp_server_command, rust_install_decision, write_installed_lsp_bundle,
+        cleanup_failed_lsp_bundle_install, finalize_lsp_download, lsp_archive_entry_escapes_target,
+        lsp_bundle_binary_path, lsp_bundle_command_override, lsp_bundle_dir, lsp_bundles_dir,
+        lsp_download_url_is_pinned, lsp_release_asset_url, lsp_release_checksum_url,
+        read_installed_lsp_bundle, resolved_lsp_server_command, rust_install_decision,
+        write_installed_lsp_bundle,
     };
     use kuroya_core::{LspServerConfig, lsp_registry::registry_entry_for};
     use sha2::{Digest, Sha256};
@@ -795,6 +804,65 @@ mod tests {
         assert!(matches!(result, Err(LspInstallFailure::Download { .. })));
         assert!(!bundle_dir.join("download.part").exists());
         assert_eq!(bytes_downloaded.load(Ordering::Relaxed), 0);
+
+        fs::remove_dir_all(sandbox).unwrap();
+    }
+
+    #[test]
+    fn finalize_download_replaces_a_stale_archive_left_by_a_crashed_run() {
+        let runtime = Runtime::new().expect("test runtime");
+        let sandbox = unique_bundle_sandbox("finalize-stale-archive");
+        let bundle_dir = sandbox.join("go");
+        fs::create_dir_all(&bundle_dir).unwrap();
+        let bytes_downloaded = Arc::new(AtomicU64::new(0));
+        let body = b"fresh gopls archive";
+        let expected_checksum = format!("{:x}", Sha256::digest(body));
+        let archive_path = bundle_dir.join("lsp-gopls-windows-x64.zip");
+        fs::write(&archive_path, b"stale archive from a crashed run").unwrap();
+
+        let result = runtime.block_on(async {
+            let chunks = test_chunk_receiver(vec![Ok(body.to_vec())]).await;
+            finalize_lsp_download(
+                &bundle_dir,
+                "lsp-gopls-windows-x64.zip",
+                chunks,
+                &expected_checksum,
+                &bytes_downloaded,
+            )
+            .await
+        });
+
+        assert_eq!(result.expect("finalize should succeed"), archive_path);
+        assert_eq!(fs::read(&archive_path).unwrap(), body);
+
+        fs::remove_dir_all(sandbox).unwrap();
+    }
+
+    #[test]
+    fn failed_activation_cleanup_removes_partial_binaries_and_markers() {
+        let sandbox = unique_bundle_sandbox("activate-cleanup");
+        let bundle_dir = sandbox.join("markdown");
+        fs::create_dir_all(&bundle_dir).unwrap();
+        let binary_path = lsp_bundle_binary_path(&bundle_dir, "marksman");
+        fs::write(&binary_path, b"truncated marksman.exe").unwrap();
+        write_installed_lsp_bundle(
+            &bundle_dir,
+            &InstalledLspBundle {
+                asset: "lsp-marksman-windows-x64.zip".to_owned(),
+                launch: "marksman".to_owned(),
+            },
+        )
+        .expect("marker write should succeed");
+        fs::write(bundle_dir.join("download.part"), b"stale part").unwrap();
+
+        cleanup_failed_lsp_bundle_install(&bundle_dir, "marksman");
+
+        assert!(
+            !binary_path.exists(),
+            "a partial binary must not shadow the PATH resolution after a failed install"
+        );
+        assert!(read_installed_lsp_bundle(&bundle_dir).is_none());
+        assert!(!bundle_dir.join("download.part").exists());
 
         fs::remove_dir_all(sandbox).unwrap();
     }

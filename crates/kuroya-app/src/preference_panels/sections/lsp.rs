@@ -1,4 +1,8 @@
 use crate::{
+    lsp_enable_prompt::{
+        LspInstallAction, lsp_install_button_label, lsp_prompt_install_action,
+        request_lsp_install_from_settings,
+    },
     preference_panels::sections::{
         SETTINGS_TARGET_LSP, SettingsHighlightState, bounded_settings_text_edit_width,
         bounded_singleline_text_edit, bounded_singleline_text_edit_with_hint,
@@ -14,7 +18,8 @@ use kuroya_core::{
     MAX_EDITOR_INLAY_HINTS_FONT_SIZE, MAX_EDITOR_INLAY_HINTS_MAXIMUM_LENGTH, MAX_HOVER_DELAY_MS,
     MAX_HOVER_HIDING_DELAY_MS, MIN_EDITOR_CODE_LENS_FONT_SIZE, MIN_EDITOR_INLAY_HINTS_FONT_SIZE,
     MIN_EDITOR_INLAY_HINTS_MAXIMUM_LENGTH, MIN_HOVER_DELAY_MS, MIN_HOVER_HIDING_DELAY_MS,
-    default_lsp_server_for_language, lsp_server_matches_builtin, missing_builtin_lsp_servers,
+    default_lsp_server_for_language, lsp_registry::registry_entry_for, lsp_server_matches_builtin,
+    missing_builtin_lsp_servers,
 };
 
 pub(super) fn render_lsp_settings_with_highlight(
@@ -319,6 +324,7 @@ fn render_lsp_servers(ui: &mut egui::Ui, servers: &mut Vec<LspServerConfig>) {
 
     let mut remove_server = None;
     let mut reset_server = None;
+    let mut install_requests: Vec<String> = Vec::new();
     for (index, server) in servers.iter_mut().enumerate() {
         ui.push_id(("lsp_server", index), |ui| {
             let badge = server_badge(server);
@@ -329,11 +335,17 @@ fn render_lsp_servers(ui: &mut egui::Ui, servers: &mut Vec<LspServerConfig>) {
                 false,
             );
             let header = state.show_header(ui, |ui| {
+                let previously_enabled = server.enabled;
                 ui_switch(ui, &mut server.enabled).on_hover_text(if server.enabled {
                     "Server is enabled; disable it to keep its settings but stop using it"
                 } else {
                     "Server is disabled; switch it on to use it again"
                 });
+                if lsp_row_install_requested(previously_enabled, server)
+                    && let Some(install) = lsp_row_install_action(server)
+                {
+                    install_requests.push(install.id);
+                }
                 ui.label(if server.enabled {
                     egui::RichText::new(server_label(index, server)).strong()
                 } else {
@@ -345,6 +357,22 @@ fn render_lsp_servers(ui: &mut egui::Ui, servers: &mut Vec<LspServerConfig>) {
                             .small()
                             .color(ui.visuals().weak_text_color()),
                     );
+                }
+                if let Some(install) = lsp_row_install_action(server)
+                    && ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(lsp_install_button_label(&install)).small(),
+                            )
+                            .fill(ui.visuals().selection.bg_fill),
+                        )
+                        .on_hover_text(format!(
+                            "Download and install the built-in {} server",
+                            install.display_name
+                        ))
+                        .clicked()
+                {
+                    install_requests.push(install.id);
                 }
                 if badge == Some(LSP_BADGE_EDITED)
                     && icon_button(
@@ -412,6 +440,21 @@ fn render_lsp_servers(ui: &mut egui::Ui, servers: &mut Vec<LspServerConfig>) {
             servers[index] = default;
         }
     }
+    for language in install_requests {
+        request_lsp_install_from_settings(ui.ctx(), &language);
+    }
+}
+
+fn lsp_row_install_action(server: &LspServerConfig) -> Option<LspInstallAction> {
+    let definition = registry_entry_for(&server.language)?;
+    if server.command != definition.launch {
+        return None;
+    }
+    lsp_prompt_install_action(server)
+}
+
+fn lsp_row_install_requested(previously_enabled: bool, server: &LspServerConfig) -> bool {
+    !previously_enabled && server.enabled && lsp_row_install_action(server).is_some()
 }
 
 const LSP_BADGE_BUILTIN: &str = "built-in";
@@ -574,6 +617,49 @@ fn editor_render_validation_decorations_label(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lsp_row_install_action_targets_missing_builtin_servers_only() {
+        let markdown =
+            default_lsp_server_for_language("markdown").expect("markdown default should exist");
+        let install = lsp_row_install_action(&markdown).expect("markdown row install action");
+        assert_eq!(install.id, "markdown");
+        assert_eq!(install.display_name, "marksman");
+
+        let renamed_command = kuroya_core::LspServerConfig {
+            command: "my-own-marksman".to_owned(),
+            ..markdown.clone()
+        };
+        assert!(
+            lsp_row_install_action(&renamed_command).is_none(),
+            "customized commands never route through the built-in installer"
+        );
+
+        let present_binary = std::env::current_exe()
+            .expect("current test binary")
+            .to_string_lossy()
+            .into_owned();
+        let rust = kuroya_core::LspServerConfig {
+            command: present_binary,
+            ..default_lsp_server_for_language("rust").expect("rust default should exist")
+        };
+        assert!(
+            lsp_row_install_action(&rust).is_none(),
+            "rows that do not use the built-in launch command offer no install"
+        );
+    }
+
+    #[test]
+    fn lsp_row_install_requested_only_when_a_toggle_enables_a_missing_server() {
+        let markdown =
+            default_lsp_server_for_language("markdown").expect("markdown default should exist");
+        let mut enabled = markdown.clone();
+        enabled.enabled = true;
+
+        assert!(lsp_row_install_requested(false, &enabled));
+        assert!(!lsp_row_install_requested(true, &enabled));
+        assert!(!lsp_row_install_requested(false, &markdown));
+    }
 
     #[test]
     fn lsp_server_badges_distinguish_builtin_edited_and_custom() {

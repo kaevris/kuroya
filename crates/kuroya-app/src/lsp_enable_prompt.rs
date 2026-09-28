@@ -5,12 +5,12 @@ use crate::{
         download_and_install_lsp_bundle, lsp_bundle_command_override, rust_install_decision,
         spawn_lsp_download_progress_task,
     },
-    lsp_runtime::lsp_client_key_language,
+    lsp_runtime::{lsp_client_key, lsp_client_key_language, lsp_server_configs_for_settings},
     ui_event_channel::send_ui_event,
     ui_events::UiEvent,
     update_checker::format_byte_size,
 };
-use eframe::egui::{self, Align2, Context, RichText};
+use eframe::egui::{self, Align2, Context, Id, RichText, Vec2};
 use kuroya_core::{
     LspServerConfig, default_lsp_server_for_language, lsp_language_id_for_path,
     lsp_registry::{
@@ -26,6 +26,9 @@ use std::{
 };
 
 const LSP_INSTALL_VERIFY_TIMEOUT: Duration = Duration::from_secs(30);
+const LSP_SETTINGS_INSTALL_REQUEST_ID: &str = "lsp-settings-install-request";
+const LSP_PROMPT_CARD_ANCHOR: Vec2 = Vec2::new(-18.0, -42.0);
+const LSP_PROMPT_CARD_ANCHOR_ABOVE_GPU_PROMPT: Vec2 = Vec2::new(-18.0, -310.0);
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LspEnablePrompt {
@@ -33,6 +36,7 @@ pub(crate) struct LspEnablePrompt {
     pub(crate) command: String,
     pub(crate) file_name: String,
     pub(crate) binary_present: bool,
+    pub(crate) reoffer_missing_binary: bool,
     pub(crate) install: Option<LspInstallAction>,
     pub(crate) install_in_flight: bool,
 }
@@ -124,6 +128,48 @@ pub(crate) fn lsp_install_note(action: &LspInstallAction) -> Option<String> {
     }
 }
 
+pub(crate) fn lsp_enable_action_allowed(prompt: &LspEnablePrompt) -> bool {
+    prompt.binary_present || prompt.install.is_none()
+}
+
+pub(crate) fn lsp_enable_prompt_waits_for_update_modal(
+    update_available: bool,
+    update_install_pending: bool,
+) -> bool {
+    update_available || update_install_pending
+}
+
+pub(crate) fn lsp_enable_prompt_anchor(gpu_prompt_open: bool) -> Vec2 {
+    if gpu_prompt_open {
+        LSP_PROMPT_CARD_ANCHOR_ABOVE_GPU_PROMPT
+    } else {
+        LSP_PROMPT_CARD_ANCHOR
+    }
+}
+
+pub(crate) fn request_lsp_install_from_settings(ctx: &Context, language: &str) {
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            Id::new(LSP_SETTINGS_INSTALL_REQUEST_ID),
+            Some(language.to_owned()),
+        );
+    });
+}
+
+fn take_lsp_settings_install_request(ctx: &Context) -> Option<String> {
+    ctx.data_mut(|data| {
+        let request = data
+            .get_temp::<Option<String>>(Id::new(LSP_SETTINGS_INSTALL_REQUEST_ID))
+            .flatten();
+        data.insert_temp(Id::new(LSP_SETTINGS_INSTALL_REQUEST_ID), None::<String>);
+        request
+    })
+}
+
+pub(crate) fn lsp_settings_install_request_can_start(in_flight: &[String], language: &str) -> bool {
+    !in_flight.iter().any(|id| id == language)
+}
+
 impl KuroyaApp {
     pub(crate) fn maybe_show_lsp_enable_prompt(&mut self) {
         if self.lsp_enable_prompt.is_some() {
@@ -132,13 +178,14 @@ impl KuroyaApp {
         if !self.settings.lsp_suggest_missing_servers || !self.workspace_trusted {
             return;
         }
+        if lsp_enable_prompt_waits_for_update_modal(
+            self.available_update.is_some(),
+            self.pending_update_install.is_some(),
+        ) {
+            return;
+        }
 
-        let enabled_languages: Vec<String> = self
-            .settings
-            .lsp_server_configs()
-            .iter()
-            .map(|config| config.language.clone())
-            .collect();
+        let configured_servers = self.settings.lsp_servers.clone();
         let declined = self.lsp_enable_prompt_declined.clone();
         let Some(buffer) = self.active_buffer() else {
             return;
@@ -152,7 +199,7 @@ impl KuroyaApp {
             .map(|name| name.to_string_lossy().into_owned());
 
         let Some(language) =
-            lsp_enable_prompt_candidate(&declined, &enabled_languages, Some(&language))
+            lsp_enable_prompt_candidate(&declined, &configured_servers, Some(&language))
         else {
             return;
         };
@@ -171,26 +218,44 @@ impl KuroyaApp {
         } else {
             lsp_prompt_install_action(&default)
         };
+        let reoffer_missing_binary = !binary_present
+            && configured_servers
+                .iter()
+                .any(|server| server.language == language && server.enabled);
         self.lsp_enable_prompt = Some(LspEnablePrompt {
             language,
             command,
             file_name: file_name.unwrap_or_else(|| "This file".to_owned()),
             binary_present,
+            reoffer_missing_binary,
             install,
             install_in_flight: false,
         });
     }
 
     pub(crate) fn render_lsp_enable_prompt(&mut self, ctx: &Context) {
+        if let Some(language) = take_lsp_settings_install_request(ctx) {
+            self.start_lsp_install_from_settings(&language);
+        }
+        if lsp_enable_prompt_waits_for_update_modal(
+            self.available_update.is_some(),
+            self.pending_update_install.is_some(),
+        ) {
+            return;
+        }
         let Some(prompt) = self.lsp_enable_prompt.clone() else {
             return;
         };
 
         let mut action = LspEnablePromptAction::None;
+        let enable_allowed = lsp_enable_action_allowed(&prompt);
         let visuals = ctx.style().visuals.clone();
         egui::Area::new(egui::Id::new("lsp-enable-prompt-card"))
             .order(egui::Order::Foreground)
-            .anchor(Align2::RIGHT_BOTTOM, [-18.0, -42.0])
+            .anchor(
+                Align2::RIGHT_BOTTOM,
+                lsp_enable_prompt_anchor(self.gpu_acceleration_prompt.is_some()),
+            )
             .interactable(true)
             .show(ctx, |ui| {
                 ui.set_width(380.0);
@@ -257,13 +322,18 @@ impl KuroyaApp {
                             );
                         });
 
-                        ui.label(
-                            RichText::new(format!(
+                        ui.label(RichText::new(if prompt.reoffer_missing_binary {
+                            format!(
+                                "{} uses the built-in \"{}\" server, but its program is missing on this machine.",
+                                prompt.file_name, prompt.command
+                            )
+                        } else {
+                            format!(
                                 "{} uses the built-in \"{}\" server, which is disabled.",
                                 prompt.file_name, prompt.command
-                            ))
-                            .weak(),
-                        );
+                            )
+                        })
+                        .weak());
 
                         ui.add_space(8.0);
                         if prompt.install_in_flight {
@@ -294,7 +364,8 @@ impl KuroyaApp {
                                         }
                                     }
                                     if ui
-                                        .add(
+                                        .add_enabled(
+                                            enable_allowed,
                                             egui::Button::new(RichText::new("Enable").strong())
                                                 .fill(ui.visuals().selection.bg_fill),
                                         )
@@ -322,10 +393,12 @@ impl KuroyaApp {
             });
 
         match action {
-            LspEnablePromptAction::Enable => self.enable_lsp_from_prompt(&prompt.language),
+            LspEnablePromptAction::Enable if enable_allowed => {
+                self.enable_lsp_from_prompt(&prompt.language);
+            }
             LspEnablePromptAction::Install => self.start_lsp_install_from_prompt(),
             LspEnablePromptAction::NotNow => self.decline_lsp_enable_prompt(&prompt.language),
-            LspEnablePromptAction::None => {}
+            LspEnablePromptAction::None | LspEnablePromptAction::Enable => {}
         }
     }
 
@@ -339,12 +412,31 @@ impl KuroyaApp {
         let Some(install) = prompt.install.clone() else {
             return;
         };
-        if self.lsp_installs_in_flight.contains(&install.id) {
+        let language = prompt.language.clone();
+        if !self.queue_lsp_install(install, language) {
             return;
         }
-        let language = prompt.language.clone();
         if let Some(prompt) = self.lsp_enable_prompt.as_mut() {
             prompt.install_in_flight = true;
+        }
+    }
+
+    fn start_lsp_install_from_settings(&mut self, language: &str) {
+        if !lsp_settings_install_request_can_start(&self.lsp_installs_in_flight, language) {
+            return;
+        }
+        let Some(config) = default_lsp_server_for_language(language) else {
+            return;
+        };
+        let Some(install) = lsp_prompt_install_action(&config) else {
+            return;
+        };
+        self.queue_lsp_install(install, language.to_owned());
+    }
+
+    fn queue_lsp_install(&mut self, install: LspInstallAction, language: String) -> bool {
+        if self.lsp_installs_in_flight.contains(&install.id) {
+            return false;
         }
         self.lsp_installs_in_flight.push(install.id.clone());
         self.status = match install.plan {
@@ -382,6 +474,7 @@ impl KuroyaApp {
                 },
             );
         });
+        true
     }
 
     pub(crate) fn apply_lsp_install_progress(
@@ -390,16 +483,22 @@ impl KuroyaApp {
         display_name: &str,
         bytes_downloaded: u64,
     ) {
-        let Some(prompt) = self.lsp_enable_prompt.as_ref() else {
-            return;
-        };
-        if prompt.language != language || !prompt.install_in_flight {
+        let prompt_in_flight = self
+            .lsp_enable_prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.language == language && prompt.install_in_flight);
+        let tracked_in_flight = self
+            .lsp_installs_in_flight
+            .iter()
+            .any(|in_flight| in_flight == language);
+        if !prompt_in_flight && !tracked_in_flight {
             return;
         }
-        self.status = format!(
+        let status = format!(
             "Downloading {display_name}… {}",
             format_byte_size(bytes_downloaded)
         );
+        self.set_status_updating_toast(&lsp_download_toast_prefix(display_name), status);
     }
 
     pub(crate) fn apply_lsp_install_finished(
@@ -416,6 +515,9 @@ impl KuroyaApp {
                     .retain(|in_flight| *in_flight != install.id);
             }
             prompt.install_in_flight = false;
+        } else {
+            self.lsp_installs_in_flight
+                .retain(|in_flight| in_flight != language);
         }
         match result {
             Ok(()) => {
@@ -423,12 +525,84 @@ impl KuroyaApp {
                     .retain(|client_key| lsp_client_key_language(client_key) != language);
                 self.lsp_restart_attempts
                     .retain(|client_key, _| lsp_client_key_language(client_key) != language);
-                self.enable_lsp_from_prompt(language);
-                self.status = lsp_install_enabled_status(display_name);
+                if self
+                    .lsp_enable_prompt
+                    .as_ref()
+                    .is_some_and(|prompt| prompt.language == language)
+                {
+                    self.enable_lsp_from_prompt(language);
+                } else {
+                    self.reopen_lsp_after_settings_install(language);
+                }
+                self.set_status_with_toast(lsp_install_enabled_status(display_name));
             }
             Err(failure) => {
-                self.status = lsp_install_failure_status(display_name, &failure);
+                self.reset_lsp_after_install_failure(language);
+                self.set_status_with_toast(lsp_install_failure_status(display_name, &failure));
             }
+        }
+    }
+
+    fn reopen_lsp_after_settings_install(&mut self, language: &str) {
+        if !self
+            .settings
+            .lsp_server_configs()
+            .iter()
+            .any(|config| config.language == language)
+        {
+            return;
+        }
+        let lsp_configs = lsp_server_configs_for_settings(&self.settings);
+        let client_keys: Vec<String> = lsp_configs
+            .iter()
+            .filter(|config| config.language == language)
+            .map(|config| lsp_client_key(config, &lsp_configs))
+            .collect();
+        self.reopen_lsp_buffers_for_client_keys(
+            client_keys.iter().map(String::as_str),
+            &lsp_configs,
+        );
+    }
+
+    fn reset_lsp_after_install_failure(&mut self, language: &str) {
+        self.lsp_enable_prompt_declined
+            .retain(|declined| declined != language);
+        let mut enabled_reset = false;
+        if let Some(entry) = self
+            .settings
+            .lsp_servers
+            .iter_mut()
+            .find(|server| server.language == language)
+            && entry.enabled
+        {
+            let binary_present =
+                lsp_binary_on_path(&entry.command) || lsp_bundle_command_override(entry).is_some();
+            if !binary_present {
+                entry.enabled = false;
+                enabled_reset = true;
+            }
+        }
+        if !enabled_reset {
+            return;
+        }
+        self.settings_panel_draft.lsp_servers = self.settings.lsp_servers.clone();
+        self.lsp_clients.retain(|client_key, client| {
+            let keep = lsp_client_key_language(client_key) != language;
+            if !keep {
+                client.shutdown();
+            }
+            keep
+        });
+        self.lsp_unavailable
+            .retain(|client_key| lsp_client_key_language(client_key) != language);
+        self.lsp_restart_attempts
+            .retain(|client_key, _| lsp_client_key_language(client_key) != language);
+        self.pending_lsp_restarts
+            .retain(|client_key, _| lsp_client_key_language(client_key) != language);
+        let path = crate::workspace_state::settings_path(&self.workspace.root);
+        if let Err(error) = self.settings.save(&path) {
+            self.status =
+                format!("{language} LSP install failed, and settings were not saved: {error}");
         }
     }
 
@@ -636,6 +810,10 @@ fn lsp_downloading_status(display_name: &str) -> String {
     format!("Downloading {display_name}…")
 }
 
+pub(crate) fn lsp_download_toast_prefix(display_name: &str) -> String {
+    format!("Downloading {display_name}…")
+}
+
 fn lsp_install_not_detected_status(display_name: &str) -> String {
     format!(
         "{display_name} installed, but it was not detected on PATH yet; restart Kuroya and enable it again"
@@ -670,18 +848,24 @@ pub(crate) fn lsp_install_failure_status(
 
 pub(crate) fn lsp_enable_prompt_candidate(
     declined: &[String],
-    configured_enabled_languages: &[String],
+    configured_servers: &[LspServerConfig],
     buffer_language: Option<&str>,
 ) -> Option<String> {
     let language = buffer_language?;
     if declined.iter().any(|entry| entry == language) {
         return None;
     }
-    if configured_enabled_languages
+    if let Some(server) = configured_servers
         .iter()
-        .any(|entry| entry == language)
+        .find(|server| server.language == language)
+        && server.enabled
     {
-        return None;
+        let binary_present =
+            lsp_binary_on_path(&server.command) || lsp_bundle_command_override(server).is_some();
+        let reinstallable = !binary_present && lsp_prompt_install_action(server).is_some();
+        if !reinstallable {
+            return None;
+        }
     }
     Some(language.to_owned())
 }
@@ -694,16 +878,19 @@ fn text_color_or(ui: &egui::Ui) -> egui::Color32 {
 mod tests {
     use super::{
         LspEnablePrompt, LspInstallAction, LspInstallFailure, LspInstallPlan,
-        lsp_enable_prompt_candidate, lsp_install_button_label, lsp_install_enabled_status,
-        lsp_install_failure_status, lsp_install_not_detected_status, lsp_install_note,
-        lsp_installing_status, lsp_prompt_install_action,
+        lsp_enable_action_allowed, lsp_enable_prompt_anchor, lsp_enable_prompt_candidate,
+        lsp_enable_prompt_waits_for_update_modal, lsp_install_button_label,
+        lsp_install_enabled_status, lsp_install_failure_status, lsp_install_not_detected_status,
+        lsp_install_note, lsp_installing_status, lsp_prompt_install_action,
+        lsp_settings_install_request_can_start, request_lsp_install_from_settings,
+        take_lsp_settings_install_request,
     };
     use crate::{
         KuroyaApp, app_startup_context::AppStartupContext, terminal::TerminalPane,
         workspace_state::settings_path,
     };
     use kuroya_core::{
-        EditorSettings, Workspace,
+        EditorSettings, LspServerConfig, Workspace,
         lsp_registry::{
             current_lsp_install_platform, lsp_archive_extension, lsp_binary_on_path,
             lsp_platform_token,
@@ -713,23 +900,54 @@ mod tests {
     use tokio::runtime::Runtime;
 
     #[test]
-    fn prompt_candidate_skips_declined_enabled_and_unknown_languages() {
+    fn prompt_candidate_skips_declined_and_working_languages() {
         let declined = vec!["ruby".to_owned()];
-        let enabled = vec!["rust".to_owned(), "python".to_owned()];
+        let present_binary = std::env::current_exe()
+            .expect("current test binary")
+            .to_string_lossy()
+            .into_owned();
+        let servers = vec![
+            server_config_enabled("rust", &present_binary, true),
+            server_config_enabled("python", "pyright-langserver", false),
+        ];
 
         assert_eq!(
-            lsp_enable_prompt_candidate(&declined, &enabled, Some("dart")),
+            lsp_enable_prompt_candidate(&declined, &servers, Some("dart")),
             Some("dart".to_owned())
         );
         assert_eq!(
-            lsp_enable_prompt_candidate(&declined, &enabled, Some("ruby")),
+            lsp_enable_prompt_candidate(&declined, &servers, Some("ruby")),
             None
         );
         assert_eq!(
-            lsp_enable_prompt_candidate(&declined, &enabled, Some("rust")),
+            lsp_enable_prompt_candidate(&declined, &servers, Some("rust")),
             None
         );
-        assert_eq!(lsp_enable_prompt_candidate(&declined, &enabled, None), None);
+        assert_eq!(
+            lsp_enable_prompt_candidate(&declined, &servers, Some("python")),
+            Some("python".to_owned())
+        );
+        assert_eq!(lsp_enable_prompt_candidate(&declined, &servers, None), None);
+    }
+
+    #[test]
+    fn prompt_candidate_reoffers_enabled_languages_with_missing_installable_binaries() {
+        let markdown = server_config_enabled("markdown", "definitely-not-a-real-binary-xyz", true);
+        let servers = vec![markdown];
+
+        assert_eq!(
+            lsp_enable_prompt_candidate(&[], &servers, Some("markdown")),
+            Some("markdown".to_owned()),
+            "an enabled server whose binary is missing must be offered again"
+        );
+
+        let custom_without_install =
+            server_config_enabled("kuroya-unknown", "definitely-not-a-real-binary-xyz", true);
+        assert_eq!(
+            lsp_enable_prompt_candidate(&[], &[custom_without_install], Some("kuroya-unknown")),
+            None,
+            "enabled servers without an install plan stay quiet"
+        );
     }
 
     #[test]
@@ -1096,6 +1314,183 @@ mod tests {
         assert!(!prompt.install_in_flight);
     }
 
+    #[test]
+    fn enable_requires_a_working_binary_while_an_install_is_offered() {
+        let mut prompt = sample_prompt();
+        assert!(
+            !lsp_enable_action_allowed(&prompt),
+            "Enable must wait until the missing server binary is installed"
+        );
+        prompt.binary_present = true;
+        assert!(lsp_enable_action_allowed(&prompt));
+        prompt.binary_present = false;
+        prompt.install = None;
+        assert!(lsp_enable_action_allowed(&prompt));
+    }
+
+    #[test]
+    fn prompt_waits_for_update_modals_and_avoids_the_gpu_card_anchor() {
+        assert!(lsp_enable_prompt_waits_for_update_modal(true, false));
+        assert!(lsp_enable_prompt_waits_for_update_modal(false, true));
+        assert!(lsp_enable_prompt_waits_for_update_modal(true, true));
+        assert!(!lsp_enable_prompt_waits_for_update_modal(false, false));
+
+        assert_eq!(
+            lsp_enable_prompt_anchor(false),
+            egui::vec2(-18.0, -42.0),
+            "the card anchors to the bottom-right corner on its own"
+        );
+        assert_ne!(
+            lsp_enable_prompt_anchor(true),
+            lsp_enable_prompt_anchor(false),
+            "the card must not stack on top of the GPU prompt card"
+        );
+    }
+
+    #[test]
+    fn settings_install_requests_are_consumed_once_and_guarded_per_server() {
+        let ctx = egui::Context::default();
+        assert_eq!(take_lsp_settings_install_request(&ctx), None);
+
+        request_lsp_install_from_settings(&ctx, "markdown");
+        assert_eq!(
+            take_lsp_settings_install_request(&ctx),
+            Some("markdown".to_owned())
+        );
+        assert_eq!(take_lsp_settings_install_request(&ctx), None);
+
+        assert!(lsp_settings_install_request_can_start(&[], "markdown"));
+        assert!(!lsp_settings_install_request_can_start(
+            &["markdown".to_owned()],
+            "markdown"
+        ));
+    }
+
+    #[test]
+    fn settings_install_start_is_blocked_while_the_same_server_is_in_flight() {
+        let root = unique_temp_dir("lsp-settings-install-guard");
+        let mut app = app_for_test(root);
+        app.lsp_installs_in_flight = vec!["markdown".to_owned()];
+        app.status = "prior status".to_owned();
+
+        app.start_lsp_install_from_settings("markdown");
+
+        assert_eq!(app.lsp_installs_in_flight, vec!["markdown".to_owned()]);
+        assert_eq!(app.status, "prior status");
+    }
+
+    #[test]
+    fn install_progress_tracks_settings_path_installs_without_a_prompt() {
+        let root = unique_temp_dir("lsp-install-progress-settings");
+        let mut app = app_for_test(root);
+        app.lsp_installs_in_flight = vec!["markdown".to_owned()];
+
+        app.apply_lsp_install_progress("markdown", "marksman", 4_404_019);
+        assert_eq!(app.status, "Downloading marksman… 4.2 MB");
+
+        app.apply_lsp_install_finished("markdown", "marksman", Ok(()));
+        app.apply_lsp_install_progress("markdown", "marksman", 5_242_880);
+        assert_eq!(
+            app.status,
+            lsp_install_enabled_status("marksman"),
+            "progress after the install finished must be dropped"
+        );
+    }
+
+    #[test]
+    fn apply_lsp_install_finished_failure_resets_enabled_and_rearms_the_prompt() {
+        let root = unique_temp_dir("lsp-install-failure-reset");
+        let mut app = app_for_test(root.clone());
+        let markdown = kuroya_core::default_lsp_server_for_language("markdown")
+            .expect("markdown default should exist");
+        app.settings.lsp_servers.push(kuroya_core::LspServerConfig {
+            enabled: true,
+            ..markdown
+        });
+        app.settings_panel_draft.lsp_servers = app.settings.lsp_servers.clone();
+        app.lsp_enable_prompt_declined = vec!["markdown".to_owned()];
+        app.lsp_enable_prompt = Some(sample_prompt_with_language("markdown"));
+
+        app.apply_lsp_install_finished(
+            "markdown",
+            "marksman",
+            Err(LspInstallFailure::Download {
+                detail: "connection reset".to_owned(),
+            }),
+        );
+
+        let stored = EditorSettings::load_or_create(&settings_path(&root))
+            .expect("saved settings should load");
+        let entry = stored
+            .lsp_servers
+            .iter()
+            .find(|server| server.language == "markdown")
+            .expect("markdown entry should be persisted");
+        assert!(
+            !entry.enabled,
+            "a failed install must not leave the language enabled"
+        );
+        assert!(
+            !app.lsp_enable_prompt_declined
+                .contains(&"markdown".to_owned()),
+            "a failed install must clear the declined state so the prompt can re-fire"
+        );
+        let prompt = app.lsp_enable_prompt.as_ref().expect("prompt stays open");
+        assert_eq!(prompt.language, "markdown");
+        assert!(!prompt.install_in_flight);
+        assert!(app.status.starts_with("Could not download marksman:"));
+        app.ingest_status_toast();
+        assert!(
+            app.status_toasts
+                .iter()
+                .any(|toast| toast.message.starts_with("Could not download marksman:")),
+            "the failure must surface as a persistent toast"
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn apply_lsp_install_finished_settings_success_keeps_enablement_to_the_user() {
+        let root = unique_temp_dir("lsp-install-settings-success");
+        let mut app = app_for_test(root.clone());
+        let dart = kuroya_core::default_lsp_server_for_language("dart")
+            .expect("dart default should exist");
+        app.settings.lsp_servers.push(kuroya_core::LspServerConfig {
+            enabled: false,
+            ..dart
+        });
+        app.lsp_installs_in_flight = vec!["dart".to_owned()];
+
+        app.apply_lsp_install_finished("dart", "dart", Ok(()));
+
+        assert!(app.lsp_installs_in_flight.is_empty());
+        assert_eq!(app.lsp_enable_prompt, None);
+        assert!(
+            !app.settings
+                .lsp_servers
+                .iter()
+                .find(|server| server.language == "dart")
+                .expect("dart entry should remain")
+                .enabled,
+            "settings-row installs must not flip enablement behind the user's back"
+        );
+        assert_eq!(app.status, lsp_install_enabled_status("dart"));
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    fn server_config_enabled(language: &str, command: &str, enabled: bool) -> LspServerConfig {
+        LspServerConfig {
+            language: language.to_owned(),
+            command: command.to_owned(),
+            args: Vec::new(),
+            extensions: Vec::new(),
+            root_markers: Vec::new(),
+            enabled,
+        }
+    }
+
     fn default_config(language: &str) -> kuroya_core::LspServerConfig {
         kuroya_core::default_lsp_server_for_language(language)
             .unwrap_or_else(|| panic!("{language} default config"))
@@ -1122,6 +1517,7 @@ mod tests {
             command: "sample-server".to_owned(),
             file_name: "main.txt".to_owned(),
             binary_present: false,
+            reoffer_missing_binary: false,
             install: Some(LspInstallAction {
                 id: "rust".to_owned(),
                 display_name: "rust-analyzer".to_owned(),
