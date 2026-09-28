@@ -217,6 +217,25 @@ impl TerminalSession {
         );
     }
 
+    pub(super) fn begin_launch(
+        &mut self,
+        cwd: &Path,
+        auto_start_shell: bool,
+        label: Option<String>,
+    ) {
+        self.started = true;
+        self.replace_output_channel_for_launch();
+        self.reset_search_output_decoder();
+        self.reset_shell_integration_state();
+        self.last_process_exit_code = None;
+        self.last_process_terminal_error = false;
+        self.auto_start_shell = auto_start_shell;
+        self.initial_cwd = Some(cwd.to_path_buf());
+        self.process_label = label;
+        self.close_requested.store(false, Ordering::SeqCst);
+        self.scroll_to_bottom();
+    }
+
     fn start_launch(
         &mut self,
         cwd: &Path,
@@ -230,16 +249,7 @@ impl TerminalSession {
         if self.started {
             return;
         }
-        self.started = true;
-        self.replace_output_channel_for_launch();
-        self.reset_search_output_decoder();
-        self.reset_shell_integration_state();
-        self.last_process_exit_code = None;
-        self.last_process_terminal_error = false;
-        self.auto_start_shell = auto_start_shell;
-        self.initial_cwd = Some(cwd.to_path_buf());
-        self.process_label = label;
-        self.close_requested.store(false, Ordering::SeqCst);
+        self.begin_launch(cwd, auto_start_shell, label);
 
         let (tx_command, rx_command) = terminal_command_channel();
         let (tx_close, rx_close) = terminal_close_channel();
@@ -486,10 +496,91 @@ impl TerminalDrainStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistence::PersistedTerminalSession;
     use std::path::PathBuf;
 
     fn pane_for_lifecycle_tests() -> TerminalPane {
         TerminalPane::new(PathBuf::from("workspace"), 100, 12.0, 1.2)
+    }
+
+    fn test_session(id: usize) -> TerminalSession {
+        TerminalSession::new(
+            id,
+            PtySize {
+                rows: 3,
+                cols: 20,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            100,
+        )
+    }
+
+    #[test]
+    fn terminal_launch_pins_fresh_session_scrollback_to_bottom() {
+        let mut session = test_session(1);
+
+        assert_eq!(session.scrollback(), 0);
+
+        session.begin_launch(Path::new("workspace"), true, None);
+
+        assert_eq!(session.scrollback(), 0);
+    }
+
+    #[test]
+    fn terminal_launch_pins_scrolled_scrollback_to_bottom() {
+        let mut session = test_session(1);
+        session
+            .parser
+            .process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n");
+        session.parser.screen_mut().set_scrollback(usize::MAX);
+        assert!(session.scrollback() > 0);
+
+        session.begin_launch(Path::new("workspace"), true, None);
+
+        assert_eq!(session.scrollback(), 0);
+    }
+
+    #[test]
+    fn terminal_launch_after_restore_pins_stale_scrollback_offset_to_bottom() {
+        let mut pane = TerminalPane::new(PathBuf::from("."), 100, 12.0, 1.2);
+        pane.last_size = PtySize {
+            rows: 3,
+            cols: 20,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let snapshots = vec![PersistedTerminalSession {
+            cwd: Some(PathBuf::from(".")),
+            scrollback: "line0\nline1\nline2\nline3\nline4\n".to_owned(),
+            scrollback_offset: usize::MAX,
+            custom_title: None,
+            process_label: None,
+            process_status: None,
+            window_title: None,
+        }];
+
+        pane.restore_terminal_sessions(&snapshots, 0, false, &[1.0], true);
+
+        assert_eq!(pane.sessions.len(), 1);
+        assert!(pane.sessions[0].auto_start_shell);
+        assert!(pane.sessions[0].scrollback() > 0);
+
+        pane.sessions[0].begin_launch(Path::new("."), true, None);
+
+        assert_eq!(pane.sessions[0].scrollback(), 0);
+    }
+
+    #[test]
+    fn terminal_user_scrollback_offset_is_preserved_without_a_launch() {
+        let mut session = test_session(1);
+        session
+            .parser
+            .process(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n");
+
+        session.scroll_scrollback(2);
+
+        assert!(session.scrollback() > 0);
     }
 
     #[test]

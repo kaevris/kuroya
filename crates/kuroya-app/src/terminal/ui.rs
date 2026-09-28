@@ -121,6 +121,7 @@ fn render_terminal_tab(
     shell_tooltip: &str,
     command_status: TerminalCommandStatus,
     selected: bool,
+    show_active_stroke: bool,
     hovered: bool,
     fill: Color32,
     text_color: Color32,
@@ -145,6 +146,11 @@ fn render_terminal_tab(
     let painter = ui.painter_at(tab_rect);
     let rect = tab_rect.shrink(1.0);
     let (tab_fill, tab_stroke) = terminal_tab_highlight(selected, fill, text_color);
+    let tab_stroke = if show_active_stroke {
+        tab_stroke
+    } else {
+        Stroke::NONE
+    };
     let tab_fill = if hovered && !selected {
         terminal_tab_hover_fill(tab_fill, text_color)
     } else {
@@ -296,6 +302,7 @@ impl TerminalPane {
                                 shell_tooltip.as_ref(),
                                 command_status,
                                 selected,
+                                true,
                                 false,
                                 tab_fill,
                                 text_color,
@@ -546,6 +553,7 @@ impl TerminalPane {
             command_status,
             true,
             false,
+            false,
             fill,
             text_color,
             icon_kind,
@@ -694,6 +702,7 @@ impl TerminalPane {
                                     shell_tooltip.as_ref(),
                                     command_status,
                                     selected,
+                                    true,
                                     hovered,
                                     tab_fill,
                                     text_color,

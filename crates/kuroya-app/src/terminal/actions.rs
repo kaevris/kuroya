@@ -1912,7 +1912,7 @@ impl super::TerminalSession {
         self.parser.screen_mut().set_scrollback(usize::MAX);
     }
 
-    fn scroll_to_bottom(&mut self) {
+    pub(super) fn scroll_to_bottom(&mut self) {
         self.parser.screen_mut().set_scrollback(0);
     }
 }
