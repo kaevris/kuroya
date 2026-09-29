@@ -27,6 +27,7 @@ pub(crate) const LSP_DOWNLOAD_PROGRESS_INTERVAL: Duration = Duration::from_milli
 const LSP_BUNDLES_DIR_NAME: &str = "lsps";
 const LSP_BUNDLE_PART_FILE_NAME: &str = "download.part";
 const LSP_BUNDLE_INSTALLED_MARKER_FILE_NAME: &str = "installed.json";
+#[cfg(any(unix, test))]
 const LSP_ARCHIVE_ENTRY_PATH_MAX_CHARS: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -414,19 +415,73 @@ async fn activate_lsp_archive(
     Ok(binary_path)
 }
 
-pub(crate) fn lsp_archive_entry_escapes_target(entry: &str) -> bool {
-    if entry.chars().count() > LSP_ARCHIVE_ENTRY_PATH_MAX_CHARS {
+#[cfg(any(unix, test))]
+fn lsp_archive_entry_escapes_target(entry: &str) -> bool {
+    if entry.chars().count() > LSP_ARCHIVE_ENTRY_PATH_MAX_CHARS
+        || entry.trim().is_empty()
+        || entry.chars().any(char::is_control)
+    {
         return true;
     }
     let normalized = entry.replace('\\', "/");
-    if normalized.trim().is_empty() || normalized.starts_with('/') {
+    if normalized.starts_with('/') {
         return true;
     }
-    if normalized.contains(':') {
+    let bytes = normalized.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
         return true;
     }
     normalized.split('/').any(|component| component == "..")
 }
+
+fn extracted_path_escapes_bundle(bundle_dir: &Path, extracted_path: &Path) -> bool {
+    if !extracted_path.starts_with(bundle_dir) {
+        return true;
+    }
+    let Ok(bundle_root) = std::fs::canonicalize(bundle_dir) else {
+        return false;
+    };
+    match std::fs::canonicalize(extracted_path) {
+        Ok(resolved) => !resolved.starts_with(&bundle_root),
+        Err(_) => false,
+    }
+}
+
+fn find_escaping_extracted_path(bundle_dir: &Path) -> Option<PathBuf> {
+    fn walk(directory: &Path, bundle_dir: &Path, offender: &mut Option<PathBuf>) {
+        if offender.is_some() {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if extracted_path_escapes_bundle(bundle_dir, &path) {
+                *offender = Some(path);
+                return;
+            }
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                walk(&path, bundle_dir, offender);
+                if offender.is_some() {
+                    return;
+                }
+            }
+        }
+    }
+    let mut offender = None;
+    walk(bundle_dir, bundle_dir, &mut offender);
+    offender
+}
+
+#[cfg(windows)]
+const LSP_ZIP_ENTRY_UNSAFE_FILTER: &str = "$n = $_.FullName.Replace('/', '\\'); \
+     ($n.Length -gt 4096) -or ($n.Trim().Length -eq 0) -or ($n -match '[\\x00-\\x1f]') \
+     -or ($n.StartsWith('\\')) -or ($n -match '^[A-Za-z]:') \
+     -or ($n.Split('\\') -contains '..')";
 
 async fn extract_lsp_archive_checked(
     archive_path: &Path,
@@ -435,14 +490,16 @@ async fn extract_lsp_archive_checked(
     #[cfg(windows)]
     {
         let script = "Add-Type -AssemblyName System.IO.Compression.FileSystem; ".to_owned()
-            + "$zip = [System.IO.Compression.ZipFile]::OpenRead('{}'); "
-            + "$unsafe = @($zip.Entries | Where-Object { $_.FullName -match '(^|[\\\\/])\\\\..([\\\\/]|$)' -or $_.FullName -match '^[A-Za-z]:' }); "
+            + "$zip = [System.IO.Compression.ZipFile]::OpenRead(%ARCHIVE%); "
+            + "$unsafe = @($zip.Entries | Where-Object { "
+            + LSP_ZIP_ENTRY_UNSAFE_FILTER
+            + " }); "
             + "if ($unsafe.Count -gt 0) { throw ('unsafe archive entry: ' + $unsafe[0].FullName) }; "
-            + "[System.IO.Compression.ZipFile]::ExtractToDirectory('{}', '{}'); "
+            + "[System.IO.Compression.ZipFile]::ExtractToDirectory(%ARCHIVE%, %TARGET%); "
             + "$zip.Dispose()";
         let script = script
-            .replace("{}", &powershell_single_quoted(archive_path))
-            .replace("{}", &powershell_single_quoted(target_dir));
+            .replace("%ARCHIVE%", &powershell_single_quoted(archive_path))
+            .replace("%TARGET%", &powershell_single_quoted(target_dir));
         let output = run_windows_powershell(&script).await?;
         if !output.status.success() {
             return Err(LspInstallFailure::Extract {
@@ -453,7 +510,6 @@ async fn extract_lsp_archive_checked(
                 ),
             });
         }
-        Ok(())
     }
     #[cfg(not(windows))]
     {
@@ -471,19 +527,13 @@ async fn extract_lsp_archive_checked(
                 detail: format!("could not list {}", archive_path.display()),
             });
         }
-        let unsafe_entry = String::from_utf8_lossy(&listing.stdout)
+        let listing_text = String::from_utf8_lossy(&listing.stdout);
+        if let Some(entry) = listing_text
             .lines()
-            .any(|entry| {
-                entry == ".."
-                    || entry.ends_with("/..")
-                    || entry.starts_with("../")
-                    || entry.contains("/../")
-                    || entry.split('/').any(|part| part == "..")
-                    || (entry.len() >= 2 && entry.as_bytes()[1] == b':')
-            });
-        if unsafe_entry {
+            .find(|entry| lsp_archive_entry_escapes_target(entry))
+        {
             return Err(LspInstallFailure::Extract {
-                detail: "archive entry escapes the install directory".to_owned(),
+                detail: format!("archive entry escapes the install directory: {entry}"),
             });
         }
         let output = tokio::process::Command::new("tar")
@@ -502,8 +552,17 @@ async fn extract_lsp_archive_checked(
                 detail: format!("could not extract {}", archive_path.display()),
             });
         }
-        Ok(())
     }
+    if let Some(offending_path) = find_escaping_extracted_path(target_dir) {
+        let _ = std::fs::remove_dir_all(target_dir);
+        return Err(LspInstallFailure::Extract {
+            detail: format!(
+                "extracted path escaped the install directory: {}",
+                offending_path.display()
+            ),
+        });
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -537,9 +596,25 @@ fn powershell_single_quoted(path: &Path) -> String {
 
 #[cfg(windows)]
 fn windows_stderr_tail(output: &std::process::Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let tail = stderr
-        .trim()
+    windows_stderr_text_tail(&String::from_utf8_lossy(&output.stderr))
+}
+
+#[cfg(windows)]
+fn windows_stderr_text_tail(stderr: &str) -> String {
+    let flat = if stderr.trim_start().starts_with("#< CLIXML") {
+        stderr
+            .split("<S S=\"Error\">")
+            .skip(1)
+            .filter_map(|fragment| {
+                let end = fragment.find("</S>")?;
+                Some(decode_clixml_escapes(&fragment[..end]))
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        stderr.trim().to_owned()
+    };
+    let tail = flat
         .chars()
         .filter(|character| !character.is_control())
         .take(160)
@@ -549,6 +624,30 @@ fn windows_stderr_tail(output: &std::process::Output) -> String {
     } else {
         tail
     }
+}
+
+#[cfg(windows)]
+fn decode_clixml_escapes(raw: &str) -> String {
+    let mut decoded = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(position) = rest.find("_x") {
+        decoded.push_str(&rest[..position]);
+        let tail = &rest[position + 2..];
+        let bytes = tail.as_bytes();
+        if bytes.len() >= 5 && bytes[4] == b'_' && bytes[..4].iter().all(u8::is_ascii_hexdigit) {
+            let code = u32::from_str_radix(std::str::from_utf8(&bytes[..4]).unwrap_or(""), 16)
+                .unwrap_or(0xFFFD);
+            if let Some(character) = char::from_u32(code) {
+                decoded.push(character);
+            }
+            rest = &tail[5..];
+        } else {
+            decoded.push('_');
+            rest = tail;
+        }
+    }
+    decoded.push_str(rest);
+    decoded
 }
 
 pub(crate) fn spawn_lsp_download_progress_task(
@@ -586,18 +685,24 @@ pub(crate) fn spawn_lsp_download_progress_task(
 #[cfg(test)]
 mod tests {
     use super::{
-        InstalledLspBundle, LspInstallFailure, RepoBundleInstall, RustInstallDecision,
-        cleanup_failed_lsp_bundle_install, finalize_lsp_download, lsp_archive_entry_escapes_target,
+        InstalledLspBundle, LSP_ARCHIVE_ENTRY_PATH_MAX_CHARS, LspInstallFailure, RepoBundleInstall,
+        RustInstallDecision, cleanup_failed_lsp_bundle_install, extracted_path_escapes_bundle,
+        finalize_lsp_download, find_escaping_extracted_path, lsp_archive_entry_escapes_target,
         lsp_bundle_binary_path, lsp_bundle_command_override, lsp_bundle_dir, lsp_bundles_dir,
         lsp_download_url_is_pinned, lsp_release_asset_url, lsp_release_checksum_url,
         read_installed_lsp_bundle, resolved_lsp_server_command, rust_install_decision,
         write_installed_lsp_bundle,
     };
+    #[cfg(windows)]
+    use super::{
+        LSP_ZIP_ENTRY_UNSAFE_FILTER, extract_lsp_archive_checked, powershell_single_quoted,
+        run_windows_powershell, windows_stderr_tail, windows_stderr_text_tail,
+    };
     use kuroya_core::{LspServerConfig, lsp_registry::registry_entry_for};
     use sha2::{Digest, Sha256};
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::{
             Arc,
             atomic::{AtomicU64, Ordering},
@@ -694,17 +799,366 @@ mod tests {
         assert!(lsp_archive_entry_escapes_target("../evil.exe"));
         assert!(lsp_archive_entry_escapes_target("..\\evil.exe"));
         assert!(lsp_archive_entry_escapes_target("bin/../../evil.exe"));
+        assert!(lsp_archive_entry_escapes_target("..\\../evil.exe"));
         assert!(lsp_archive_entry_escapes_target("/absolute/evil.exe"));
+        assert!(lsp_archive_entry_escapes_target("\\absolute\\evil.exe"));
         assert!(lsp_archive_entry_escapes_target("C:\\absolute\\evil.exe"));
         assert!(lsp_archive_entry_escapes_target("C:/absolute/evil.exe"));
+        assert!(lsp_archive_entry_escapes_target("C:relative/evil.exe"));
+        assert!(lsp_archive_entry_escapes_target("//server/share/evil.exe"));
+        assert!(lsp_archive_entry_escapes_target(".."));
+        assert!(lsp_archive_entry_escapes_target("bin/.."));
+        assert!(lsp_archive_entry_escapes_target("./../evil.exe"));
+        assert!(lsp_archive_entry_escapes_target("\u{0001}evil.exe"));
+        assert!(lsp_archive_entry_escapes_target("evil\u{007f}.exe"));
         assert!(lsp_archive_entry_escapes_target(""));
         assert!(lsp_archive_entry_escapes_target("   "));
+        assert!(lsp_archive_entry_escapes_target(&format!(
+            "deep/{}",
+            "a".repeat(LSP_ARCHIVE_ENTRY_PATH_MAX_CHARS + 1)
+        )));
 
         assert!(!lsp_archive_entry_escapes_target("gopls"));
         assert!(!lsp_archive_entry_escapes_target("./gopls"));
+        assert!(!lsp_archive_entry_escapes_target("./"));
+        assert!(!lsp_archive_entry_escapes_target("."));
         assert!(!lsp_archive_entry_escapes_target("bin/gopls.exe"));
         assert!(!lsp_archive_entry_escapes_target("clangd/clangd"));
         assert!(!lsp_archive_entry_escapes_target("rust-analyzer"));
+        assert!(!lsp_archive_entry_escapes_target("..evil.txt"));
+        assert!(!lsp_archive_entry_escapes_target("evil..txt"));
+        assert!(!lsp_archive_entry_escapes_target("C"));
+        assert!(!lsp_archive_entry_escapes_target(&format!(
+            "deep/{}",
+            "a".repeat(LSP_ARCHIVE_ENTRY_PATH_MAX_CHARS - 5)
+        )));
+    }
+
+    #[test]
+    fn containment_check_flags_only_paths_outside_the_bundle_directory() {
+        let sandbox = unique_bundle_sandbox("containment-decision");
+        let bundle_dir = sandbox.join("bundle");
+        fs::create_dir_all(bundle_dir.join("nested")).expect("bundle dir");
+
+        assert!(!extracted_path_escapes_bundle(
+            &bundle_dir,
+            &bundle_dir.join("marksman.exe")
+        ));
+        assert!(!extracted_path_escapes_bundle(
+            &bundle_dir,
+            &bundle_dir.join("nested").join("benign.txt")
+        ));
+        assert!(extracted_path_escapes_bundle(
+            &bundle_dir,
+            &sandbox.join("escaped.txt")
+        ));
+        assert!(extracted_path_escapes_bundle(
+            &bundle_dir,
+            &sandbox.join("bundle-sibling").join("escaped.txt")
+        ));
+
+        fs::remove_dir_all(sandbox).unwrap();
+    }
+
+    #[test]
+    fn containment_walk_accepts_a_fully_contained_bundle() {
+        let sandbox = unique_bundle_sandbox("containment-walk-clean");
+        let bundle_dir = sandbox.join("bundle");
+        fs::create_dir_all(bundle_dir.join("nested").join("deeper")).expect("bundle dir");
+        fs::write(bundle_dir.join("marksman.exe"), b"binary").unwrap();
+        fs::write(bundle_dir.join("nested").join("benign.txt"), b"benign").unwrap();
+        fs::write(
+            bundle_dir.join("nested").join("deeper").join("benign.txt"),
+            b"benign",
+        )
+        .unwrap();
+
+        assert!(find_escaping_extracted_path(&bundle_dir).is_none());
+
+        fs::remove_dir_all(sandbox).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn containment_walk_catches_a_symlinked_escape() {
+        let sandbox = unique_bundle_sandbox("containment-walk-symlink");
+        let bundle_dir = sandbox.join("bundle");
+        fs::create_dir_all(&bundle_dir).expect("bundle dir");
+        fs::write(sandbox.join("outside.txt"), b"outside").unwrap();
+        std::os::unix::fs::symlink(sandbox.join("outside.txt"), bundle_dir.join("link.txt"))
+            .unwrap();
+
+        let offender = find_escaping_extracted_path(&bundle_dir).expect("symlink escape");
+        assert_eq!(offender, bundle_dir.join("link.txt"));
+
+        fs::remove_dir_all(sandbox).unwrap();
+    }
+
+    #[cfg(windows)]
+    const HOSTILE_ZIP_ENTRY_NAMES: &[&str] = &[
+        "../evil.txt",
+        "..\\evil.txt",
+        "a/../../evil.txt",
+        "./../evil.txt",
+        "/absolute.txt",
+        "C:\\absolute.txt",
+        "C:absolute.txt",
+        "\\\\server\\share.txt",
+        "a\\..\\/..\\evil.txt",
+        "..",
+    ];
+
+    #[cfg(windows)]
+    async fn write_test_zip_with_entries(zip_path: &Path, entry_names: &[&str]) {
+        let mut script = "Add-Type -AssemblyName System.IO.Compression; ".to_owned()
+            + "Add-Type -AssemblyName System.IO.Compression.FileSystem; "
+            + "$zip = [System.IO.Compression.ZipFile]::Open(%ZIP%, 'Create'); ";
+        for entry_name in entry_names {
+            let escaped_name = entry_name.replace('\'', "''");
+            script += &format!(
+                "$entry = $zip.CreateEntry('{escaped_name}'); \
+                 if ($null -eq $entry) {{ throw ('entry creation failed for {escaped_name}') }}; \
+                 $stream = $entry.Open(); \
+                 $bytes = [System.Text.Encoding]::UTF8.GetBytes('benign content'); \
+                 $stream.Write($bytes, 0, $bytes.Length); $stream.Dispose(); "
+            );
+        }
+        script += "$zip.Dispose(); ";
+        script += &format!(
+            "$check = [System.IO.Compression.ZipFile]::OpenRead(%ZIP%); \
+             if ($check.Entries.Count -ne {}) {{ throw ('test zip entry count mismatch: ' + \
+             $check.Entries.Count) }}; $check.Dispose();",
+            entry_names.len()
+        );
+        let script = script.replace("%ZIP%", &powershell_single_quoted(zip_path));
+        let output = run_windows_powershell(&script)
+            .await
+            .expect("test PowerShell should run");
+        assert!(
+            output.status.success(),
+            "test zip creation failed: {}",
+            windows_stderr_tail(&output)
+        );
+    }
+
+    #[cfg(windows)]
+    fn patch_zip_entry_name(zip_path: &Path, from: &[u8], to: &[u8]) {
+        assert_eq!(
+            from.len(),
+            to.len(),
+            "patched entry names must keep their byte length"
+        );
+        let mut bytes = fs::read(zip_path).expect("test zip should be readable");
+        let mut name_positions = Vec::new();
+        let mut start = 0;
+        while let Some(position) = bytes[start..]
+            .windows(from.len())
+            .position(|window| window == from)
+        {
+            let at = start + position;
+            name_positions.push(at);
+            start = at + from.len();
+        }
+        assert_eq!(
+            name_positions.len(),
+            2,
+            "the entry name must appear exactly in the local header and the central directory"
+        );
+        for (index, &position) in name_positions.iter().enumerate() {
+            let (header_offset, flag_offset, signature): (usize, usize, &[u8]) = if index == 0 {
+                (30, 6, b"PK\x03\x04")
+            } else {
+                (46, 8, b"PK\x01\x02")
+            };
+            assert_eq!(
+                &bytes[position - header_offset..position - header_offset + 4],
+                signature,
+                "zip header layout changed"
+            );
+            bytes[position - header_offset + flag_offset + 1] |= 0x08;
+            bytes[position..position + to.len()].copy_from_slice(to);
+        }
+        fs::write(zip_path, bytes).expect("test zip should be writable");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn hostile_zip_entry_names_are_rejected_without_extracting_anything() {
+        let runtime = Runtime::new().expect("test runtime");
+        let sandbox = unique_bundle_sandbox("hostile-zip-entries");
+        let target_dir = sandbox.join("bundle");
+        fs::create_dir_all(&target_dir).expect("target dir");
+
+        runtime.block_on(async {
+            for (index, entry_name) in HOSTILE_ZIP_ENTRY_NAMES.iter().enumerate() {
+                let archive_path = sandbox.join(format!("hostile-{index}.zip"));
+                write_test_zip_with_entries(&archive_path, &[*entry_name, "benign.txt"]).await;
+                let failure = extract_lsp_archive_checked(&archive_path, &target_dir)
+                    .await
+                    .err()
+                    .unwrap_or_else(|| panic!("entry {entry_name:?} must be rejected"));
+                let LspInstallFailure::Extract { detail } = failure else {
+                    panic!("entry {entry_name:?} must fail as Extract, got {failure:?}");
+                };
+                assert!(
+                    detail.contains("unsafe archive entry"),
+                    "detail should name the hostile check for {entry_name:?}: {detail}"
+                );
+                assert!(
+                    detail.contains(*entry_name),
+                    "detail should contain the offending entry {entry_name:?}: {detail}"
+                );
+                assert!(
+                    fs::read_dir(&target_dir)
+                        .expect("target dir")
+                        .next()
+                        .is_none(),
+                    "target dir must stay empty for {entry_name:?}"
+                );
+            }
+        });
+
+        fs::remove_dir_all(sandbox).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn safe_zip_entries_extract_and_pass_the_containment_walk() {
+        let runtime = Runtime::new().expect("test runtime");
+        let sandbox = unique_bundle_sandbox("safe-zip-entries");
+        let target_dir = sandbox.join("bundle");
+        fs::create_dir_all(&target_dir).expect("target dir");
+
+        runtime.block_on(async {
+            let archive_path = sandbox.join("safe.zip");
+            write_test_zip_with_entries(
+                &archive_path,
+                &["marksman.exe", "benign.txt", "nested/benign.txt"],
+            )
+            .await;
+            let result = extract_lsp_archive_checked(&archive_path, &target_dir).await;
+            assert!(result.is_ok(), "safe entries must extract: {result:?}");
+        });
+
+        assert!(target_dir.join("marksman.exe").is_file());
+        assert!(target_dir.join("benign.txt").is_file());
+        assert!(target_dir.join("nested").join("benign.txt").is_file());
+        assert!(find_escaping_extracted_path(&target_dir).is_none());
+
+        fs::remove_dir_all(sandbox).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn control_char_zip_entry_names_never_reach_the_bundle_directory() {
+        let runtime = Runtime::new().expect("test runtime");
+        let sandbox = unique_bundle_sandbox("control-char-zip-entry");
+        let target_dir = sandbox.join("bundle");
+        fs::create_dir_all(&target_dir).expect("target dir");
+
+        runtime.block_on(async {
+            let archive_path = sandbox.join("control-char.zip");
+            write_test_zip_with_entries(&archive_path, &["evil.txt", "benign.txt"]).await;
+            patch_zip_entry_name(&archive_path, b"evil.txt", b"\x01evil.tx");
+            let result = extract_lsp_archive_checked(&archive_path, &target_dir).await;
+            assert!(
+                result.is_ok(),
+                "the extraction engine silently drops control-char entries, so the \
+                 extraction must report success: {result:?}"
+            );
+        });
+
+        assert!(
+            fs::read_dir(&target_dir)
+                .expect("target dir")
+                .next()
+                .is_none(),
+            "no entry whose name contains a control character may reach the bundle directory"
+        );
+
+        fs::remove_dir_all(sandbox).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_entry_filter_flags_hostile_variants_and_passes_safe_ones() {
+        let hostile_names: &[&str] = &[
+            "../evil.txt",
+            "..\\evil.txt",
+            "a/../../evil.txt",
+            "./../evil.txt",
+            "/absolute.txt",
+            "\\absolute.txt",
+            "C:\\absolute.txt",
+            "C:absolute.txt",
+            "\\\\server\\share.txt",
+            "\u{0001}evil.txt",
+            "\u{001f}",
+            "",
+            "   ",
+            "..",
+            "bin/..",
+        ];
+        let safe_names: &[&str] = &[
+            "gopls.exe",
+            "./gopls.exe",
+            "./",
+            ".",
+            "bin/gopls.exe",
+            "nested/dir/benign.txt",
+            "..evil.txt",
+            "evil..txt",
+            "C",
+        ];
+        let mut script = "Add-Type -AssemblyName System.IO.Compression.FileSystem; ".to_owned()
+            + "$mismatch = @(); ";
+        for (kind, names) in [("hostile", hostile_names), ("safe", safe_names)] {
+            let expected_flag = if kind == "hostile" { "$true" } else { "$false" };
+            for name in names {
+                let escaped = name.replace('\'', "''");
+                script += &format!(
+                    "$flagged = [bool]([pscustomobject] @{{ FullName = '{escaped}' }} | \
+                     Where-Object {{ {LSP_ZIP_ENTRY_UNSAFE_FILTER} }}); \
+                     $expected = {expected_flag}; \
+                     if ($flagged -ne $expected) {{ \
+                     $mismatch += ('{kind} entry flagged=' + $flagged + ': ' + '{escaped}') }}; "
+                );
+            }
+        }
+        script += "if ($mismatch.Count -gt 0) { throw ($mismatch -join '; ') }";
+        let runtime = Runtime::new().expect("test runtime");
+        let outcome = runtime.block_on(async {
+            run_windows_powershell(&script)
+                .await
+                .expect("test PowerShell should run")
+        });
+        assert!(
+            outcome.status.success(),
+            "the PowerShell filter must agree with the Rust decision: {}",
+            windows_stderr_tail(&outcome)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_stderr_tail_decodes_clixml_error_streams() {
+        let plain = windows_stderr_text_tail("unsafe archive entry: ..\r\nAt line:1\r\n");
+        assert!(plain.starts_with("unsafe archive entry: .."));
+
+        let clixml = concat!(
+            "#< CLIXML\r\n",
+            "<Objs Version=\"1.1.0.1\" xmlns=\"http://schemas.microsoft.com/powershell/2004/04\">",
+            "<Obj S=\"progress\" RefId=\"0\"><TN RefId=\"0\"/></Obj>",
+            "<S S=\"Error\">unsafe archive entry: ../evil.txt_x000D__x000A_</S>",
+            "<S S=\"Error\">At line:1 char:1_x000D__x000A_</S>",
+            "</Objs>"
+        );
+        let tail = windows_stderr_text_tail(clixml);
+        assert!(tail.starts_with("unsafe archive entry: ../evil.txt At line:1 char:1"));
+        assert!(!tail.contains("_x000D_"));
+        assert!(!tail.contains("<S "));
+
+        assert_eq!(windows_stderr_text_tail(""), "unknown PowerShell error");
     }
 
     #[test]
