@@ -14,6 +14,7 @@ mod editor;
 mod files;
 mod general;
 mod lsp;
+mod notifications;
 mod plugins;
 mod scrollbars;
 mod terminal;

@@ -74,4 +74,5 @@ fn render_general_settings_content(ui: &mut egui::Ui, draft: &mut EditorSettings
         "Show workspace and editor status at the bottom of the window.",
         &mut draft.status_bar_visible,
     );
+    super::notifications::render_notification_mute_settings(ui, draft);
 }
