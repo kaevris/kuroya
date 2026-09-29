@@ -43,6 +43,7 @@ pub(crate) const PLUGIN_HOST_ERROR_MISC: i32 = -6;
 pub(crate) const PLUGIN_HOST_ERROR_TOO_LARGE: i32 = -7;
 
 const PLUGIN_COMMAND_WALL_CLOCK_LIMIT: Duration = Duration::from_secs(30);
+const PLUGIN_COMMAND_GUEST_CALLBACK_MAX_DEPTH: usize = 1;
 const PLUGIN_COMMAND_MEMORY_EXPORT: &str = "memory";
 const PLUGIN_COMMAND_ALLOC_EXPORT: &str = "kuroya_alloc";
 pub(crate) const PLUGIN_COMMAND_DEFAULT_EXPORT: &str = "kuroya_plugin_command";
@@ -115,6 +116,7 @@ struct PluginCommandHostState {
     started_at: Instant,
 
     budget_exhausted: bool,
+    guest_callback_depth: usize,
 }
 
 impl PluginCommandHostState {
@@ -127,6 +129,7 @@ impl PluginCommandHostState {
             pending_buffer_text: None,
             started_at: Instant::now(),
             budget_exhausted: false,
+            guest_callback_depth: 0,
         }
     }
 }
@@ -863,7 +866,13 @@ fn plugin_send_bytes_to_guest(
         Ok(alloc) => alloc,
         Err(_) => return Ok(PLUGIN_HOST_ERROR_ALLOC_FAILED),
     };
-    let ptr = match alloc.call(&mut caller, size) {
+    if caller.data().guest_callback_depth >= PLUGIN_COMMAND_GUEST_CALLBACK_MAX_DEPTH {
+        return Ok(PLUGIN_HOST_ERROR_ALLOC_FAILED);
+    }
+    caller.data_mut().guest_callback_depth += 1;
+    let ptr = alloc.call(&mut caller, size);
+    caller.data_mut().guest_callback_depth -= 1;
+    let ptr = match ptr {
         Ok(ptr) => ptr,
         Err(_) => return Ok(PLUGIN_HOST_ERROR_ALLOC_FAILED),
     };
@@ -2044,6 +2053,235 @@ mod tests {
             Some("Hello from Kuroya example plugin")
         );
         assert_eq!(execution.logs, vec!["example plugin ran"]);
+    }
+
+    #[test]
+    fn probe_infinite_memory_growth_past_cap_traps_instead_of_ooming() {
+        let error = execute_plugin_command_wasm(
+            &wasm_bytes(
+                r#"
+                (module
+                    (memory (export "memory") 1)
+                    (func (export "example.grow") (result i32)
+                        (drop (memory.grow (i32.const 300)))
+                        i32.const 0
+                    )
+                )
+                "#,
+            ),
+            "example.grow",
+            &host_context(PathBuf::new()),
+        )
+        .expect_err("memory growth past the sandbox cap should trap");
+
+        assert!(error.to_string().contains("trapped"));
+    }
+
+    #[test]
+    fn probe_read_file_rejects_absolute_path_outside_workspace() {
+        let temp = TestPluginDir::new();
+        #[cfg(windows)]
+        let escape_path = r"C:\Windows\notes.txt";
+        #[cfg(not(windows))]
+        let escape_path = "/etc/passwd";
+        let execution = execute_plugin_command_wasm(
+            &wasm_bytes(&format!(
+                r#"
+                (module
+                    (import "kuroya" "read_file" (func $read (param i32 i32) (result i32)))
+                    (memory (export "memory") 1)
+                    (data (i32.const 0) "{wat_escaped}")
+                    (func (export "example.run") (result i32)
+                        (call $read (i32.const 0) (i32.const {len}))
+                    )
+                )
+                "#,
+                wat_escaped = escape_path.replace('\\', "\\\\"),
+                len = escape_path.len(),
+            )),
+            "example.run",
+            &host_context_with(temp.root().to_path_buf(), workspace_read_capabilities()),
+        )
+        .expect("guest should observe the absolute path rejection code");
+
+        assert_eq!(execution.exit_code, PLUGIN_HOST_ERROR_ESCAPES_WORKSPACE);
+    }
+
+    #[test]
+    fn probe_open_buffer_rejects_parent_escape_and_sends_no_event() {
+        let temp = TestPluginDir::new();
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let host = PluginHostContext {
+            plugin_id: "example.plugin".to_owned(),
+            workspace_root: temp.root().to_path_buf(),
+            active_buffer_path: None,
+            active_buffer: None,
+            capabilities: workspace_read_capabilities(),
+            events: tx,
+        };
+        let execution = execute_plugin_command_wasm(
+            &wasm_bytes(
+                r#"
+                (module
+                    (import "kuroya" "open_buffer" (func $open (param i32 i32) (result i32)))
+                    (memory (export "memory") 1)
+                    (data (i32.const 0) "../escape.txt")
+                    (func (export "example.run") (result i32)
+                        (call $open (i32.const 0) (i32.const 13))
+                    )
+                )
+                "#,
+            ),
+            "example.run",
+            &host,
+        )
+        .expect("guest should observe the parent escape rejection code");
+
+        assert_eq!(execution.exit_code, PLUGIN_HOST_ERROR_ESCAPES_WORKSPACE);
+        assert!(
+            rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "escape probe must not emit an open-file event"
+        );
+    }
+
+    #[test]
+    fn probe_buffer_set_text_rejects_escape_path_without_staging_text() {
+        let temp = TestPluginDir::new();
+        let active_path = temp.root().join("notes.md");
+        fs::write(&active_path, b"known text").expect("write captured buffer file");
+        let captured = TextBuffer::from_text(1, Some(active_path), "known text".to_owned());
+        let host = host_context_full(
+            temp.root().to_path_buf(),
+            workspace_read_write_capabilities(),
+            ActiveBufferSnapshot::capture(&captured),
+        );
+        let execution = execute_plugin_command_wasm(
+            &wasm_bytes(
+                r#"
+                (module
+                    (import "kuroya" "buffer_set_text" (func $set (param i32 i32 i32 i32) (result i32)))
+                    (memory (export "memory") 1)
+                    (data (i32.const 0) "../escape.txt")
+                    (data (i32.const 32) "smuggled")
+                    (func (export "example.run") (result i32)
+                        (call $set (i32.const 0) (i32.const 13) (i32.const 32) (i32.const 8))
+                    )
+                )
+                "#,
+            ),
+            "example.run",
+            &host,
+        )
+        .expect("guest should observe the escape rejection code");
+
+        assert_eq!(execution.exit_code, PLUGIN_HOST_ERROR_NOT_FOUND);
+        assert_eq!(execution.pending_buffer_text, None);
+    }
+
+    #[test]
+    fn probe_read_file_rejects_symlink_resolving_outside_workspace() {
+        let temp = TestPluginDir::new();
+        let outside = TestPluginDir::new();
+        fs::write(outside.root().join("secret.txt"), b"outside").expect("write outside file");
+        let link = temp.root().join("link.txt");
+        #[cfg(windows)]
+        let created =
+            std::os::windows::fs::symlink_file(outside.root().join("secret.txt"), &link).is_ok();
+        #[cfg(not(windows))]
+        let created = std::os::unix::fs::symlink(outside.root().join("secret.txt"), &link).is_ok();
+        if !created {
+            return;
+        }
+
+        let execution = execute_plugin_command_wasm(
+            &wasm_bytes(
+                r#"
+                (module
+                    (import "kuroya" "read_file" (func $read (param i32 i32) (result i32)))
+                    (memory (export "memory") 1)
+                    (data (i32.const 0) "link.txt")
+                    (func (export "example.run") (result i32)
+                        (call $read (i32.const 0) (i32.const 8))
+                    )
+                )
+                "#,
+            ),
+            "example.run",
+            &host_context_with(temp.root().to_path_buf(), workspace_read_capabilities()),
+        )
+        .expect("guest should observe the symlink rejection code");
+
+        assert_eq!(execution.exit_code, PLUGIN_HOST_ERROR_ESCAPES_WORKSPACE);
+    }
+
+    #[test]
+    fn probe_unregistered_import_fails_closed_and_app_survives() {
+        let error = execute_plugin_command_wasm(
+            &wasm_bytes(
+                r#"
+                (module
+                    (import "kuroya" "spawn_process" (func $spawn (param i32 i32) (result i32)))
+                    (memory (export "memory") 1)
+                    (func (export "example.run") (result i32)
+                        (call $spawn (i32.const 0) (i32.const 0))
+                    )
+                )
+                "#,
+            ),
+            "example.run",
+            &host_context(PathBuf::new()),
+        )
+        .expect_err("unregistered import must fail instantiation");
+
+        assert!(error.to_string().contains("instantiate"));
+
+        let execution = execute_plugin_command_wasm(
+            &wasm_bytes(
+                r#"
+                (module
+                    (func (export "example.run") (result i32)
+                        i32.const 0
+                    )
+                )
+                "#,
+            ),
+            "example.run",
+            &host_context(PathBuf::new()),
+        )
+        .expect("a benign module must still run after the rejected import");
+        assert_eq!(execution.exit_code, 0);
+    }
+
+    #[test]
+    fn probe_alloc_reentry_into_host_calls_is_bounded() {
+        let temp = TestPluginDir::new();
+        fs::write(temp.root().join("data.txt"), b"plugin payload").expect("write workspace file");
+        let execution = execute_plugin_command_wasm(
+            &wasm_bytes(
+                r#"
+                (module
+                    (import "kuroya" "read_file" (func $read (param i32 i32) (result i32)))
+                    (memory (export "memory") 1)
+                    (data (i32.const 0) "data.txt")
+                    (func $alloc (export "kuroya_alloc") (param i32) (result i32)
+                        (drop (call $read (i32.const 0) (i32.const 8)))
+                        i32.const 2048
+                    )
+                    (func (export "example.run") (result i32)
+                        (call $read (i32.const 0) (i32.const 8))
+                    )
+                )
+                "#,
+            ),
+            "example.run",
+            &host_context_with(temp.root().to_path_buf(), workspace_read_capabilities()),
+        )
+        .expect("re-entrant alloc must be bounded, not recurse until the stack dies");
+
+        assert_eq!(
+            execution.exit_code,
+            i32::try_from("plugin payload".len()).unwrap()
+        );
     }
 
     fn wasm_bytes(wat: &str) -> Vec<u8> {
