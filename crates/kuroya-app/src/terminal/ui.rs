@@ -326,7 +326,7 @@ impl TerminalPane {
                     } else if self.terminal_active_info_visible() {
                         self.render_active_terminal_chip(
                             ui,
-                            tab_fill,
+                            background,
                             text_color,
                             tab_icon_kind,
                             tab_icon_color,
