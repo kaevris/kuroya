@@ -53,6 +53,11 @@ impl KuroyaApp {
             source_control_sort_mode_from_setting(settings.scm_default_view_sort_key);
         let app_state_vim_keybindings = settings.vim_keybindings;
         let app_state_vim = settings.vim.clone();
+        let initial_status_category = if workspace_placeholder {
+            None
+        } else {
+            Some(crate::status_toasts::TOAST_CATEGORY_INDEXING)
+        };
 
         Self {
             runtime,
@@ -125,6 +130,7 @@ impl KuroyaApp {
             last_status: String::new(),
             status_shown_since: std::time::Instant::now(),
             status_toasts: Vec::new(),
+            pending_status_category: initial_status_category,
             update_check_in_flight: false,
             update_check_manual: false,
             update_download_in_flight: false,

@@ -1249,6 +1249,12 @@ pub struct EditorSettings {
     pub trim_trailing_whitespace: bool,
     pub insert_final_newline: bool,
     pub trim_final_newlines: bool,
+    /// Toast categories whose popup toasts are suppressed. Valid ids are the
+    /// fixed set documented in `kuroya-app::status_toasts`: "general", "lsp",
+    /// "lsp-install", "update", "background-image", "indexing", "git",
+    /// "slow-frames", "plugins". Empty means nothing is muted.
+    #[serde(default, deserialize_with = "deserialize_optional_string_list")]
+    pub muted_notifications: Vec<String>,
     pub updates_github_repository: String,
     pub theme: ThemeSettings,
     pub custom_theme_paths: Vec<String>,

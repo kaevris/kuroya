@@ -10,6 +10,7 @@ use crate::{
         schedule_lsp_restart_at,
     },
     lsp_ui_events::LspUiEvent,
+    status_toasts::TOAST_CATEGORY_LSP,
     ui_events::UiEvent,
     workspace_state::{
         buffer_id_path_version_matches, lsp_event_path_is_current, workspace_event_matches,
@@ -76,7 +77,10 @@ impl KuroyaApp {
                 {
                     return None;
                 }
-                self.status = lsp_buffer_synced_status(&path, version);
+                self.set_status_with_toast_in_category(
+                    TOAST_CATEGORY_LSP,
+                    lsp_buffer_synced_status(&path, version),
+                );
                 None
             }
             event @ (LspUiEvent::HoverResult { .. }
@@ -142,7 +146,10 @@ impl KuroyaApp {
                 self.lsp_restart_attempts.remove(&client_key);
                 self.pending_lsp_restarts.remove(&client_key);
                 let label = lsp_client_display_label(&client_key, &lsp_configs);
-                self.status = lsp_server_ready_status(&label);
+                self.set_status_with_toast_in_category(
+                    TOAST_CATEGORY_LSP,
+                    lsp_server_ready_status(&label),
+                );
                 None
             }
             LspUiEvent::ServerStopped {
@@ -180,11 +187,17 @@ impl KuroyaApp {
                 ) {
                     LspRestartDecision::NoEligibleBuffers => {
                         self.lsp_restart_attempts.remove(&client_key);
-                        self.status = lsp_stopped_no_buffers_status(&label);
+                        self.set_status_with_toast_in_category(
+                            TOAST_CATEGORY_LSP,
+                            lsp_stopped_no_buffers_status(&label),
+                        );
                     }
                     LspRestartDecision::Disable => {
                         self.lsp_unavailable.insert(client_key.clone());
-                        self.status = lsp_stopped_disabled_status(&label);
+                        self.set_status_with_toast_in_category(
+                            TOAST_CATEGORY_LSP,
+                            lsp_stopped_disabled_status(&label),
+                        );
                     }
                     LspRestartDecision::Restart { attempt } => {
                         self.lsp_restart_attempts
@@ -194,7 +207,10 @@ impl KuroyaApp {
                             client_key.clone(),
                             schedule_lsp_restart_at(Instant::now(), attempt),
                         );
-                        self.status = lsp_stopped_restart_scheduled_status(&label, reopened);
+                        self.set_status_with_toast_in_category(
+                            TOAST_CATEGORY_LSP,
+                            lsp_stopped_restart_scheduled_status(&label, reopened),
+                        );
                     }
                 }
                 self.fallback_pending_workspace_symbols_for_stopped_lsp(&language);
@@ -223,7 +239,10 @@ impl KuroyaApp {
                 if !self.lsp_lifecycle_event_matches(&language, &root, generation) {
                     return None;
                 }
-                self.status = lsp_status_display_message(&message);
+                self.set_status_with_toast_in_category(
+                    TOAST_CATEGORY_LSP,
+                    lsp_status_display_message(&message),
+                );
                 None
             }
         }

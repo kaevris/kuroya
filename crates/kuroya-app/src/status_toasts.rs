@@ -23,12 +23,32 @@ const TOAST_ACCENT_WIDTH: f32 = 3.0;
 const TOAST_ICON_SLOT: f32 = 24.0;
 const TOAST_TEXT_FONT_SIZE: f32 = 13.5;
 
+/// Toast category ids. This is the single authoritative list; the values are
+/// persisted in `EditorSettings::muted_notifications`, so they must stay stable.
+/// Every toast carries exactly one category; toasts emitted without an explicit
+/// category default to [`TOAST_CATEGORY_GENERAL`]. Muting is display-only: the
+/// status bar text still updates, only the toast popup is suppressed.
+pub(crate) const TOAST_CATEGORY_GENERAL: &str = "general";
+pub(crate) const TOAST_CATEGORY_LSP: &str = "lsp";
+pub(crate) const TOAST_CATEGORY_LSP_INSTALL: &str = "lsp-install";
+pub(crate) const TOAST_CATEGORY_UPDATE: &str = "update";
+pub(crate) const TOAST_CATEGORY_BACKGROUND_IMAGE: &str = "background-image";
+pub(crate) const TOAST_CATEGORY_INDEXING: &str = "indexing";
+pub(crate) const TOAST_CATEGORY_GIT: &str = "git";
+pub(crate) const TOAST_CATEGORY_SLOW_FRAMES: &str = "slow-frames";
+pub(crate) const TOAST_CATEGORY_PLUGINS: &str = "plugins";
+
+fn toast_category_is_muted(muted_notifications: &[String], category: &str) -> bool {
+    muted_notifications.iter().any(|muted| muted == category)
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct StatusToast {
     pub(crate) id: u64,
     pub(crate) message: String,
     pub(crate) error: bool,
     pub(crate) created: Instant,
+    pub(crate) category: &'static str,
 }
 
 static NEXT_TOAST_ID: AtomicU64 = AtomicU64::new(1);
@@ -71,17 +91,37 @@ fn toast_text_wrap_width() -> f32 {
 
 impl KuroyaApp {
     pub(crate) fn set_status_with_toast(&mut self, status: impl Into<String>) {
+        self.set_status_with_toast_in_category(TOAST_CATEGORY_GENERAL, status);
+    }
+
+    /// Sets the status text and shows it as a toast tagged with `category`.
+    /// The toast is suppressed when the category is muted in
+    /// `settings.muted_notifications`; the status bar text always updates.
+    pub(crate) fn set_status_with_toast_in_category(
+        &mut self,
+        category: &'static str,
+        status: impl Into<String>,
+    ) {
         self.status = status.into();
+        self.pending_status_category = Some(category);
         self.ingest_status_toast();
     }
 
     pub(crate) fn ingest_status_toast(&mut self) {
         if self.status == self.last_status {
+            // A pending category always belongs to the current status value;
+            // if that value produced no toast, the tag must not leak into the
+            // next, unrelated status change.
+            self.pending_status_category = None;
             return;
         }
         self.last_status = self.status.clone();
         self.status_shown_since = Instant::now();
 
+        let category = self
+            .pending_status_category
+            .take()
+            .unwrap_or(TOAST_CATEGORY_GENERAL);
         let message = status_bar_message(&self.status).to_string();
         if message.is_empty() {
             return;
@@ -93,6 +133,10 @@ impl KuroyaApp {
             return;
         }
         let error = status_message_is_persistent(&self.status);
+        if toast_category_is_muted(&self.settings.muted_notifications, category) {
+            self.drop_toasts_in_category(category);
+            return;
+        }
         self.status_toasts.insert(
             0,
             StatusToast {
@@ -100,12 +144,22 @@ impl KuroyaApp {
                 message,
                 error,
                 created: Instant::now(),
+                category,
             },
         );
         self.status_toasts.truncate(MAX_TOASTS);
     }
 
-    pub(crate) fn set_status_updating_toast(&mut self, toast_prefix: &str, status: String) {
+    /// Updates (or creates) a single in-place progress toast tagged with
+    /// `category`, e.g. a download progress toast. Muted categories neither
+    /// create nor refresh toasts, and remove any toast already showing for
+    /// that category; the status bar text still updates.
+    pub(crate) fn set_status_updating_toast_in_category(
+        &mut self,
+        category: &'static str,
+        toast_prefix: &str,
+        status: String,
+    ) {
         self.status = status.clone();
         self.last_status = status.clone();
         self.status_shown_since = Instant::now();
@@ -115,6 +169,10 @@ impl KuroyaApp {
             return;
         }
         let error = status_message_is_persistent(&status);
+        if toast_category_is_muted(&self.settings.muted_notifications, category) {
+            self.drop_toasts_in_category(category);
+            return;
+        }
         let existing = self
             .status_toasts
             .iter_mut()
@@ -132,9 +190,15 @@ impl KuroyaApp {
                 message,
                 error,
                 created: Instant::now(),
+                category,
             },
         );
         self.status_toasts.truncate(MAX_TOASTS);
+    }
+
+    fn drop_toasts_in_category(&mut self, category: &str) {
+        self.status_toasts
+            .retain(|toast| toast.category != category);
     }
 
     pub(crate) fn render_status_toasts(&mut self, ctx: &Context) {
@@ -255,6 +319,11 @@ impl KuroyaApp {
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        TOAST_CATEGORY_BACKGROUND_IMAGE, TOAST_CATEGORY_GENERAL, TOAST_CATEGORY_GIT,
+        TOAST_CATEGORY_INDEXING, TOAST_CATEGORY_LSP, TOAST_CATEGORY_LSP_INSTALL,
+        TOAST_CATEGORY_UPDATE,
+    };
     use crate::{KuroyaApp, app_startup_context::AppStartupContext, terminal::TerminalPane};
     use kuroya_core::{EditorSettings, Workspace};
     use std::{path::PathBuf, time::Duration};
@@ -322,11 +391,13 @@ mod tests {
     fn progress_statuses_update_one_download_toast_in_place() {
         let mut app = app_for_test();
 
-        app.set_status_updating_toast(
+        app.set_status_updating_toast_in_category(
+            TOAST_CATEGORY_LSP_INSTALL,
             "Downloading marksman…",
             "Downloading marksman… 815 KB".to_owned(),
         );
-        app.set_status_updating_toast(
+        app.set_status_updating_toast_in_category(
+            TOAST_CATEGORY_LSP_INSTALL,
             "Downloading marksman…",
             "Downloading marksman… 1.3 MB".to_owned(),
         );
@@ -339,6 +410,7 @@ mod tests {
             "download progress must update a single toast instead of stacking"
         );
         assert_eq!(app.status_toasts[0].message, "Downloading marksman… 1.3 MB");
+        assert_eq!(app.status_toasts[0].category, TOAST_CATEGORY_LSP_INSTALL);
     }
 
     #[test]
@@ -346,11 +418,13 @@ mod tests {
         let mut app = app_for_test();
         app.set_status_with_toast("Saved settings".to_owned());
 
-        app.set_status_updating_toast(
+        app.set_status_updating_toast_in_category(
+            TOAST_CATEGORY_LSP_INSTALL,
             "Could not download",
             "Could not download marksman: connection reset".to_owned(),
         );
-        app.set_status_updating_toast(
+        app.set_status_updating_toast_in_category(
+            TOAST_CATEGORY_LSP_INSTALL,
             "Could not download",
             "Could not download marksman: server unreachable".to_owned(),
         );
@@ -366,6 +440,372 @@ mod tests {
         );
         assert!(app.status_toasts[0].error);
         assert_eq!(app.status_toasts[1].message, "Saved settings");
+    }
+
+    #[test]
+    fn categorized_statuses_carry_their_category_on_the_toast() {
+        let mut app = app_for_test();
+
+        app.set_status_with_toast_in_category(TOAST_CATEGORY_LSP, "rust LSP stopped");
+        app.set_status_with_toast_in_category(TOAST_CATEGORY_UPDATE, "Kuroya v9 is available");
+        app.set_status_with_toast_in_category(TOAST_CATEGORY_GENERAL, "Saved settings");
+
+        assert_eq!(app.status_toasts.len(), 3);
+        assert_eq!(app.status_toasts[0].category, TOAST_CATEGORY_GENERAL);
+        assert_eq!(app.status_toasts[0].message, "Saved settings");
+        assert_eq!(app.status_toasts[1].category, TOAST_CATEGORY_UPDATE);
+        assert_eq!(app.status_toasts[2].category, TOAST_CATEGORY_LSP);
+    }
+
+    #[test]
+    fn muted_category_suppresses_the_toast_but_still_updates_status_text() {
+        let mut app = app_for_test();
+        app.settings.muted_notifications = vec![TOAST_CATEGORY_LSP.to_owned()];
+
+        app.set_status_with_toast_in_category(TOAST_CATEGORY_LSP, "rust LSP stopped");
+
+        assert_eq!(
+            app.status, "rust LSP stopped",
+            "muting is display-only; the status bar text must still update"
+        );
+        assert!(
+            app.status_toasts.is_empty(),
+            "a muted category must not create a toast"
+        );
+        assert_eq!(
+            app.last_status, "rust LSP stopped",
+            "muted statuses must not queue up for a later frame"
+        );
+    }
+
+    #[test]
+    fn muted_category_toast_does_not_push_existing_toasts_out_of_the_stack() {
+        let mut app = app_for_test();
+        app.set_status_with_toast("Saved settings".to_owned());
+        app.settings.muted_notifications = vec![TOAST_CATEGORY_BACKGROUND_IMAGE.to_owned()];
+
+        app.set_status_with_toast_in_category(
+            TOAST_CATEGORY_BACKGROUND_IMAGE,
+            "Could not load background image",
+        );
+
+        assert_eq!(app.status_toasts.len(), 1);
+        assert_eq!(app.status_toasts[0].message, "Saved settings");
+    }
+
+    #[test]
+    fn unmuting_a_category_restores_future_toasts_without_replaying_suppressed_ones() {
+        let mut app = app_for_test();
+        app.settings.muted_notifications = vec![TOAST_CATEGORY_UPDATE.to_owned()];
+        app.set_status_with_toast_in_category(TOAST_CATEGORY_UPDATE, "Kuroya v9 is available");
+        assert!(app.status_toasts.is_empty());
+
+        app.settings.muted_notifications.clear();
+        app.set_status_with_toast_in_category(TOAST_CATEGORY_UPDATE, "Kuroya v10 is available");
+
+        assert_eq!(app.status_toasts.len(), 1);
+        assert_eq!(app.status_toasts[0].message, "Kuroya v10 is available");
+        assert_eq!(app.status_toasts[0].category, TOAST_CATEGORY_UPDATE);
+    }
+
+    #[test]
+    fn empty_or_unknown_muted_lists_show_every_toast() {
+        let mut app = app_for_test();
+        app.set_status_with_toast_in_category(TOAST_CATEGORY_GIT, "No git repository");
+        assert_eq!(app.status_toasts.len(), 1);
+
+        app.settings.muted_notifications = vec!["not-a-category".to_owned()];
+        app.set_status_with_toast_in_category(TOAST_CATEGORY_UPDATE, "Kuroya v9 is available");
+
+        assert_eq!(app.status_toasts.len(), 2);
+        assert_eq!(app.status_toasts[0].category, TOAST_CATEGORY_UPDATE);
+    }
+
+    #[test]
+    fn muting_mid_download_removes_the_in_flight_progress_toast_and_keeps_status_fresh() {
+        let mut app = app_for_test();
+        app.set_status_updating_toast_in_category(
+            TOAST_CATEGORY_LSP_INSTALL,
+            "Downloading marksman…",
+            "Downloading marksman… 815 KB".to_owned(),
+        );
+        assert_eq!(app.status_toasts.len(), 1);
+
+        app.settings.muted_notifications = vec![TOAST_CATEGORY_LSP_INSTALL.to_owned()];
+        app.set_status_updating_toast_in_category(
+            TOAST_CATEGORY_LSP_INSTALL,
+            "Downloading marksman…",
+            "Downloading marksman… 1.3 MB".to_owned(),
+        );
+
+        assert_eq!(app.status, "Downloading marksman… 1.3 MB");
+        assert!(
+            app.status_toasts.is_empty(),
+            "muting mid-download must retire the progress toast"
+        );
+    }
+
+    #[test]
+    fn muted_categorized_status_does_not_leak_its_category_into_later_statuses() {
+        let mut app = app_for_test();
+        app.settings.muted_notifications = vec![TOAST_CATEGORY_LSP.to_owned()];
+
+        // Same LSP status twice: the second ingest early-returns and must
+        // consume the pending category instead of leaking it.
+        app.set_status_with_toast_in_category(TOAST_CATEGORY_LSP, "rust LSP stopped");
+        app.set_status_with_toast_in_category(TOAST_CATEGORY_LSP, "rust LSP stopped");
+        assert!(app.status_toasts.is_empty());
+
+        app.settings.muted_notifications.clear();
+        app.set_status_with_toast("Saved settings".to_owned());
+
+        assert_eq!(app.status_toasts.len(), 1);
+        assert_eq!(
+            app.status_toasts[0].category, TOAST_CATEGORY_GENERAL,
+            "an unrelated status must not inherit a stale muted category"
+        );
+    }
+
+    #[test]
+    fn direct_status_assignments_ingest_as_general_toasts() {
+        let mut app = app_for_test();
+        // Frame 1 ingests the startup status, mirroring the running app.
+        app.ingest_status_toast();
+
+        app.status = "Watcher noticed 3 changes".to_owned();
+        app.ingest_status_toast();
+
+        assert_eq!(app.status_toasts.len(), 2);
+        assert_eq!(app.status_toasts[0].category, TOAST_CATEGORY_GENERAL);
+    }
+
+    #[test]
+    fn startup_status_toasts_as_indexing_when_a_workspace_is_open() {
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let settings = EditorSettings::default();
+        let mut app = KuroyaApp::from_startup_context(AppStartupContext {
+            runtime: Runtime::new().expect("test runtime"),
+            tx,
+            rx,
+            workspace: Workspace::new(PathBuf::from("workspace")),
+            settings: settings.clone(),
+            settings_panel_draft: settings,
+            settings_editor_font_path: String::new(),
+            settings_ui_font_path: String::new(),
+            theme_picker_selected: 0,
+            saved_session: None,
+            terminal: TerminalPane::new(PathBuf::from("workspace"), 100, 12.0, 1.2),
+            watcher: None,
+            recent_projects: Vec::new(),
+            trusted_workspaces: vec![PathBuf::from("workspace")],
+            now: std::time::Instant::now(),
+            startup_timings: Vec::new(),
+        });
+
+        assert_eq!(app.status, "Indexing workspace");
+        app.ingest_status_toast();
+
+        assert_eq!(app.status_toasts.len(), 1);
+        assert_eq!(app.status_toasts[0].category, TOAST_CATEGORY_INDEXING);
+
+        // Muting indexing suppresses the startup toast entirely.
+        let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+        let draft = EditorSettings::default();
+        let muted = EditorSettings {
+            muted_notifications: vec![TOAST_CATEGORY_INDEXING.to_owned()],
+            ..EditorSettings::default()
+        };
+        let mut app = KuroyaApp::from_startup_context(AppStartupContext {
+            runtime: Runtime::new().expect("test runtime"),
+            tx,
+            rx,
+            workspace: Workspace::new(PathBuf::from("workspace")),
+            settings: muted,
+            settings_panel_draft: draft,
+            settings_editor_font_path: String::new(),
+            settings_ui_font_path: String::new(),
+            theme_picker_selected: 0,
+            saved_session: None,
+            terminal: TerminalPane::new(PathBuf::from("workspace"), 100, 12.0, 1.2),
+            watcher: None,
+            recent_projects: Vec::new(),
+            trusted_workspaces: vec![PathBuf::from("workspace")],
+            now: std::time::Instant::now(),
+            startup_timings: Vec::new(),
+        });
+        app.ingest_status_toast();
+
+        assert!(
+            app.status_toasts.is_empty(),
+            "muting indexing must suppress the startup indexing toast"
+        );
+    }
+
+    /// Emitter-level checks: the real app flows must attach the right
+    /// category to the toasts they produce.
+    mod emitter_tags {
+        use super::{
+            TOAST_CATEGORY_BACKGROUND_IMAGE, TOAST_CATEGORY_INDEXING, TOAST_CATEGORY_LSP,
+            TOAST_CATEGORY_LSP_INSTALL, TOAST_CATEGORY_UPDATE,
+        };
+        use crate::{KuroyaApp, app_startup_context::AppStartupContext, terminal::TerminalPane};
+        use kuroya_core::{EditorSettings, Workspace};
+        use std::{path::PathBuf, time::Instant};
+        use tokio::runtime::Runtime;
+
+        fn app_with_settings(settings: EditorSettings) -> KuroyaApp {
+            let (tx, rx) = crate::ui_event_channel::ui_event_channel();
+            KuroyaApp::from_startup_context(AppStartupContext {
+                runtime: Runtime::new().expect("test runtime"),
+                tx,
+                rx,
+                workspace: Workspace::new(PathBuf::from("workspace")),
+                settings: settings.clone(),
+                settings_panel_draft: settings,
+                settings_editor_font_path: String::new(),
+                settings_ui_font_path: String::new(),
+                theme_picker_selected: 0,
+                saved_session: None,
+                terminal: TerminalPane::new(PathBuf::from("workspace"), 100, 12.0, 1.2),
+                watcher: None,
+                recent_projects: Vec::new(),
+                trusted_workspaces: vec![PathBuf::from("workspace")],
+                now: Instant::now(),
+                startup_timings: Vec::new(),
+            })
+        }
+
+        fn single_toast_category(app: &KuroyaApp) -> &'static str {
+            assert_eq!(
+                app.status_toasts.len(),
+                1,
+                "emitter test expects exactly one toast, got {:?}",
+                app.status_toasts
+                    .iter()
+                    .map(|toast| toast.message.as_str())
+                    .collect::<Vec<_>>()
+            );
+            app.status_toasts[0].category
+        }
+
+        #[test]
+        fn lsp_work_done_progress_toasts_are_tagged_lsp() {
+            let mut app = app_with_settings(EditorSettings::default());
+
+            app.handle_lsp_work_done_progress(
+                "rust".to_owned(),
+                PathBuf::from("workspace"),
+                1,
+                kuroya_core::LspWorkDoneProgress {
+                    token: "token-1".to_owned(),
+                    kind: kuroya_core::LspWorkDoneProgressKind::Begin,
+                    title: Some("Indexing".to_owned()),
+                    message: Some("src/lib.rs".to_owned()),
+                    percentage: None,
+                },
+            );
+
+            assert!(app.status.contains("Indexing"));
+            assert_eq!(single_toast_category(&app), TOAST_CATEGORY_LSP);
+        }
+
+        #[test]
+        fn lsp_download_progress_toasts_are_tagged_lsp_install() {
+            let mut app = app_with_settings(EditorSettings::default());
+            app.lsp_installs_in_flight.push("rust".to_owned());
+
+            app.apply_lsp_install_progress("rust", "rust-analyzer", 815_000);
+
+            assert!(app.status.starts_with("Downloading rust-analyzer"));
+            assert_eq!(single_toast_category(&app), TOAST_CATEGORY_LSP_INSTALL);
+        }
+
+        #[test]
+        fn update_available_toasts_are_tagged_update() {
+            let mut app = app_with_settings(EditorSettings::default());
+
+            app.apply_update_check_finished(
+                crate::update_checker::UpdateCheckOutcome::UpdateAvailable(
+                    crate::update_checker::AvailableUpdate {
+                        current_version: "0.1.7".to_owned(),
+                        latest_version: "v0.2.0".to_owned(),
+                        asset: crate::update_checker::UpdateInstallerAsset {
+                            name: "Kuroya-Setup-0.2.0.exe".to_owned(),
+                            browser_download_url:
+                                "https://github.com/owner/repo/releases/download/v0.2.0/setup.exe"
+                                    .to_owned(),
+                            checksum_sidecar_url: None,
+                        },
+                    },
+                ),
+            );
+
+            assert!(app.status.contains("v0.2.0 is available"));
+            assert_eq!(single_toast_category(&app), TOAST_CATEGORY_UPDATE);
+        }
+
+        #[test]
+        fn background_image_configuration_error_toasts_are_tagged_background_image() {
+            // A relative path is a configuration error, reported synchronously.
+            let settings = EditorSettings {
+                background_image_enabled: true,
+                background_image_path: Some("relative/background.png".to_owned()),
+                ..EditorSettings::default()
+            };
+            let mut app = app_with_settings(settings);
+
+            app.sync_background_image(false);
+
+            assert!(app.status.starts_with("Editor background image"));
+            assert_eq!(single_toast_category(&app), TOAST_CATEGORY_BACKGROUND_IMAGE);
+        }
+
+        #[test]
+        fn project_search_indexing_deferral_toasts_are_tagged_indexing() {
+            let mut app = app_with_settings(EditorSettings::default());
+            app.project_search_query = "needle".to_owned();
+            app.workspace_index_in_flight_request_id = Some(1);
+
+            app.spawn_project_search();
+
+            assert_eq!(app.status, "Indexing workspace before search");
+            assert_eq!(single_toast_category(&app), TOAST_CATEGORY_INDEXING);
+        }
+
+        #[test]
+        fn muting_update_silences_the_update_available_toast_but_keeps_the_status() {
+            let settings = EditorSettings {
+                muted_notifications: vec![TOAST_CATEGORY_UPDATE.to_owned()],
+                ..EditorSettings::default()
+            };
+            let mut app = app_with_settings(settings);
+
+            app.apply_update_check_finished(
+                crate::update_checker::UpdateCheckOutcome::UpdateAvailable(
+                    crate::update_checker::AvailableUpdate {
+                        current_version: "0.1.7".to_owned(),
+                        latest_version: "v0.2.0".to_owned(),
+                        asset: crate::update_checker::UpdateInstallerAsset {
+                            name: "Kuroya-Setup-0.2.0.exe".to_owned(),
+                            browser_download_url:
+                                "https://github.com/owner/repo/releases/download/v0.2.0/setup.exe"
+                                    .to_owned(),
+                            checksum_sidecar_url: None,
+                        },
+                    },
+                ),
+            );
+
+            assert!(app.status.contains("v0.2.0 is available"));
+            assert!(
+                app.status_toasts.is_empty(),
+                "muted update toasts must not be displayed"
+            );
+            assert!(
+                app.available_update.is_some(),
+                "muting is display-only; the update offer must stay available"
+            );
+        }
     }
 
     fn app_for_test() -> KuroyaApp {

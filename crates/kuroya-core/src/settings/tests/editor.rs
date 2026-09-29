@@ -947,3 +947,72 @@ fn editor_background_image_settings_have_expected_defaults_and_clamp_dim_amount(
         DEFAULT_EDITOR_BACKGROUND_IMAGE_DIM
     );
 }
+
+#[test]
+fn muted_notifications_default_is_empty_so_every_toast_shows() {
+    let settings = EditorSettings::default();
+    assert!(settings.muted_notifications.is_empty());
+
+    let parsed: EditorSettings = toml::from_str(
+        "font_size = 15.0
+",
+    )
+    .expect("settings without muted_notifications should load");
+    assert!(parsed.muted_notifications.is_empty());
+}
+
+#[test]
+fn muted_notifications_accept_a_category_list_from_settings_toml() {
+    let settings: EditorSettings = toml::from_str(
+        "muted_notifications = [\"lsp\", \"update\", \"background-image\"]
+",
+    )
+    .expect("muted_notifications list should load");
+    assert_eq!(
+        settings.muted_notifications,
+        ["lsp", "update", "background-image"]
+    );
+}
+
+#[test]
+fn muted_notifications_save_and_reload_preserves_values() {
+    let path = temp_settings_path("muted-notifications-roundtrip");
+    let root = path.parent().unwrap().parent().unwrap().to_path_buf();
+    let settings = EditorSettings {
+        muted_notifications: vec![
+            "lsp".to_owned(),
+            "lsp-install".to_owned(),
+            "indexing".to_owned(),
+            "slow-frames".to_owned(),
+        ],
+        ..EditorSettings::default()
+    };
+
+    settings.save(&path).unwrap();
+
+    let loaded = EditorSettings::load_or_create(&path).unwrap();
+    assert_eq!(loaded, settings);
+    assert_no_setting_temps(&path);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn muted_notifications_sanitize_trims_drops_empty_and_duplicate_entries() {
+    let mut settings = EditorSettings {
+        muted_notifications: vec![
+            " lsp ".to_owned(),
+            "lsp".to_owned(),
+            String::new(),
+            "   ".to_owned(),
+            "git".to_owned(),
+        ],
+        ..EditorSettings::default()
+    };
+
+    assert!(settings.sanitize());
+    assert_eq!(settings.muted_notifications, ["lsp", "git"]);
+
+    let mut already_clean = settings.clone();
+    assert!(!already_clean.sanitize());
+}

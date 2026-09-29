@@ -1,6 +1,7 @@
 use crate::{
     KuroyaApp,
     popup_buttons::{PopupButtonKind, popup_button, popup_button_enabled},
+    status_toasts::TOAST_CATEGORY_UPDATE,
     transient_state::PendingExit,
     ui_event_channel::{Sender, send_ui_event},
     ui_events::UiEvent,
@@ -150,35 +151,35 @@ impl KuroyaApp {
     fn start_update_check(&mut self, manual: bool) -> bool {
         if self.update_check_in_flight {
             if manual {
-                self.status = "Already checking for updates".to_owned();
+                self.set_update_status("Already checking for updates");
             }
             return false;
         }
 
         if self.update_download_in_flight {
             if manual {
-                self.status = "Update installer is already downloading".to_owned();
+                self.set_update_status("Update installer is already downloading");
             }
             return false;
         }
 
         if let Some(update) = &self.available_update {
             if manual {
-                self.status = update.available_status_text();
+                self.set_update_status(update.available_status_text());
             }
             return false;
         }
 
         if let Some(update) = &self.pending_update_install {
             if manual {
-                self.status = update.ready_status_text();
+                self.set_update_status(update.ready_status_text());
             }
             return false;
         }
 
         let Some(repository) = configured_update_repository(&self.settings) else {
             if manual {
-                self.status = update_repository_not_configured_status();
+                self.set_update_status(update_repository_not_configured_status());
             }
             return false;
         };
@@ -186,7 +187,7 @@ impl KuroyaApp {
         self.update_check_in_flight = true;
         self.update_check_manual = manual;
         if manual {
-            self.status = format!("Checking GitHub releases for {repository}");
+            self.set_update_status(format!("Checking GitHub releases for {repository}"));
         }
         self.record_async_task_started("Update Check", "GitHub Releases");
         let tx = self.tx.clone();
@@ -214,11 +215,11 @@ impl KuroyaApp {
 
         match outcome {
             UpdateCheckOutcome::UpdateAvailable(update) => {
-                self.status = update.available_status_text();
+                self.set_update_status(update.available_status_text());
                 self.available_update = Some(update);
             }
             outcome => {
-                self.status = outcome.status_text();
+                self.set_update_status(outcome.status_text());
             }
         }
     }
@@ -230,22 +231,22 @@ impl KuroyaApp {
         }
 
         let error = display_update_error(&error);
-        self.status = format!("Could not check for updates: {error}");
+        self.set_update_status(format!("Could not check for updates: {error}"));
     }
 
     pub(crate) fn install_available_update(&mut self) {
         if self.update_download_in_flight {
-            self.status = "Update installer is already downloading".to_owned();
+            self.set_update_status("Update installer is already downloading");
             return;
         }
 
         let Some(update) = self.available_update.clone() else {
-            self.status = "No update is ready to install".to_owned();
+            self.set_update_status("No update is ready to install");
             return;
         };
 
         let Some(repository) = configured_update_repository(&self.settings) else {
-            self.status = update_repository_not_configured_status();
+            self.set_update_status(update_repository_not_configured_status());
             return;
         };
 
@@ -257,10 +258,10 @@ impl KuroyaApp {
 
         self.available_update = None;
         self.update_download_in_flight = true;
-        self.status = format!(
+        self.set_update_status(format!(
             "Downloading Kuroya {} installer {}",
             update.latest_version, update.asset.name
-        );
+        ));
         self.record_async_task_started("Update Download", &update.latest_version);
         self.update_downloaded_bytes.store(0, Ordering::Relaxed);
         let tx = self.tx.clone();
@@ -307,7 +308,9 @@ impl KuroyaApp {
         let latest_version = available.latest_version.clone();
         self.available_update = Some(available);
         let error = display_update_error(&error);
-        self.status = format!("Could not download Kuroya {latest_version}: {error}");
+        self.set_update_status(format!(
+            "Could not download Kuroya {latest_version}: {error}"
+        ));
     }
 
     pub(crate) fn apply_update_download_progress(
@@ -319,25 +322,25 @@ impl KuroyaApp {
         if !self.update_download_in_flight {
             return;
         }
-        self.status = format!(
+        self.set_update_status(format!(
             "Downloading Kuroya {latest_version} installer {asset_name}… {}",
             format_byte_size(bytes_downloaded)
-        );
+        ));
     }
 
     pub(crate) fn restart_to_install_update(&mut self) {
         let Some(update) = self.pending_update_install.as_ref() else {
-            self.status = "No update installer is ready".to_owned();
+            self.set_update_status("No update installer is ready");
             return;
         };
         if self.exit_confirmed || self.pending_exit.is_some() {
-            self.status = "Update restart is already pending".to_owned();
+            self.set_update_status("Update restart is already pending");
             return;
         }
 
         let restart_status = update.restart_status_text();
         self.clear_pending_workspace_switch_for_exit();
-        self.status = restart_status;
+        self.set_update_status(restart_status);
         let dirty_count = self
             .buffers
             .iter()
@@ -357,7 +360,7 @@ impl KuroyaApp {
         };
         match launch_update_installer(&update.installer_path) {
             Ok(()) => {
-                self.status = update.launched_status_text();
+                self.set_update_status(update.launched_status_text());
                 prune_other_update_downloads(&update.installer_path, &update_download_dir());
                 true
             }
@@ -365,7 +368,7 @@ impl KuroyaApp {
                 let error = display_update_error(&error.to_string());
                 self.exit_confirmed = false;
                 self.pending_update_install = Some(update);
-                self.status = format!("Could not launch update installer: {error}");
+                self.set_update_status(format!("Could not launch update installer: {error}"));
                 false
             }
         }
@@ -374,14 +377,14 @@ impl KuroyaApp {
     pub(crate) fn dismiss_update_prompt(&mut self) {
         if let Some(update) = self.available_update.take() {
             self.next_automatic_update_check_at = next_automatic_update_check_at(Instant::now());
-            self.status = format!("Kuroya {} update postponed", update.latest_version);
+            self.set_update_status(format!("Kuroya {} update postponed", update.latest_version));
         }
     }
 
     pub(crate) fn dismiss_pending_update_install(&mut self) {
         if let Some(update) = self.pending_update_install.take() {
             self.next_automatic_update_check_at = next_automatic_update_check_at(Instant::now());
-            self.status = format!("Kuroya {} update postponed", update.latest_version);
+            self.set_update_status(format!("Kuroya {} update postponed", update.latest_version));
         }
     }
 
@@ -510,6 +513,10 @@ impl KuroyaApp {
             UpdatePromptAction::Later => self.dismiss_pending_update_install(),
             UpdatePromptAction::Install | UpdatePromptAction::None => {}
         }
+    }
+
+    fn set_update_status(&mut self, status: impl Into<String>) {
+        self.set_status_with_toast_in_category(TOAST_CATEGORY_UPDATE, status);
     }
 
     fn finish_update_check(&mut self) -> bool {

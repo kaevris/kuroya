@@ -4,6 +4,7 @@ use crate::{
     background_image_animation::{BackgroundGifAnimation, BackgroundGifAnimationUpdate},
     image_preview::path_is_image_preview,
     path_display::display_error_label_cow,
+    status_toasts::TOAST_CATEGORY_BACKGROUND_IMAGE,
     ui_event_channel::send_critical_ui_event,
     ui_events::UiEvent,
     workspace_state::{paths_match_exact_or_lexically, settings_path},
@@ -133,7 +134,10 @@ impl KuroyaApp {
                         self.background_image_runtime.invalidate(true);
                     }
                     if self.background_image_runtime.configuration_error != Some(error) {
-                        self.status = error.status().to_owned();
+                        self.set_status_with_toast_in_category(
+                            TOAST_CATEGORY_BACKGROUND_IMAGE,
+                            error.status(),
+                        );
                     }
                     self.background_image_runtime.configuration_error = Some(error);
                     return;
@@ -267,7 +271,7 @@ impl KuroyaApp {
         if self.settings.background_image_launch_failures != 0 {
             self.set_background_image_launch_failures(0);
             if let Some(save_error) = self.persist_background_image_launch_state() {
-                self.status = save_error;
+                self.set_status_with_toast_in_category(TOAST_CATEGORY_BACKGROUND_IMAGE, save_error);
             }
         }
         true
@@ -295,14 +299,20 @@ impl KuroyaApp {
                     .is_some_and(|state| state.replace_loaded(&ctx, preview))
                 {
                     self.background_image_runtime.animation = None;
-                    self.status = background_image_load_failure_status(
-                        "animated GIF produced an invalid frame",
+                    self.set_status_with_toast_in_category(
+                        TOAST_CATEGORY_BACKGROUND_IMAGE,
+                        background_image_load_failure_status(
+                            "animated GIF produced an invalid frame",
+                        ),
                     );
                 }
             }
             Some(BackgroundGifAnimationUpdate::Failed(error)) => {
                 self.background_image_runtime.animation = None;
-                self.status = background_image_load_failure_status(&error);
+                self.set_status_with_toast_in_category(
+                    TOAST_CATEGORY_BACKGROUND_IMAGE,
+                    background_image_load_failure_status(&error),
+                );
             }
             Some(BackgroundGifAnimationUpdate::Finished) => {}
             None => {}
@@ -350,7 +360,7 @@ impl KuroyaApp {
             status.push_str("; ");
             status.push_str(&save_error);
         }
-        self.status = status;
+        self.set_status_with_toast_in_category(TOAST_CATEGORY_BACKGROUND_IMAGE, status);
         true
     }
 

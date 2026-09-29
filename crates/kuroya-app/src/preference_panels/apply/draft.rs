@@ -34,6 +34,7 @@ pub(super) fn apply_settings_panel_draft_with_font_paths(
     settings.autosave_mode = draft.autosave_mode;
     settings.autosave_delay_ms = clamp_autosave_delay_ms(draft.autosave_delay_ms);
     settings.status_bar_visible = draft.status_bar_visible;
+    settings.muted_notifications = draft.muted_notifications.clone();
     settings.devtools_verbose_logging = draft.devtools_verbose_logging;
     settings.devtools_profiling_enabled = draft.devtools_profiling_enabled;
     settings.perf_monitor_enabled = draft.perf_monitor_enabled;

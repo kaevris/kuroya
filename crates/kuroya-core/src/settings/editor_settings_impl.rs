@@ -558,6 +558,7 @@ impl Default for EditorSettings {
             trim_trailing_whitespace: false,
             insert_final_newline: false,
             trim_final_newlines: false,
+            muted_notifications: Vec::new(),
             updates_github_repository: String::new(),
             theme: ThemeSettings::default(),
             custom_theme_paths: Vec::new(),
@@ -1044,6 +1045,12 @@ impl EditorSettings {
 
         changed |= self.keymap.sanitize() > 0;
         changed |= sanitize_settings_plain_string(&mut self.updates_github_repository);
+        changed |= sanitize_settings_string_list(
+            &mut self.muted_notifications,
+            SETTINGS_LIST_MAX_ITEMS,
+            SETTINGS_MAP_KEY_MAX_CHARS,
+            true,
+        );
         changed |= sanitize_settings_string_list(
             &mut self.custom_theme_paths,
             SETTINGS_LIST_MAX_ITEMS,

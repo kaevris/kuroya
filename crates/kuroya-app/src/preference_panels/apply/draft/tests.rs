@@ -425,6 +425,7 @@ fn draft_apply_copy_fixture() -> EditorSettings {
         overview_ruler_lanes: 2,
         hide_cursor_in_overview_ruler: true,
         status_bar_visible: false,
+        muted_notifications: vec!["lsp".to_owned(), "team-standup".to_owned()],
         devtools_verbose_logging: true,
         devtools_profiling_enabled: true,
         perf_monitor_enabled: true,
@@ -1112,6 +1113,10 @@ fn draft_apply_copies_word_separators() {
     assert_eq!(settings.overview_ruler_lanes, 2);
     assert!(settings.hide_cursor_in_overview_ruler);
     assert!(!settings.status_bar_visible);
+    assert_eq!(
+        settings.muted_notifications,
+        ["lsp".to_owned(), "team-standup".to_owned()]
+    );
     assert!(settings.devtools_verbose_logging);
     assert!(settings.devtools_profiling_enabled);
     assert!(!settings.plugins.enabled);
@@ -1624,6 +1629,45 @@ fn apply_settings_panel_draft_rejects_terminal_cwd_control_characters() {
     apply_settings_panel_draft(&mut settings, &draft, "", "");
 
     assert_eq!(settings.terminal_cwd, None);
+}
+
+#[test]
+fn apply_settings_panel_draft_persists_muted_and_unmuted_notification_categories() {
+    let mut settings = EditorSettings::default();
+    let muted_draft = EditorSettings {
+        muted_notifications: vec![
+            "lsp".to_owned(),
+            "slow-frames".to_owned(),
+            " team-standup ".to_owned(),
+        ],
+        ..EditorSettings::default()
+    };
+
+    apply_settings_panel_draft(&mut settings, &muted_draft, "", "");
+
+    assert_eq!(
+        settings.muted_notifications,
+        [
+            "lsp".to_owned(),
+            "slow-frames".to_owned(),
+            " team-standup ".to_owned()
+        ]
+    );
+
+    let unmuted_draft = EditorSettings {
+        muted_notifications: vec!["slow-frames".to_owned()],
+        ..EditorSettings::default()
+    };
+
+    apply_settings_panel_draft(&mut settings, &unmuted_draft, "", "");
+
+    assert_eq!(settings.muted_notifications, ["slow-frames".to_owned()]);
+
+    let empty_draft = EditorSettings::default();
+
+    apply_settings_panel_draft(&mut settings, &empty_draft, "", "");
+
+    assert!(settings.muted_notifications.is_empty());
 }
 
 #[test]

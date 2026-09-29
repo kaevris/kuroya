@@ -6,6 +6,7 @@ use crate::{
         spawn_lsp_download_progress_task,
     },
     lsp_runtime::{lsp_client_key, lsp_client_key_language, lsp_server_configs_for_settings},
+    status_toasts::TOAST_CATEGORY_LSP_INSTALL,
     ui_event_channel::send_ui_event,
     ui_events::UiEvent,
     update_checker::format_byte_size,
@@ -498,7 +499,11 @@ impl KuroyaApp {
             "Downloading {display_name}… {}",
             format_byte_size(bytes_downloaded)
         );
-        self.set_status_updating_toast(&lsp_download_toast_prefix(display_name), status);
+        self.set_status_updating_toast_in_category(
+            TOAST_CATEGORY_LSP_INSTALL,
+            &lsp_download_toast_prefix(display_name),
+            status,
+        );
     }
 
     pub(crate) fn apply_lsp_install_finished(
@@ -534,11 +539,17 @@ impl KuroyaApp {
                 } else {
                     self.reopen_lsp_after_settings_install(language);
                 }
-                self.set_status_with_toast(lsp_install_enabled_status(display_name));
+                self.set_status_with_toast_in_category(
+                    TOAST_CATEGORY_LSP_INSTALL,
+                    lsp_install_enabled_status(display_name),
+                );
             }
             Err(failure) => {
                 self.reset_lsp_after_install_failure(language);
-                self.set_status_with_toast(lsp_install_failure_status(display_name, &failure));
+                self.set_status_with_toast_in_category(
+                    TOAST_CATEGORY_LSP_INSTALL,
+                    lsp_install_failure_status(display_name, &failure),
+                );
             }
         }
     }

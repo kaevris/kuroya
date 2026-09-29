@@ -4,6 +4,7 @@ use crate::{
     lsp_lifecycle::{background_language_block_reason, lsp_server_configs_for_buffer},
     lsp_text_positions::buffer_position_to_lsp_utf16_column,
     path_display::{display_error_label_cow, display_path_label_cow, sanitized_display_label_cow},
+    status_toasts::TOAST_CATEGORY_LSP,
 };
 use kuroya_core::{
     BufferId, EditorSettings, LanguageId, LspServerConfig, PluginLanguageRegistry, TextBuffer,
@@ -374,7 +375,10 @@ impl KuroyaApp {
                 if !self.workspace_trusted {
                     let lsp_configs = lsp_server_configs_for_settings(&self.settings);
                     let label = lsp_client_display_label(&client_key, &lsp_configs);
-                    self.status = lsp_restart_skipped_restricted_status(&label);
+                    self.set_status_with_toast_in_category(
+                        TOAST_CATEGORY_LSP,
+                        lsp_restart_skipped_restricted_status(&label),
+                    );
                 }
                 continue;
             }
@@ -392,7 +396,10 @@ impl KuroyaApp {
             );
             if restart_targets.is_empty() {
                 self.lsp_restart_attempts.remove(&client_key);
-                self.status = lsp_restart_skipped_no_buffers_status(&label);
+                self.set_status_with_toast_in_category(
+                    TOAST_CATEGORY_LSP,
+                    lsp_restart_skipped_no_buffers_status(&label),
+                );
                 continue;
             }
 
@@ -400,7 +407,10 @@ impl KuroyaApp {
                 self.notify_lsp_open(*id);
             }
             restarted = restarted.saturating_add(1);
-            self.status = lsp_restart_requested_status(&label, restart_targets.len());
+            self.set_status_with_toast_in_category(
+                TOAST_CATEGORY_LSP,
+                lsp_restart_requested_status(&label, restart_targets.len()),
+            );
         }
         restarted
     }

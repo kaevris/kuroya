@@ -1,4 +1,6 @@
-use crate::{KuroyaApp, workspace_state::workspace_event_matches};
+use crate::{
+    KuroyaApp, status_toasts::TOAST_CATEGORY_LSP, workspace_state::workspace_event_matches,
+};
 use kuroya_core::{LspWorkDoneProgress, LspWorkDoneProgressKind};
 use std::{
     borrow::Cow,
@@ -69,7 +71,8 @@ impl KuroyaApp {
         let root = self.lsp_progress_storage_root(&root);
         let key = LspProgressKey::new(language, root, generation, progress.token.clone());
         let title = update_lsp_progress_titles(&mut self.lsp_progress_titles, &key, &progress);
-        self.status = lsp_progress_status(&progress, title.as_deref());
+        let status = lsp_progress_status(&progress, title.as_deref());
+        self.set_status_with_toast_in_category(TOAST_CATEGORY_LSP, status);
     }
 
     pub(crate) fn clear_lsp_progress_for_server(

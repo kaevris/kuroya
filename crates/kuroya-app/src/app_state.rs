@@ -180,6 +180,7 @@ pub(crate) struct KuroyaApp {
     pub(crate) last_status: String,
     pub(crate) status_shown_since: std::time::Instant,
     pub(crate) status_toasts: Vec<crate::status_toasts::StatusToast>,
+    pub(crate) pending_status_category: Option<&'static str>,
     pub(crate) update_check_in_flight: bool,
     pub(crate) update_check_manual: bool,
     pub(crate) update_download_in_flight: bool,

@@ -1,6 +1,7 @@
 use crate::{
     KuroyaApp,
     path_display::{display_error_label_cow, display_path_label_cow, sanitized_display_label_cow},
+    status_toasts::{TOAST_CATEGORY_GIT, TOAST_CATEGORY_PLUGINS},
     ui_event_handler::{
         background::{
             handle_cached_index_event, handle_diagnostics_computed_event, handle_git_scanned_event,
@@ -371,7 +372,10 @@ impl KuroyaApp {
                         continue;
                     }
                     if let Some(error) = scan_error {
-                        self.set_status_with_toast(git_scan_failed_status(&error));
+                        self.set_status_with_toast_in_category(
+                            TOAST_CATEGORY_GIT,
+                            git_scan_failed_status(&error),
+                        );
                     }
                     if spawn_queued_git_scan {
                         self.spawn_git_scan();
@@ -1112,11 +1116,14 @@ fn git_scan_failed_status(error: &str) -> String {
 impl KuroyaApp {
     fn apply_plugin_open_file_requested(&mut self, plugin_id: String, path: std::path::PathBuf) {
         if self.workspace_placeholder {
-            self.set_status_with_toast("No folder open");
+            self.set_status_with_toast_in_category(TOAST_CATEGORY_PLUGINS, "No folder open");
             return;
         }
         if !plugin_open_file_path_is_openable(&self.workspace.root, &path) {
-            self.set_status_with_toast(plugin_open_file_rejected_status(&plugin_id, &path));
+            self.set_status_with_toast_in_category(
+                TOAST_CATEGORY_PLUGINS,
+                plugin_open_file_rejected_status(&plugin_id, &path),
+            );
             return;
         }
         self.spawn_open_file(path);
@@ -1134,14 +1141,20 @@ impl KuroyaApp {
             .find(|buffer| buffer.path() == Some(&path))
             .map(kuroya_core::TextBuffer::id)
         else {
-            self.set_status_with_toast(plugin_buffer_text_skipped_status(&path));
+            self.set_status_with_toast_in_category(
+                TOAST_CATEGORY_PLUGINS,
+                plugin_buffer_text_skipped_status(&path),
+            );
             return;
         };
         if let Some(buffer) = self.buffer_mut(id) {
             buffer.replace_text_from_ui(text);
         }
         self.mark_buffer_changed(id);
-        self.set_status_with_toast(plugin_buffer_text_updated_status(&path));
+        self.set_status_with_toast_in_category(
+            TOAST_CATEGORY_PLUGINS,
+            plugin_buffer_text_updated_status(&path),
+        );
     }
 }
 

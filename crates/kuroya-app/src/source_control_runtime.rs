@@ -8,6 +8,7 @@ use crate::{
         source_control_auto_reveal_selection, source_control_filtered_entries,
         source_control_reveal_selection,
     },
+    status_toasts::TOAST_CATEGORY_GIT,
     ui_events::UiEvent,
     workspace_event_guards::background_request_matches,
     workspace_state::workspace_event_matches,
@@ -121,7 +122,7 @@ impl KuroyaApp {
 
     pub(crate) fn set_git_progress_status(&mut self, status: String) {
         if let Some(status) = git_progress_status(self.settings.git_show_progress, status) {
-            self.status = status;
+            self.set_status_with_toast_in_category(TOAST_CATEGORY_GIT, status);
         }
     }
 
@@ -271,7 +272,7 @@ impl KuroyaApp {
         preferred_stage: Option<GitChangeStage>,
     ) {
         if self.git.root().is_none() {
-            self.status = "No git repository".to_owned();
+            self.set_status_with_toast_in_category(TOAST_CATEGORY_GIT, "No git repository");
             return;
         }
 
@@ -423,7 +424,7 @@ impl KuroyaApp {
 
     fn active_source_control_path(&mut self, action: &str) -> Option<PathBuf> {
         if self.git.root().is_none() {
-            self.status = "No git repository".to_owned();
+            self.set_status_with_toast_in_category(TOAST_CATEGORY_GIT, "No git repository");
             return None;
         }
 
@@ -493,7 +494,10 @@ impl KuroyaApp {
         }
         self.close_source_control_diff_buffers_for_operation(None, None);
         self.spawn_git_scan();
-        self.status = git_commit_success_status(&short_oid, smart_commit);
+        self.set_status_with_toast_in_category(
+            TOAST_CATEGORY_GIT,
+            git_commit_success_status(&short_oid, smart_commit),
+        );
     }
 
     pub(crate) fn apply_git_commit_failed(
@@ -516,7 +520,10 @@ impl KuroyaApp {
         }
 
         self.spawn_git_scan();
-        self.status = git_commit_failure_status(&error, smart_commit);
+        self.set_status_with_toast_in_category(
+            TOAST_CATEGORY_GIT,
+            git_commit_failure_status(&error, smart_commit),
+        );
     }
 
     pub(crate) fn apply_git_stage_finished(&mut self, root: PathBuf, paths: Vec<PathBuf>) {
@@ -528,7 +535,10 @@ impl KuroyaApp {
             Some(&paths),
             Some(GitChangeStage::Unstaged),
         );
-        self.status = git_stage_success_status(&paths);
+        self.set_status_with_toast_in_category(
+            TOAST_CATEGORY_GIT,
+            git_stage_success_status(&paths),
+        );
         self.spawn_git_scoped_refresh(paths);
     }
 
@@ -543,7 +553,10 @@ impl KuroyaApp {
         }
 
         self.spawn_git_scan();
-        self.status = git_stage_failure_status(&paths, &error);
+        self.set_status_with_toast_in_category(
+            TOAST_CATEGORY_GIT,
+            git_stage_failure_status(&paths, &error),
+        );
     }
 
     pub(crate) fn apply_git_unstage_finished(&mut self, root: PathBuf, paths: Vec<PathBuf>) {
@@ -555,7 +568,10 @@ impl KuroyaApp {
             Some(&paths),
             Some(GitChangeStage::Staged),
         );
-        self.status = git_unstage_success_status(&paths);
+        self.set_status_with_toast_in_category(
+            TOAST_CATEGORY_GIT,
+            git_unstage_success_status(&paths),
+        );
         self.spawn_git_scoped_refresh(paths);
     }
 
@@ -570,7 +586,10 @@ impl KuroyaApp {
         }
 
         self.spawn_git_scan();
-        self.status = git_unstage_failure_status(&paths, &error);
+        self.set_status_with_toast_in_category(
+            TOAST_CATEGORY_GIT,
+            git_unstage_failure_status(&paths, &error),
+        );
     }
 
     pub(crate) fn apply_git_discard_finished(&mut self, root: PathBuf, paths: Vec<PathBuf>) {
@@ -580,7 +599,10 @@ impl KuroyaApp {
 
         self.close_source_control_diff_buffers_for_operation(Some(&paths), None);
         self.spawn_index();
-        self.status = git_discard_success_status(&paths);
+        self.set_status_with_toast_in_category(
+            TOAST_CATEGORY_GIT,
+            git_discard_success_status(&paths),
+        );
         self.spawn_git_scoped_refresh(paths);
     }
 
@@ -596,7 +618,10 @@ impl KuroyaApp {
 
         self.spawn_index();
         self.spawn_git_scan();
-        self.status = git_discard_failure_status(&paths, &error);
+        self.set_status_with_toast_in_category(
+            TOAST_CATEGORY_GIT,
+            git_discard_failure_status(&paths, &error),
+        );
     }
 
     fn spawn_stage_changes(&mut self, paths: Vec<PathBuf>) {

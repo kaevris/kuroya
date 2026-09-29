@@ -46,7 +46,10 @@ impl KuroyaApp {
                 self.project_search_result_query.clear();
                 self.project_search_result_index_generation = self.project_search_index_generation;
                 self.project_search_selected = 0;
-                self.status = "Indexing workspace before search".to_owned();
+                self.set_status_with_toast_in_category(
+                    crate::status_toasts::TOAST_CATEGORY_INDEXING,
+                    "Indexing workspace before search",
+                );
                 return;
             }
         }
