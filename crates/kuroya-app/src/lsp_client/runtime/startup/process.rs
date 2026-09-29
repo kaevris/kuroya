@@ -80,8 +80,19 @@ fn lsp_process_command(config: &LspServerConfig, root: &Path) -> Command {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    apply_windows_no_window_flag(&mut command);
     command
 }
+
+#[cfg(windows)]
+fn apply_windows_no_window_flag(command: &mut Command) {
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn apply_windows_no_window_flag(_command: &mut Command) {}
 
 pub(super) fn send_lsp_server_unavailable(
     config: &LspServerConfig,

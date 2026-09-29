@@ -311,7 +311,8 @@ impl LspWireMessage {
                                 }
                             },
                             "tokenTypes": SEMANTIC_TOKEN_TYPES,
-                            "tokenModifiers": SEMANTIC_TOKEN_MODIFIERS
+                            "tokenModifiers": SEMANTIC_TOKEN_MODIFIERS,
+                            "formats": ["relative"]
                         },
                         "completion": {
                             "dynamicRegistration": false,

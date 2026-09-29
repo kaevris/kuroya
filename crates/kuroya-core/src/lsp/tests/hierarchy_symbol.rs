@@ -55,6 +55,70 @@ fn initialize_advertises_semantic_token_support() {
     assert_eq!(semantic_tokens["tokenTypes"][0], "namespace");
     assert_eq!(semantic_tokens["tokenTypes"][12], "function");
     assert_eq!(semantic_tokens["tokenModifiers"][0], "declaration");
+    assert_eq!(semantic_tokens["formats"], json!(["relative"]));
+}
+
+#[test]
+fn initialize_semantic_tokens_capability_is_complete_for_strict_server_decoders() {
+    let value = LspWireMessage::initialize(1, Path::new("workspace")).to_json();
+    let semantic_tokens = &value["params"]["capabilities"]["textDocument"]["semanticTokens"];
+
+    for required_key in ["requests", "tokenTypes", "tokenModifiers", "formats"] {
+        assert!(
+            semantic_tokens.get(required_key).is_some(),
+            "semanticTokens.{required_key} must be advertised; strict server decoders reject the capability without it"
+        );
+    }
+    assert_eq!(semantic_tokens["formats"], json!(["relative"]));
+    assert!(
+        !semantic_tokens["tokenTypes"]
+            .as_array()
+            .expect("tokenTypes array")
+            .is_empty()
+    );
+    assert!(
+        !semantic_tokens["tokenModifiers"]
+            .as_array()
+            .expect("tokenModifiers array")
+            .is_empty()
+    );
+    assert!(semantic_tokens["requests"].get("range").is_some());
+    assert!(semantic_tokens["requests"].get("full").is_some());
+}
+
+#[test]
+fn initialize_capability_sub_objects_carry_required_fields_of_strict_decoders() {
+    let value = LspWireMessage::initialize(1, Path::new("workspace")).to_json();
+    let text_document = &value["params"]["capabilities"]["textDocument"];
+
+    assert!(
+        !text_document["codeAction"]["codeActionLiteralSupport"]["codeActionKind"]["valueSet"]
+            .as_array()
+            .expect("codeActionKind.valueSet array")
+            .is_empty()
+    );
+    assert!(
+        !text_document["codeAction"]["resolveSupport"]["properties"]
+            .as_array()
+            .expect("codeAction resolveSupport.properties array")
+            .is_empty()
+    );
+    assert!(
+        !text_document["completion"]["completionItem"]["resolveSupport"]["properties"]
+            .as_array()
+            .expect("completion resolveSupport.properties array")
+            .is_empty()
+    );
+    assert!(
+        !text_document["hover"]["contentFormat"]
+            .as_array()
+            .expect("hover.contentFormat array")
+            .is_empty()
+    );
+    assert_eq!(
+        text_document["signatureHelp"]["signatureInformation"]["parameterInformation"]["labelOffsetSupport"],
+        true
+    );
 }
 
 #[test]

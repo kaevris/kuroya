@@ -531,6 +531,174 @@ mod tests {
         );
     }
 
+    fn marksman_initialize_result() -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "capabilities": {
+                    "textDocumentSync": { "openClose": true, "change": 2, "save": {} },
+                    "hoverProvider": true,
+                    "completionProvider": { "resolveProvider": false },
+                    "definitionProvider": true,
+                    "referencesProvider": true,
+                    "documentSymbolProvider": true,
+                    "workspaceSymbolProvider": true,
+                    "documentHighlightProvider": true,
+                    "foldingRangeProvider": true,
+                    "renameProvider": { "prepareProvider": true },
+                    "semanticTokensProvider": {
+                        "legend": {
+                            "tokenTypes": [
+                                "type",
+                                "class",
+                                "enumMember",
+                                "variable",
+                                "string",
+                                "comment",
+                                "namespace"
+                            ],
+                            "tokenModifiers": []
+                        },
+                        "range": true,
+                        "full": { "delta": true }
+                    }
+                },
+                "serverInfo": { "name": "marksman", "version": "2023-12-09" }
+            }
+        })
+    }
+
+    #[test]
+    fn initialize_response_state_accepts_marksman_result_without_semantic_token_formats() {
+        let response = marksman_initialize_result();
+        assert!(
+            response["result"]["capabilities"]["semanticTokensProvider"]
+                .get("formats")
+                .is_none()
+        );
+
+        assert!(matches!(
+            initialize_response_state(&response, 1),
+            InitializeResponseState::Ready(_)
+        ));
+    }
+
+    #[test]
+    fn initialize_response_state_accepts_result_semantic_tokens_capability_without_formats() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "capabilities": {
+                    "textDocument": {
+                        "semanticTokens": {
+                            "legend": {
+                                "tokenTypes": ["keyword"],
+                                "tokenModifiers": []
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        assert!(matches!(
+            initialize_response_state(&response, 1),
+            InitializeResponseState::Ready(_)
+        ));
+    }
+
+    #[test]
+    fn initialize_response_state_parses_marksman_handshake_fields() {
+        let InitializeResponseState::Ready(handshake) =
+            initialize_response_state(&marksman_initialize_result(), 1)
+        else {
+            panic!("marksman initialize result should be Ready");
+        };
+
+        assert_eq!(
+            handshake.sync_kind,
+            TextDocumentSyncKindSetting::Incremental
+        );
+        assert_eq!(
+            handshake.capabilities,
+            LspServerCapabilities {
+                rename_provider: true,
+                prepare_rename_supported: true,
+                semantic_tokens_provider: true,
+                inlay_hint_provider: false,
+                code_lens_provider: false,
+            }
+        );
+    }
+
+    #[test]
+    fn initialize_response_state_accepts_fully_populated_capabilities() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "capabilities": {
+                    "positionEncoding": "utf-16",
+                    "textDocumentSync": { "openClose": true, "change": 2 },
+                    "selectionRangeProvider": true,
+                    "hoverProvider": { "workDoneProgress": true },
+                    "completionProvider": {
+                        "resolveProvider": true,
+                        "triggerCharacters": ["."],
+                        "completionItem": {
+                            "labelDetailsSupport": true
+                        }
+                    },
+                    "signatureHelpProvider": { "triggerCharacters": ["("] },
+                    "definitionProvider": true,
+                    "typeDefinitionProvider": true,
+                    "implementationProvider": true,
+                    "referencesProvider": true,
+                    "documentHighlightProvider": true,
+                    "documentSymbolProvider": true,
+                    "workspaceSymbolProvider": true,
+                    "codeActionProvider": { "codeActionKinds": ["quickfix"] },
+                    "codeLensProvider": { "resolveProvider": true },
+                    "documentLinkProvider": { "resolveProvider": true },
+                    "documentFormattingProvider": true,
+                    "documentRangeFormattingProvider": true,
+                    "renameProvider": { "prepareProvider": true },
+                    "foldingRangeProvider": true,
+                    "callHierarchyProvider": true,
+                    "typeHierarchyProvider": true,
+                    "inlayHintProvider": { "resolveProvider": true },
+                    "semanticTokensProvider": {
+                        "legend": {
+                            "tokenTypes": ["namespace", "type", "class"],
+                            "tokenModifiers": ["declaration", "deprecated"]
+                        },
+                        "tokenFormat": ["relative"],
+                        "range": true,
+                        "full": { "delta": true }
+                    }
+                },
+                "serverInfo": { "name": "kuroya-test-server" }
+            }
+        });
+
+        let InitializeResponseState::Ready(handshake) = initialize_response_state(&response, 1)
+        else {
+            panic!("fully populated capabilities should be Ready");
+        };
+
+        assert_eq!(
+            handshake.sync_kind,
+            TextDocumentSyncKindSetting::Incremental
+        );
+        assert!(handshake.capabilities.rename_provider);
+        assert!(handshake.capabilities.prepare_rename_supported);
+        assert!(handshake.capabilities.semantic_tokens_provider);
+        assert!(handshake.capabilities.inlay_hint_provider);
+        assert!(handshake.capabilities.code_lens_provider);
+    }
+
     #[test]
     fn lsp_server_ready_event_names_language_and_root() {
         let (tx, rx) = ui_event_channel();
